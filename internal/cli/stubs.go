@@ -14,24 +14,6 @@ func notImplemented(name, adr string) func(cmd *cobra.Command, args []string) er
 	}
 }
 
-func newPlanCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "plan <env>",
-		Short: "Compute the infrastructure changes needed for an environment",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notImplemented("plan", "docs/decisions/0003-terraform-ansible-provisioning.md"),
-	}
-}
-
-func newApplyCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "apply <env>",
-		Short: "Apply the planned infrastructure changes for an environment",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notImplemented("apply", "docs/decisions/0003-terraform-ansible-provisioning.md"),
-	}
-}
-
 func newDeployCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "deploy <env>",

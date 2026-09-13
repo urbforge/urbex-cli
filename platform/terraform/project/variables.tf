@@ -1,0 +1,50 @@
+variable "proxmox_api_url" {
+  type = string
+}
+
+variable "proxmox_api_token" {
+  type      = string
+  sensitive = true
+  # Passed via the TF_VAR_proxmox_api_token environment variable by urbex
+  # plan/apply - never written to a file in this repo.
+}
+
+variable "proxmox_insecure" {
+  type    = bool
+  default = false
+}
+
+variable "node_name" {
+  type = string
+}
+
+variable "storage_pool" {
+  type = string
+}
+
+variable "template_file_id" {
+  type = string
+}
+
+variable "ssh_public_key" {
+  type = string
+}
+
+variable "gateway" {
+  type = string
+}
+
+variable "ip_prefix_length" {
+  type = number
+}
+
+variable "services" {
+  description = "Hostname (e.g. my-app-api-staging) => sizing/network for that service's LXC, computed by urbex plan/apply from urbex.yaml and the allocation ledger."
+  type = map(object({
+    vm_id      = number
+    ip_address = string
+    cores      = number
+    memory_mb  = number
+    disk_gb    = number
+  }))
+}

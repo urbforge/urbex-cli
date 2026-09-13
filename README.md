@@ -18,10 +18,25 @@ Scaffold stage. Implemented so far:
   init/apply` and `ansible-playbook` (skippable with `--dry-run`).
   **Pushing the resulting GitOps repo to Gitea is a later phase, not yet
   implemented** — bootstrap prints what to do next instead.
+- `urbex plan <env>` / `urbex apply <env>` — the per-project provisioning
+  phase: read `urbex.yaml`, allocate a VMID/IP for each declared
+  service's LXC (one per service per environment, reusing the same
+  static-allocation approach as bootstrap but in its own VMID/IP range so
+  it never collides with the base services), materialize the generic
+  per-service Terraform module into `terraform/projects/<project>/<env>/`
+  in the GitOps repo, then run `terraform plan` (plan) or `terraform
+  apply` followed by `ansible-playbook` (apply) to actually configure the
+  LXC with Docker + a docker-compose skeleton. Requires
+  `urbex.platform.yaml` to already exist (i.e. `urbex bootstrap` to have
+  run at least once). **Building/pushing the service's actual container
+  image, DNS registration, Keycloak realm/client provisioning, and
+  Cloudflare Tunnel ingress are later phases, not yet implemented** — the
+  compose file references a placeholder image and `apply` prints what to
+  do next.
 
-Every other subcommand (`plan`, `apply`, `deploy`, `promote`, `status`,
-`destroy`) exists as a stub that points to the relevant ADR in
-`urbforge/urbex` and fails with "not implemented yet".
+Every other subcommand (`deploy`, `promote`, `status`, `destroy`) exists
+as a stub that points to the relevant ADR in `urbforge/urbex` and fails
+with "not implemented yet".
 
 ### Caveat: untested against real Proxmox
 
@@ -56,6 +71,11 @@ go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo
 # scaffolds urbex.platform.yaml there; edit it, then run again
 export URBEX_PROXMOX_TOKEN=... URBEX_AGE_KEY=...
 go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo --dry-run
+
+# from an app repo containing urbex.yaml:
+export URBEX_GITOPS_REPO=/path/to/gitops-repo
+go run ./cmd/urbex plan staging
+go run ./cmd/urbex apply staging
 ```
 
 ## Layout
@@ -68,11 +88,16 @@ internal/manifest/schema/      vendored copy of the manifest JSON Schema
                                 (source of truth: urbforge/urbex/schemas/urbex.schema.json)
 internal/platform/           urbex.platform.yaml loading, validation, scaffolding
 internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.yaml
-internal/netalloc/           static IP allocation for base-service LXCs
+internal/netalloc/           static IP block allocation (base-service LXCs)
+internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
+internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
 internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight check only)
-internal/bootstrap/          urbex bootstrap orchestration (materialize, terraform, ansible)
-platform/terraform/          embedded Terraform modules for base-service LXCs
-platform/ansible/            embedded Ansible playbook/roles for base-service LXCs
+internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
+internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
+internal/bootstrap/          urbex bootstrap orchestration (base services)
+internal/provision/          urbex plan/apply orchestration (project services)
+platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
+platform/ansible/            embedded Ansible playbooks/roles (base services + generic service role)
 ```
 
 ## Note on the vendored schema

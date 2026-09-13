@@ -19,8 +19,10 @@ import (
 	"path/filepath"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
 // ProxmoxLister is the subset of proxmoxapi.Client used for the
@@ -28,6 +30,15 @@ import (
 type ProxmoxLister interface {
 	ListContainerHostnames(ctx context.Context, node string) ([]string, error)
 }
+
+// Command, CommandRunner, and ExecRunner are aliases for the shared types
+// in internal/runner, kept here so existing callers of this package don't
+// need to change their imports.
+type (
+	Command       = runner.Command
+	CommandRunner = runner.CommandRunner
+	ExecRunner    = runner.ExecRunner
+)
 
 // Orchestrator runs the bootstrap provisioning flow.
 type Orchestrator struct {
@@ -72,7 +83,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("allocating static IPs: %w", err)
 	}
 
-	if err := materializeAssets(opts.GitOpsRepoPath); err != nil {
+	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
 	}
 

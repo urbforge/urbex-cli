@@ -1,4 +1,7 @@
-package bootstrap
+// Package runner abstracts running external commands (terraform,
+// ansible-playbook) so orchestration logic in internal/bootstrap and
+// internal/provision can be unit tested without invoking real binaries.
+package runner
 
 import (
 	"context"
@@ -7,8 +10,7 @@ import (
 	"os/exec"
 )
 
-// Command describes an external command to run during bootstrap
-// (terraform, ansible-playbook, ...).
+// Command describes an external command to run.
 type Command struct {
 	Dir  string
 	Name string
@@ -19,9 +21,7 @@ type Command struct {
 	Env []string
 }
 
-// CommandRunner executes external commands. Abstracted so bootstrap's
-// orchestration logic can be unit tested without actually invoking
-// terraform/ansible-playbook.
+// CommandRunner executes external commands.
 type CommandRunner interface {
 	Run(ctx context.Context, cmd Command) error
 }

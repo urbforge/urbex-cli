@@ -30,13 +30,11 @@ Pushing the resulting GitOps repo to Gitea is a later phase, not yet
 implemented - see docs/decisions/0006-bootstrap-command.md in
 urbforge/urbex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if gitopsRepoPath == "" {
-				gitopsRepoPath = os.Getenv("URBEX_GITOPS_REPO")
+			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
+			if err != nil {
+				return err
 			}
-			if gitopsRepoPath == "" {
-				return fmt.Errorf("--gitops-repo (or URBEX_GITOPS_REPO) is required")
-			}
-			return runBootstrap(cmd, gitopsRepoPath, dryRun)
+			return runBootstrap(cmd, repoPath, dryRun)
 		},
 	}
 
