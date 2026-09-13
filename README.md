@@ -33,10 +33,25 @@ Scaffold stage. Implemented so far:
   Cloudflare Tunnel ingress are later phases, not yet implemented** — the
   compose file references a placeholder image and `apply` prints what to
   do next.
+- `urbex deploy <env>` — redeploys services `urbex apply` already
+  provisioned: re-renders the Ansible inventory from the current
+  `urbex.yaml` and re-runs `ansible-playbook` against the existing LXCs
+  (no Terraform, no new VMID/IP allocation - it errors out by name if any
+  declared service hasn't been applied yet). Needs no Proxmox API token,
+  only SSH access to the LXCs. **This runs Ansible directly and is not
+  yet integrated with Komodo's GitOps-driven reconciliation** (see
+  [ADR-0004](https://github.com/urbforge/urbex/blob/main/docs/decisions/0004-gitops-gitea-komodo.md)) —
+  there's no push-to-deploy yet, only this direct command.
+- `urbex status [env]` — with no argument, queries Proxmox for which of
+  the 5 base-service LXCs currently exist. With an environment argument,
+  reads `urbex.yaml` and reports, per service, whether `urbex
+  plan`/`apply` has allocated it a VMID/IP and whether its LXC currently
+  exists on Proxmox. **DNS records, TLS certificates, and the latest
+  deployed release are not tracked yet.**
 
-Every other subcommand (`deploy`, `promote`, `status`, `destroy`) exists
-as a stub that points to the relevant ADR in `urbforge/urbex` and fails
-with "not implemented yet".
+Every other subcommand (`promote`, `destroy`) exists as a stub that
+points to the relevant ADR in `urbforge/urbex` and fails with "not
+implemented yet".
 
 ### Caveat: untested against real Proxmox
 
@@ -76,6 +91,9 @@ go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo --dry-run
 export URBEX_GITOPS_REPO=/path/to/gitops-repo
 go run ./cmd/urbex plan staging
 go run ./cmd/urbex apply staging
+go run ./cmd/urbex status            # base-service status
+go run ./cmd/urbex status staging    # per-service status for this project+env
+go run ./cmd/urbex deploy staging    # re-run Ansible after editing urbex.yaml
 ```
 
 ## Layout
@@ -95,7 +113,8 @@ internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight 
 internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
 internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
 internal/bootstrap/          urbex bootstrap orchestration (base services)
-internal/provision/          urbex plan/apply orchestration (project services)
+internal/provision/          urbex plan/apply/deploy orchestration (project services)
+internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + generic service role)
 ```

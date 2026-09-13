@@ -218,6 +218,91 @@ func TestPlan_NoServices(t *testing.T) {
 	}
 }
 
+func TestDeploy_RequiresPriorApply(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      r,
+		Out:         &bytes.Buffer{},
+	}
+
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
+	if err == nil {
+		t.Fatal("expected an error when the service has no allocation yet (apply not run)")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no commands run when unprovisioned, got: %+v", r.calls)
+	}
+}
+
+func TestDeploy_RunsAnsibleOnlyAfterApply(t *testing.T) {
+	dir := t.TempDir()
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployRunner := &fakeRunner{}
+	o.Runner = deployRunner
+
+	if err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	if len(deployRunner.calls) != 1 {
+		t.Fatalf("expected exactly 1 command (ansible-playbook, no terraform), got %d: %+v", len(deployRunner.calls), deployRunner.calls)
+	}
+	if deployRunner.calls[0].Name != "ansible-playbook" {
+		t.Errorf("expected ansible-playbook, got %s", deployRunner.calls[0].Name)
+	}
+}
+
+func TestDeploy_PartiallyProvisionedFailsListingAllMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	m := validManifest()
+	m.Services = append(m.Services, manifest.Service{Name: "worker", Runtime: "go", Port: 9000})
+
+	o := &Orchestrator{
+		Manifest:    m,
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+	}
+
+	// Provision only the first service via Plan+manual ledger write is
+	// overkill here; instead apply the full manifest, then deploy a
+	// manifest that adds a third, never-applied service.
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	o.Manifest.Services = append(o.Manifest.Services, manifest.Service{Name: "never-applied", Runtime: "go", Port: 9001})
+	deployRunner := &fakeRunner{}
+	o.Runner = deployRunner
+
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
+	if err == nil {
+		t.Fatal("expected an error listing the unprovisioned service")
+	}
+	if len(deployRunner.calls) != 0 {
+		t.Errorf("expected no commands run when any service is unprovisioned, got: %+v", deployRunner.calls)
+	}
+}
+
 func TestPlan_MissingCredentials(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRunner{}

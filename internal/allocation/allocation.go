@@ -54,6 +54,14 @@ func Load(path string, defaultNextVMID, defaultNextIPOffset int) (*Ledger, error
 	return &l, nil
 }
 
+// Lookup returns the entry for hostname without allocating one if it's
+// missing - used by commands that must not provision anything (e.g.
+// urbex deploy, urbex status).
+func (l *Ledger) Lookup(hostname string) (Entry, bool) {
+	e, ok := l.Entries[hostname]
+	return e, ok
+}
+
 // Allocate returns the existing entry for hostname if one was already
 // assigned, or assigns and persists a new VMID/IP for it from cidr.
 func (l *Ledger) Allocate(hostname, cidr string) (Entry, error) {

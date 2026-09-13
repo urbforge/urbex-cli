@@ -27,11 +27,13 @@ func resolveGitOpsRepoPath(flagValue string) (string, error) {
 }
 
 // newProvisionOrchestrator loads and validates everything urbex
-// plan/apply need: the local app manifest, the platform config from an
-// already-bootstrapped GitOps repo, and credentials. It writes validation
+// plan/apply/deploy need: the local app manifest and the platform config
+// from an already-bootstrapped GitOps repo, plus credentials when
+// requireCreds is true (plan/apply need the Proxmox token for Terraform;
+// deploy only runs Ansible over SSH and needs none). It writes validation
 // errors to out itself (mirroring `urbex init`'s behavior) before
 // returning a plain error.
-func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath string) (*provision.Orchestrator, error) {
+func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath string, requireCreds bool) (*provision.Orchestrator, error) {
 	out := cmd.OutOrStdout()
 
 	m, result, err := manifest.LoadTyped(manifestPath)
@@ -66,12 +68,14 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath s
 	if err != nil {
 		return nil, fmt.Errorf("loading credentials: %w", err)
 	}
-	if missing := creds.MissingForProvisioning(); len(missing) > 0 {
-		fmt.Fprintln(out, "Missing required credentials:")
-		for _, mk := range missing {
-			fmt.Fprintf(out, "  - %s\n", mk)
+	if requireCreds {
+		if missing := creds.MissingForProvisioning(); len(missing) > 0 {
+			fmt.Fprintln(out, "Missing required credentials:")
+			for _, mk := range missing {
+				fmt.Fprintf(out, "  - %s\n", mk)
+			}
+			return nil, fmt.Errorf("missing required credentials")
 		}
-		return nil, fmt.Errorf("missing required credentials")
 	}
 
 	return &provision.Orchestrator{

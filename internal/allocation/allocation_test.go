@@ -82,6 +82,30 @@ func TestSaveAndLoad_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestLookup(t *testing.T) {
+	l, err := Load(filepath.Join(t.TempDir(), "allocations.json"), 9100, 210)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if _, ok := l.Lookup("my-app-api-staging"); ok {
+		t.Fatal("expected Lookup to report not-found before any Allocate call")
+	}
+
+	want, err := l.Allocate("my-app-api-staging", "192.168.1.0/24")
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+
+	got, ok := l.Lookup("my-app-api-staging")
+	if !ok {
+		t.Fatal("expected Lookup to find the entry after Allocate")
+	}
+	if got != want {
+		t.Errorf("Lookup = %+v, want %+v", got, want)
+	}
+}
+
 func TestLoad_MissingFileReturnsDefaults(t *testing.T) {
 	l, err := Load(filepath.Join(t.TempDir(), "does-not-exist.json"), 9100, 210)
 	if err != nil {

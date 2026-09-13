@@ -81,6 +81,74 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return fmt.Errorf("terraform apply: %w", err)
 	}
 
+	if err := o.runAnsible(ctx, opts); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(o.Out, "Service LXCs for %s (%s) provisioned.\n", o.Manifest.Project, opts.Env)
+	fmt.Fprintln(o.Out, "Next (not yet implemented by urbex apply): register DNS records in Technitium,")
+	fmt.Fprintln(o.Out, "provision the Keycloak realm/clients, and configure Cloudflare Tunnel ingress.")
+	return nil
+}
+
+// Deploy re-runs Ansible against service LXCs that urbex apply already
+// provisioned, to pick up urbex.yaml changes (env vars, port, image) -
+// without touching Terraform/infrastructure. Every declared service must
+// already have a VMID/IP allocation (see urbex apply); Deploy itself
+// never allocates one.
+//
+// This runs ansible-playbook directly. It is not yet integrated with
+// Komodo's GitOps-driven reconciliation - see
+// docs/decisions/0004-gitops-gitea-komodo.md in urbforge/urbex.
+func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
+	if !ValidEnvs[opts.Env] {
+		return fmt.Errorf("invalid environment %q: must be one of staging, prod", opts.Env)
+	}
+	if len(o.Manifest.Services) == 0 {
+		return fmt.Errorf("urbex.yaml declares no services - nothing to deploy")
+	}
+
+	ledgerPath := filepath.Join(opts.GitOpsRepoPath, "state", "allocations.json")
+	ledger, err := allocation.Load(ledgerPath, o.Config.Proxmox.VMIDBase+100, o.Config.Proxmox.Network.BaseHostOffset+10)
+	if err != nil {
+		return fmt.Errorf("loading allocation ledger: %w", err)
+	}
+
+	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
+	var unprovisioned []string
+	for _, svc := range o.Manifest.Services {
+		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
+		entry, ok := ledger.Lookup(hostname)
+		if !ok {
+			unprovisioned = append(unprovisioned, hostname)
+			continue
+		}
+		allocations[hostname] = entry
+	}
+	if len(unprovisioned) > 0 {
+		return fmt.Errorf("service(s) not yet provisioned: %v - run 'urbex apply %s' first", unprovisioned, opts.Env)
+	}
+
+	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
+		return fmt.Errorf("materializing assets: %w", err)
+	}
+
+	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
+	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations); err != nil {
+		return fmt.Errorf("writing ansible inventory: %w", err)
+	}
+
+	if err := o.runAnsible(ctx, opts); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(o.Out, "Redeployed %s (%s).\n", o.Manifest.Project, opts.Env)
+	fmt.Fprintln(o.Out, "Note: this ran ansible-playbook directly against the existing LXCs - it is")
+	fmt.Fprintln(o.Out, "not yet integrated with Komodo's GitOps reconciliation (docs/decisions/0004-gitops-gitea-komodo.md).")
+	return nil
+}
+
+func (o *Orchestrator) runAnsible(ctx context.Context, opts Options) error {
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
 	if err := o.Runner.Run(ctx, runner.Command{
 		Dir:  ansibleDir,
@@ -89,10 +157,6 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
-
-	fmt.Fprintf(o.Out, "Service LXCs for %s (%s) provisioned.\n", o.Manifest.Project, opts.Env)
-	fmt.Fprintln(o.Out, "Next (not yet implemented by urbex apply): register DNS records in Technitium,")
-	fmt.Fprintln(o.Out, "provision the Keycloak realm/clients, and configure Cloudflare Tunnel ingress.")
 	return nil
 }
 

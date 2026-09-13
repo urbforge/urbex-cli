@@ -29,7 +29,7 @@ by 'urbex bootstrap').`,
 				return err
 			}
 
-			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath)
+			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, true)
 			if err != nil {
 				return err
 			}
