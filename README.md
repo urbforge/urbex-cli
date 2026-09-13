@@ -2,6 +2,10 @@
 
 The `urbex` CLI — implementation repo. For architecture, ADRs, and the
 manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex).
+For a real-world, step-by-step walkthrough (bootstrap → deploy → test →
+promote → iterate → fleet status), see
+[`docs/guide.md`](https://github.com/urbforge/urbex/blob/main/docs/guide.md)
+there.
 
 ## Status
 
