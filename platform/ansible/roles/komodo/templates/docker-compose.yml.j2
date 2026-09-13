@@ -1,0 +1,24 @@
+# Managed by urbex bootstrap - see docs/decisions/0004-gitops-gitea-komodo.md
+# in urbforge/urbex.
+#
+# This deploys Komodo Core only (the management UI/API). Installing
+# Komodo Periphery agents on every base/project LXC so Core can actually
+# drive redeploys is not yet implemented by urbex bootstrap - tracked as a
+# follow-up alongside urbex deploy/apply.
+#
+# TODO: verify the exact image repository/tag against https://komo.do
+# docs before applying against real infrastructure - not yet validated
+# in this scaffold.
+services:
+  komodo-core:
+    image: ghcr.io/moghtech/komodo-core:latest
+    restart: unless-stopped
+    environment:
+      - KOMODO_HOST={{ ansible_host }}
+    volumes:
+      - komodo-data:/data
+    ports:
+      - "9120:9120"
+
+volumes:
+  komodo-data:

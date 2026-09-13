@@ -1,0 +1,17 @@
+# Managed by urbex bootstrap - see docs/decisions/0007-technitium-configurable-domain.md
+# in urbforge/urbex.
+services:
+  technitium:
+    image: technitium/dns-server:latest
+    restart: unless-stopped
+    environment:
+      - DNS_SERVER_DOMAIN={{ inventory_hostname }}
+    volumes:
+      - technitium-data:/etc/dns
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "5380:5380"
+
+volumes:
+  technitium-data:

@@ -1,0 +1,22 @@
+# Managed by urbex bootstrap - see docs/decisions/0004-gitops-gitea-komodo.md
+# in urbforge/urbex. Edit this file directly in the GitOps repo for
+# steady-state changes; re-running bootstrap does not overwrite it.
+services:
+  gitea:
+    image: gitea/gitea:1.22
+    restart: unless-stopped
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__DOMAIN={{ inventory_hostname }}
+      # TODO: point ROOT_URL at the real public URL once ingress
+      # (docs/decisions/0005-cloudflare-tunnel-ingress.md) is wired up.
+      - GITEA__server__ROOT_URL=http://{{ ansible_host }}:3000/
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "3000:3000"
+      - "2222:22"
+
+volumes:
+  gitea-data:

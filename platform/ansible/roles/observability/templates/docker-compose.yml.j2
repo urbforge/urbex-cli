@@ -1,0 +1,40 @@
+# Managed by urbex bootstrap - see docs/architecture.md#observability-prometheus--grafana--loki
+# in urbforge/urbex.
+#
+# Promtail agents on other base/project LXCs (to ship their logs here)
+# are not yet deployed by urbex bootstrap - tracked as a follow-up.
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password | default('CHANGE_ME_before_bootstrap') }}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:

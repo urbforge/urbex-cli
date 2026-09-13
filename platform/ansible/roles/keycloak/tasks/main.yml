@@ -1,0 +1,19 @@
+---
+- name: Template Keycloak docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+  register: compose_file
+  vars:
+    # TODO: replace with a real secret sourced from SOPS+age once platform
+    # secrets (as opposed to per-app secrets, see
+    # docs/decisions/0011-secrets-sops-age.md) are wired up. This
+    # placeholder is only safe for a throwaway/dev bootstrap run.
+    keycloak_admin_password: "{{ keycloak_admin_password | default('CHANGE_ME_before_bootstrap') }}"
+
+- name: Start Keycloak via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  when: compose_file.changed

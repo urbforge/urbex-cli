@@ -14,14 +14,6 @@ func notImplemented(name, adr string) func(cmd *cobra.Command, args []string) er
 	}
 }
 
-func newBootstrapCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "bootstrap",
-		Short: "Provision the base platform services on a fresh Proxmox server",
-		RunE:  notImplemented("bootstrap", "docs/decisions/0006-bootstrap-command.md"),
-	}
-}
-
 func newPlanCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "plan <env>",

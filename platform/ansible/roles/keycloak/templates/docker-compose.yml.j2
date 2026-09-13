@@ -1,0 +1,21 @@
+# Managed by urbex bootstrap - see docs/decisions/0008-keycloak-scope.md
+# and docs/decisions/0014-keycloak-realm-per-project.md in urbforge/urbex.
+#
+# Runs in dev mode (start-dev) for this first bootstrap scaffold. Running
+# Keycloak in production mode (proper database, hostname, TLS) is a
+# follow-up, not yet implemented.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD={{ keycloak_admin_password }}
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+    ports:
+      - "8080:8080"
+
+volumes:
+  keycloak-data:

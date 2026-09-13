@@ -1,0 +1,13 @@
+---
+- name: Template Komodo Core docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+  register: compose_file
+
+- name: Start Komodo Core via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  when: compose_file.changed

@@ -1,0 +1,19 @@
+---
+- name: Template Prometheus configuration
+  template:
+    src: prometheus.yml.j2
+    dest: /opt/urbex/prometheus.yml
+    mode: "0640"
+
+- name: Template observability docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+  register: compose_file
+
+- name: Start the observability stack via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  when: compose_file.changed

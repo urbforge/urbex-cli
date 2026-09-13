@@ -1,0 +1,36 @@
+---
+- name: Configure all urbex base-service containers
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Deploy Gitea
+  hosts: urbex_gitea
+  become: true
+  roles:
+    - gitea
+
+- name: Deploy Komodo
+  hosts: urbex_komodo
+  become: true
+  roles:
+    - komodo
+
+- name: Deploy Technitium DNS
+  hosts: urbex_technitium
+  become: true
+  roles:
+    - technitium
+
+- name: Deploy Keycloak
+  hosts: urbex_keycloak
+  become: true
+  roles:
+    - keycloak
+
+- name: Deploy the observability stack (Prometheus, Grafana, Loki)
+  hosts: urbex_observability
+  become: true
+  roles:
+    - observability
