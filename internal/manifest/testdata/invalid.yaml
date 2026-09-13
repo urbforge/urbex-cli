@@ -1,0 +1,7 @@
+apiVersion: urbex/v1
+project: my-app
+
+services:
+  - name: api
+    runtime: dotnet
+    port: 8080

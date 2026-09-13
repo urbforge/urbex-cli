@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://urbforge.github.io/urbex/schemas/urbex.schema.json",
+  "title": "Urbex app manifest",
+  "description": "Schema for urbex.yaml, the per-app manifest declaring an app's infrastructure needs. See docs/manifest-spec.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "project"],
+  "anyOf": [
+    { "required": ["frontend"] },
+    { "required": ["services"] }
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "urbex/v1"
+    },
+    "project": {
+      "type": "string",
+      "description": "Unique project name on the platform.",
+      "pattern": "^[a-z][a-z0-9-]{1,38}[a-z0-9]$"
+    },
+    "frontend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "provider", "buildCommand", "outputDir"],
+      "properties": {
+        "type": { "enum": ["web", "mobile"] },
+        "provider": { "enum": ["cloudflare-pages", "firebase"] },
+        "buildCommand": { "type": "string", "minLength": 1 },
+        "outputDir": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "web" } } },
+          "then": { "properties": { "provider": { "const": "cloudflare-pages" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "mobile" } } },
+          "then": { "properties": { "provider": { "const": "firebase" } } }
+        }
+      ]
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/service" }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subdomain"],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,61}[a-z0-9]$"
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metrics": { "type": "boolean", "default": true },
+        "logs": { "type": "boolean", "default": true }
+      }
+    },
+    "email": {
+      "type": "object",
+      "description": "Transactional email configuration. The provider API key is never set here — it is managed as a secret (see docs/decisions/0011-secrets-sops-age.md).",
+      "additionalProperties": false,
+      "required": ["provider", "fromAddress"],
+      "properties": {
+        "provider": {
+          "enum": ["brevo"],
+          "description": "Managed transactional email provider. Only 'brevo' is supported in v1; more providers will be added over time (see docs/decisions/0015-transactional-email-brevo.md)."
+        },
+        "fromAddress": {
+          "type": "string",
+          "format": "email"
+        },
+        "fromName": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "runtime", "port"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+        },
+        "runtime": { "enum": ["java", "python", "go", "docker"] },
+        "dockerfile": {
+          "type": "string",
+          "description": "Required when runtime is 'docker'. Path to the Dockerfile, relative to the repo root."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "healthcheck": {
+          "type": "string",
+          "description": "HTTP path used for health checks.",
+          "default": "/healthz"
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "integer", "minimum": 1, "default": 1 },
+            "memory": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "1Gi" },
+            "disk": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "5Gi" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "staging": { "type": "object", "additionalProperties": { "type": "string" } },
+            "prod": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "keycloak": { "type": "boolean", "default": false },
+            "roles": {
+              "type": "array",
+              "items": { "type": "string" },
+              "uniqueItems": true
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "runtime": { "const": "docker" } } },
+          "then": { "required": ["dockerfile"] }
+        }
+      ]
+    }
+  }
+}

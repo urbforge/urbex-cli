@@ -1,0 +1,31 @@
+apiVersion: urbex/v1
+project: my-app
+
+services:
+  - name: api
+    runtime: go
+    port: 8080
+    resources:
+      cpu: 1
+      memory: 1Gi
+      disk: 5Gi
+    env:
+      staging:
+        LOG_LEVEL: debug
+      prod:
+        LOG_LEVEL: info
+    auth:
+      keycloak: true
+      roles: [admin, user]
+
+domain:
+  subdomain: my-app
+
+observability:
+  metrics: true
+  logs: true
+
+email:
+  provider: brevo
+  fromAddress: no-reply@my-app.example.com
+  fromName: My App
