@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -300,6 +301,94 @@ func TestDeploy_PartiallyProvisionedFailsListingAllMissing(t *testing.T) {
 	}
 	if len(deployRunner.calls) != 0 {
 		t.Errorf("expected no commands run when any service is unprovisioned, got: %+v", deployRunner.calls)
+	}
+}
+
+func TestDestroy_NothingAppliedIsANoOp(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      r,
+		Out:         &bytes.Buffer{},
+	}
+
+	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no commands run when nothing was applied, got: %+v", r.calls)
+	}
+}
+
+func TestDestroy_RunsTerraformDestroyAndClearsLedger(t *testing.T) {
+	dir := t.TempDir()
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	ledgerPath := filepath.Join(dir, "state", "allocations.json")
+	before, err := allocation.Load(ledgerPath, 9100, 210)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := before.Lookup("my-app-api-staging"); !ok {
+		t.Fatal("expected an allocation to exist after Apply")
+	}
+
+	destroyRunner := &fakeRunner{}
+	o.Runner = destroyRunner
+
+	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	if len(destroyRunner.calls) != 2 {
+		t.Fatalf("expected 2 commands (terraform init, terraform destroy), got %d: %+v", len(destroyRunner.calls), destroyRunner.calls)
+	}
+	if destroyRunner.calls[0].Args[0] != "init" || destroyRunner.calls[1].Args[0] != "destroy" {
+		t.Errorf("unexpected command sequence: %+v", destroyRunner.calls)
+	}
+
+	after, err := allocation.Load(ledgerPath, 9100, 210)
+	if err != nil {
+		t.Fatalf("Load (after destroy): %v", err)
+	}
+	if _, ok := after.Lookup("my-app-api-staging"); ok {
+		t.Error("expected the allocation to be removed after Destroy")
+	}
+}
+
+func TestDestroy_MissingCredentials(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: &credentials.Credentials{},
+		Runner:      r,
+		Out:         &bytes.Buffer{},
+	}
+
+	err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
+	if err == nil {
+		t.Fatal("expected an error for missing credentials")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no commands run for missing credentials, got: %+v", r.calls)
 	}
 }
 

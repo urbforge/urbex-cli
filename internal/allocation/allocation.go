@@ -81,6 +81,13 @@ func (l *Ledger) Allocate(hostname, cidr string) (Entry, error) {
 	return e, nil
 }
 
+// Remove deletes hostname's entry, if any. Used when infrastructure is
+// torn down (e.g. urbex destroy) so future Lookup/status calls correctly
+// report it as no longer allocated.
+func (l *Ledger) Remove(hostname string) {
+	delete(l.Entries, hostname)
+}
+
 // Save writes the ledger to path as indented JSON, creating parent
 // directories as needed.
 func (l *Ledger) Save(path string) error {

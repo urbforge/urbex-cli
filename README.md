@@ -5,7 +5,8 @@ manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex).
 
 ## Status
 
-Scaffold stage. Implemented so far:
+Scaffold stage - all 8 subcommands are implemented, but see the caveat
+below on the Terraform/Ansible content itself:
 
 - `urbex init` — scaffolds a starter `urbex.yaml` app manifest, or
   validates an existing one against the manifest schema.
@@ -48,10 +49,24 @@ Scaffold stage. Implemented so far:
   plan`/`apply` has allocated it a VMID/IP and whether its LXC currently
   exists on Proxmox. **DNS records, TLS certificates, and the latest
   deployed release are not tracked yet.**
+- `urbex promote` — creates and pushes an annotated Git tag (`vX.Y.Z`,
+  auto-incrementing the patch version from existing tags unless
+  `--version` is given) at HEAD of the app repo, the actual signal a
+  production release happened per
+  [ADR-0010](https://github.com/urbforge/urbex/blob/main/docs/decisions/0010-promotion-flow.md).
+  Since Komodo isn't yet watching tags to redeploy prod automatically,
+  promote then immediately calls the same `urbex deploy prod` mechanism
+  itself (`--skip-deploy` to only create/push the tag). Requires prod to
+  already be applied.
+- `urbex destroy <env>` — runs `terraform destroy` for every service
+  already applied to the given environment, then clears their entries
+  from the allocation ledger. Services never applied are silently
+  skipped; a no-op if none were applied. Only tears down project-service
+  infrastructure, not the base/platform services from `urbex bootstrap`.
 
-Every other subcommand (`promote`, `destroy`) exists as a stub that
-points to the relevant ADR in `urbforge/urbex` and fails with "not
-implemented yet".
+All eight subcommands (`init`, `bootstrap`, `plan`, `apply`, `deploy`,
+`status`, `promote`, `destroy`) now have a real implementation - none are
+stubs.
 
 ### Caveat: untested against real Proxmox
 
@@ -94,6 +109,11 @@ go run ./cmd/urbex apply staging
 go run ./cmd/urbex status            # base-service status
 go run ./cmd/urbex status staging    # per-service status for this project+env
 go run ./cmd/urbex deploy staging    # re-run Ansible after editing urbex.yaml
+
+go run ./cmd/urbex apply prod                 # apply prod first
+go run ./cmd/urbex promote                    # tags, pushes, and redeploys prod
+go run ./cmd/urbex promote --skip-deploy       # only tag/push
+go run ./cmd/urbex destroy staging            # tears down staging's LXCs
 ```
 
 ## Layout
@@ -113,8 +133,10 @@ internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight 
 internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
 internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
 internal/bootstrap/          urbex bootstrap orchestration (base services)
-internal/provision/          urbex plan/apply/deploy orchestration (project services)
+internal/provision/          urbex plan/apply/deploy/destroy orchestration (project services)
 internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
+internal/gittag/             semver tag parsing/increment (pure, no I/O beyond listing tags)
+internal/promote/            urbex promote: creates/pushes the Git tag
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + generic service role)
 ```

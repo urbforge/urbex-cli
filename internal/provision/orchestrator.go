@@ -148,6 +148,84 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	return nil
 }
 
+// Destroy runs `terraform destroy` for every declared service that has
+// been applied (see urbex apply) to opts.Env, then removes their entries
+// from the allocation ledger. Services that were never applied are
+// silently skipped - there's nothing to destroy for them. If none of the
+// manifest's services have been applied, Destroy is a no-op.
+//
+// This only tears down project-service infrastructure; base/platform
+// services created by urbex bootstrap are out of scope.
+func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
+	if !ValidEnvs[opts.Env] {
+		return fmt.Errorf("invalid environment %q: must be one of staging, prod", opts.Env)
+	}
+	if len(o.Manifest.Services) == 0 {
+		return fmt.Errorf("urbex.yaml declares no services - nothing to destroy")
+	}
+	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
+		return fmt.Errorf("missing required credentials: %v", missing)
+	}
+
+	ledgerPath := filepath.Join(opts.GitOpsRepoPath, "state", "allocations.json")
+	ledger, err := allocation.Load(ledgerPath, o.Config.Proxmox.VMIDBase+100, o.Config.Proxmox.Network.BaseHostOffset+10)
+	if err != nil {
+		return fmt.Errorf("loading allocation ledger: %w", err)
+	}
+
+	allocations := make(map[string]allocation.Entry)
+	var toDestroy []manifest.Service
+	var hostnames []string
+	for _, svc := range o.Manifest.Services {
+		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
+		if entry, ok := ledger.Lookup(hostname); ok {
+			allocations[hostname] = entry
+			toDestroy = append(toDestroy, svc)
+			hostnames = append(hostnames, hostname)
+		}
+	}
+
+	if len(toDestroy) == 0 {
+		fmt.Fprintf(o.Out, "Nothing to destroy: no services of %s (%s) have been applied.\n", o.Manifest.Project, opts.Env)
+		return nil
+	}
+
+	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
+		return fmt.Errorf("materializing base assets: %w", err)
+	}
+	if err := materialize.ProjectTerraform(opts.GitOpsRepoPath, o.Manifest.Project, opts.Env); err != nil {
+		return fmt.Errorf("materializing project terraform: %w", err)
+	}
+
+	_, prefixLen, err := netalloc.Allocate(o.Config.Proxmox.Network.CIDR, 0, 1)
+	if err != nil {
+		return fmt.Errorf("parsing network cidr: %w", err)
+	}
+
+	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "projects", o.Manifest.Project, opts.Env)
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen); err != nil {
+		return fmt.Errorf("writing terraform vars: %w", err)
+	}
+
+	env := tfEnv(o.Credentials)
+	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
+		return fmt.Errorf("terraform init: %w", err)
+	}
+	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"destroy", "-auto-approve"}, Env: env}); err != nil {
+		return fmt.Errorf("terraform destroy: %w", err)
+	}
+
+	for _, hostname := range hostnames {
+		ledger.Remove(hostname)
+	}
+	if err := ledger.Save(ledgerPath); err != nil {
+		return fmt.Errorf("saving allocation ledger: %w", err)
+	}
+
+	fmt.Fprintf(o.Out, "Destroyed %s (%s): %v.\n", o.Manifest.Project, opts.Env, hostnames)
+	return nil
+}
+
 func (o *Orchestrator) runAnsible(ctx context.Context, opts Options) error {
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
 	if err := o.Runner.Run(ctx, runner.Command{
