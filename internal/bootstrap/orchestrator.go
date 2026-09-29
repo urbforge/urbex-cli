@@ -6,9 +6,10 @@
 // docs/decisions/0006-bootstrap-command.md and
 // docs/decisions/0017-embedded-base-infra-assets.md in urbforge/urbex.
 //
-// Pushing the resulting GitOps repo to Gitea (and configuring the
-// Cloudflare tunnel) is a later phase, not yet implemented here - see the
-// message printed at the end of a successful Run.
+// After provisioning, it wires the base services together (Gitea tokens,
+// org and GitOps repo, Komodo API key and accounts - see platform.go) and
+// pushes the GitOps repo to Gitea. Configuring the Cloudflare tunnel is a
+// later phase, not yet implemented here.
 package bootstrap
 
 import (
@@ -47,6 +48,9 @@ type Orchestrator struct {
 	Proxmox     ProxmoxLister
 	Runner      CommandRunner
 	Out         io.Writer
+	// Clients builds the Gitea/Komodo API clients used after provisioning;
+	// zero value means DefaultClients().
+	Clients Clients
 }
 
 // Options controls a single Run.
@@ -82,6 +86,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("allocating static IPs: %w", err)
 	}
+	ep, err := EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
@@ -93,7 +101,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible")
-	if err := writeInventory(ansibleDir, ips); err != nil {
+	if err := writeInventory(ansibleDir, o.Config.Domain, ep, ips); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 
@@ -102,6 +110,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return nil
 	}
 
+	if err := ensureSecrets(o.Credentials); err != nil {
+		return fmt.Errorf("generating platform secrets: %w", err)
+	}
 	tfEnv := []string{"TF_VAR_proxmox_api_token=" + o.Credentials.ProxmoxToken}
 
 	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: tfEnv}); err != nil {
@@ -112,13 +123,21 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	ansibleArgs := []string{"-i", "inventory.yml", "playbook.yml"}
-	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs}); err != nil {
+	ansibleEnv := o.Credentials.Env(ansibleSecretEnv...)
+	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs, Env: ansibleEnv}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
-
 	fmt.Fprintln(o.Out, "Base services provisioned.")
-	fmt.Fprintln(o.Out, "Next (not yet implemented by urbex bootstrap): create a Gitea admin token,")
-	fmt.Fprintln(o.Out, "set URBEX_GITEA_TOKEN, commit this GitOps repo, and push it to Gitea.")
+
+	clients := o.Clients
+	if clients.Gitea == nil || clients.Komodo == nil || clients.SyncRepo == nil {
+		clients = DefaultClients()
+	}
+	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
+		return fmt.Errorf("setting up gitea/komodo: %w", err)
+	}
+	path, _ := credentials.DefaultPath()
+	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
 	return nil
 }
 

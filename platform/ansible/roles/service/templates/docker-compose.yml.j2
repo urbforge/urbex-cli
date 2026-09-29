@@ -1,21 +1,18 @@
 # Managed by urbex apply - see docs/decisions/0002-app-manifest-in-app-repo.md
 # and docs/manifest-spec.md in urbforge/urbex.
 #
-# TODO: docker_image is a placeholder reference (see the comment in
-# internal/provision). Actually building an image from the service's
-# Dockerfile (runtime: docker) or from source (runtime: java/python/go)
-# and pushing it somewhere this LXC can pull from is not yet implemented
-# - tracked alongside `urbex deploy` and the Komodo build pipeline.
+# docker_image is pinned to an immutable commit tag of the image Komodo
+# built from the app repo - see
+# docs/decisions/0018-image-build-komodo-gitea-registry.md.
 services:
   app:
     image: "{{ docker_image }}"
     restart: unless-stopped
-{% if env_vars is defined and env_vars %}
     environment:
-{% for key, value in env_vars.items() %}
+      - PORT={{ container_port }}
+{% for key, value in (env_vars | default({})).items() %}
       - {{ key }}={{ value }}
 {% endfor %}
-{% endif %}
     ports:
       - "{{ container_port }}:{{ container_port }}"
 {% if healthcheck_path is defined and healthcheck_path %}

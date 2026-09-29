@@ -41,6 +41,18 @@ type ProxmoxConfig struct {
 	SSHPublicKey string        `yaml:"sshPublicKey"`
 	VMIDBase     int           `yaml:"vmIdBase"`
 	Network      NetworkConfig `yaml:"network"`
+	// Pool is the Proxmox resource pool every LXC is created in. Required
+	// when the API token's permissions are scoped to a pool; empty for none.
+	Pool string `yaml:"pool,omitempty"`
+	// Keyctl enables the LXC keyctl feature Docker needs on most hosts.
+	// Proxmox only lets root@pam set it, so a pool-scoped token needs
+	// keyctl: false. Nil means true.
+	Keyctl *bool `yaml:"keyctl,omitempty"`
+}
+
+// KeyctlEnabled reports whether LXCs get the keyctl feature (default true).
+func (p ProxmoxConfig) KeyctlEnabled() bool {
+	return p.Keyctl == nil || *p.Keyctl
 }
 
 // NetworkConfig describes the network base-service LXCs are attached to.
@@ -50,6 +62,8 @@ type NetworkConfig struct {
 	CIDR           string `yaml:"cidr"`
 	Gateway        string `yaml:"gateway"`
 	BaseHostOffset int    `yaml:"baseHostOffset"`
+	// Bridge is the Proxmox bridge LXCs attach to (default vmbr0).
+	Bridge string `yaml:"bridge,omitempty"`
 }
 
 type DNSConfig struct {
@@ -87,6 +101,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Proxmox.Network.BaseHostOffset == 0 {
 		cfg.Proxmox.Network.BaseHostOffset = 200
+	}
+	if cfg.Git.Org == "" {
+		cfg.Git.Org = "urbex"
+	}
+	if cfg.Proxmox.Network.Bridge == "" {
+		cfg.Proxmox.Network.Bridge = "vmbr0"
 	}
 	if cfg.Keycloak.PlatformRealm == "" {
 		cfg.Keycloak.PlatformRealm = "platform"

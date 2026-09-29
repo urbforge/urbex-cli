@@ -1,24 +1,66 @@
 # Managed by urbex bootstrap - see docs/decisions/0004-gitops-gitea-komodo.md
-# in urbforge/urbex.
+# and docs/decisions/0018-image-build-komodo-gitea-registry.md in
+# urbforge/urbex. Based on upstream's ferretdb.compose.yaml
+# (https://github.com/moghtech/komodo/tree/main/compose).
 #
-# This deploys Komodo Core only (the management UI/API). Installing
-# Komodo Periphery agents on every base/project LXC so Core can actually
-# drive redeploys is not yet implemented by urbex bootstrap - tracked as a
-# follow-up alongside urbex deploy/apply.
-#
-# TODO: verify the exact image repository/tag against https://komo.do
-# docs before applying against real infrastructure - not yet validated
-# in this scaffold.
+# Komodo Core, its database (Postgres + FerretDB), and a Periphery agent
+# registered as server/builder "{{ komodo_server_name }}", which builds
+# project images on this LXC. Core and Periphery must run the exact same
+# version.
 services:
-  komodo-core:
-    image: ghcr.io/moghtech/komodo-core:latest
+  postgres:
+    image: ghcr.io/ferretdb/postgres-documentdb:17-0.106.0-ferretdb-2.5.0
+    labels:
+      komodo.skip:
     restart: unless-stopped
-    environment:
-      - KOMODO_HOST={{ ansible_host }}
     volumes:
-      - komodo-data:/data
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${KOMODO_DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${KOMODO_DATABASE_PASSWORD}
+      POSTGRES_DB: postgres
+
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2.5.0
+    labels:
+      komodo.skip:
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    volumes:
+      - ferretdb-state:/state
+    environment:
+      FERRETDB_POSTGRESQL_URL: postgres://${KOMODO_DATABASE_USERNAME}:${KOMODO_DATABASE_PASSWORD}@postgres:5432/postgres
+
+  core:
+    image: ghcr.io/moghtech/komodo-core:{{ komodo_version }}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - ferretdb
     ports:
       - "9120:9120"
+    env_file: ./compose.env
+    environment:
+      KOMODO_DATABASE_ADDRESS: ferretdb:27017
+    volumes:
+      - keys:/config/keys
+      - /etc/komodo/backups:/backups
+
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - core
+    env_file: ./compose.env
+    volumes:
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      - /etc/komodo:/etc/komodo
 
 volumes:
-  komodo-data:
+  postgres-data:
+  ferretdb-state:
+  keys:

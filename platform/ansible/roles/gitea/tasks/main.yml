@@ -10,4 +10,39 @@
   command: docker compose up -d
   args:
     chdir: /opt/urbex
-  when: compose_file.changed
+  register: compose_up
+  # Always run: a failure after templating must not leave the service
+  # down on the next run. up is a no-op when nothing changed, and pulls
+  # images that aren't present yet (e.g. a newly deployed tag).
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+
+- name: Wait for Gitea to answer
+  uri:
+    url: "http://localhost:3000/api/v1/version"
+    status_code: 200
+  register: gitea_version
+  until: gitea_version.status == 200
+  retries: 30
+  delay: 2
+
+- name: Check whether the urbex admin user exists
+  command: docker compose exec -T -u git gitea gitea admin user list --admin
+  args:
+    chdir: /opt/urbex
+  register: gitea_admins
+  changed_when: false
+
+# The admin password comes from the environment of the machine running
+# urbex bootstrap (generated once, kept in ~/.urbex/credentials.yaml) -
+# never from a file in the GitOps repo.
+- name: Create the urbex admin user
+  command: >-
+    docker compose exec -T -u git gitea gitea admin user create --admin
+    --username {{ gitea_admin_username }}
+    --password {{ lookup('env', 'URBEX_GITEA_ADMIN_PASSWORD') | quote }}
+    --email {{ gitea_admin_username }}@{{ urbex_domain | default('urbex.local') }}
+    --must-change-password=false
+  args:
+    chdir: /opt/urbex
+  when: gitea_admin_username not in gitea_admins.stdout
+  no_log: true

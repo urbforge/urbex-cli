@@ -1,4 +1,19 @@
 ---
+# Images are built by Komodo and pushed to Gitea's registry (see
+# docs/decisions/0018-image-build-komodo-gitea-registry.md in
+# urbforge/urbex). The pull token is read-only and comes from the
+# environment of the machine running urbex, never from the GitOps repo.
+- name: Log in to the Gitea container registry
+  command: >-
+    docker login {{ gitea_registry }}
+    --username {{ registry_username }}
+    --password-stdin
+  args:
+    stdin: "{{ lookup('env', 'URBEX_REGISTRY_PULL_TOKEN') }}"
+  changed_when: false
+  no_log: true
+  when: gitea_registry | default('') | length > 0
+
 - name: Template docker-compose.yml
   template:
     src: docker-compose.yml.j2
@@ -10,4 +25,8 @@
   command: docker compose up -d
   args:
     chdir: /opt/urbex
-  when: compose_file.changed
+  register: compose_up
+  # Always run: a failure after templating must not leave the service
+  # down on the next run. up is a no-op when nothing changed, and pulls
+  # images that aren't present yet (e.g. a newly deployed tag).
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

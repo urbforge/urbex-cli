@@ -7,6 +7,7 @@ package proxmoxapi
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,12 +26,18 @@ type Client struct {
 }
 
 // New creates a Client. baseURL is typically
-// "https://<host>:8006/api2/json".
-func New(baseURL, token string) *Client {
+// "https://<host>:8006/api2/json". insecure skips TLS certificate
+// verification, for nodes using Proxmox's default self-signed certificate
+// (mirrors proxmox.insecure in urbex.platform.yaml).
+func New(baseURL, token string, insecure bool) *Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in via platform config
+	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: 15 * time.Second},
+		http:    &http.Client{Timeout: 15 * time.Second, Transport: transport},
 	}
 }
 

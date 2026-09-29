@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/imagebuild"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/runner"
@@ -56,7 +58,27 @@ func validManifest() *manifest.Manifest {
 }
 
 func validCredentials() *credentials.Credentials {
-	return &credentials.Credentials{ProxmoxToken: "pve-token", AgeKey: "age-key"}
+	return &credentials.Credentials{
+		ProxmoxToken:      "pve-token",
+		AgeKey:            "age-key",
+		GiteaToken:        "gitea-token",
+		RegistryPullToken: "pull-token",
+		KomodoAPIKey:      "K_key_K",
+		KomodoAPISecret:   "S_secret_S",
+	}
+}
+
+// fakeImages stands in for internal/imagebuild: every service gets an
+// image tagged with a fixed commit.
+type fakeImages struct{ builds int }
+
+func (f *fakeImages) Build(ctx context.Context, project string, services []manifest.Service) (*imagebuild.Release, error) {
+	f.builds++
+	images := map[string]string{}
+	for _, svc := range services {
+		images[svc.Name] = "192.168.1.200:3000/urbex/" + project + "-" + svc.Name + ":abc1234"
+	}
+	return &imagebuild.Release{Commit: "abc1234def", Images: images}, nil
 }
 
 func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
@@ -69,6 +91,7 @@ func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -85,7 +108,6 @@ func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
 	for _, want := range []string{
 		"terraform/projects/my-app/staging/main.tf",
 		"terraform/projects/my-app/staging/terraform.auto.tfvars.json",
-		"ansible/projects/my-app/staging/inventory.yml",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
 			t.Errorf("expected %s to be materialized: %v", want, err)
@@ -103,6 +125,7 @@ func TestApply_RunsTerraformThenAnsible(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -127,6 +150,7 @@ func TestPrepare_AllocatesAndPersistsIPsAndVMIDs(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -187,6 +211,7 @@ func TestPlan_InvalidEnv(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "development", GitOpsRepoPath: dir})
@@ -211,6 +236,7 @@ func TestPlan_NoServices(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -229,6 +255,7 @@ func TestDeploy_RequiresPriorApply(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -249,6 +276,7 @@ func TestDeploy_RunsAnsibleOnlyAfterApply(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      &fakeRunner{},
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -282,6 +310,7 @@ func TestDeploy_PartiallyProvisionedFailsListingAllMissing(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      &fakeRunner{},
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	// Provision only the first service via Plan+manual ledger write is
@@ -314,6 +343,7 @@ func TestDestroy_NothingAppliedIsANoOp(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -333,6 +363,7 @@ func TestDestroy_RunsTerraformDestroyAndClearsLedger(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      &fakeRunner{},
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -381,6 +412,7 @@ func TestDestroy_MissingCredentials(t *testing.T) {
 		Credentials: &credentials.Credentials{},
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -402,6 +434,7 @@ func TestPlan_MissingCredentials(t *testing.T) {
 		Credentials: &credentials.Credentials{},
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -410,5 +443,77 @@ func TestPlan_MissingCredentials(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("expected no commands run for missing credentials, got: %+v", r.calls)
+	}
+}
+
+func TestApply_DeploysBuiltImagesAndSyncsGitOps(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+	images := &fakeImages{}
+	var synced []string
+
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      r,
+		Out:         &bytes.Buffer{},
+		Images:      images,
+		SyncGitOps: func(ctx context.Context, path, message string) error {
+			synced = append(synced, message)
+			return nil
+		},
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if images.builds != 1 {
+		t.Errorf("expected one image build, got %d", images.builds)
+	}
+	inventory, err := os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "staging", "inventory.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"docker_image: 192.168.1.200:3000/urbex/my-app-api:abc1234",
+		"gitea_registry: 192.168.1.200:3000",
+		"registry_username: urbex-admin",
+	} {
+		if !strings.Contains(string(inventory), want) {
+			t.Errorf("expected %q in inventory:\n%s", want, inventory)
+		}
+	}
+	if strings.Contains(string(inventory), "pull-token") {
+		t.Error("the registry pull token must not be written to the inventory")
+	}
+	ansible := r.calls[len(r.calls)-1]
+	if len(ansible.Env) != 1 || ansible.Env[0] != "URBEX_REGISTRY_PULL_TOKEN=pull-token" {
+		t.Errorf("expected only the pull token in ansible env, got %v", ansible.Env)
+	}
+	if len(synced) != 1 || synced[0] != "urbex apply my-app staging @ abc1234" {
+		t.Errorf("unexpected gitops syncs %v", synced)
+	}
+}
+
+func TestDeploy_RequiresBootstrappedPlatformCredentials(t *testing.T) {
+	dir := t.TempDir()
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+		Images:      &fakeImages{},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	o.Credentials.KomodoAPIKey = ""
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "URBEX_KOMODO_API_KEY") {
+		t.Errorf("expected a missing platform credential error, got %v", err)
 	}
 }

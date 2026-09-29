@@ -48,3 +48,18 @@ variable "services" {
     disk_gb    = number
   }))
 }
+
+variable "pool_id" {
+  type    = string
+  default = ""
+}
+
+variable "keyctl" {
+  type    = bool
+  default = true
+}
+
+variable "network_bridge" {
+  type    = string
+  default = "vmbr0"
+}

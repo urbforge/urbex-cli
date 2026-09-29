@@ -30,13 +30,18 @@ type inventoryRoot struct {
 // writeInventory renders an Ansible inventory for every service in the
 // manifest, one host per <project>-<service>-<env> hostname, with the
 // per-service docker-compose template variables consumed by
-// platform/ansible/roles/service.
-func writeInventory(ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry) error {
+// platform/ansible/roles/service. images maps service name to the image
+// reference to run; it is committed to the GitOps repo, so the inventory
+// is also the record of what each environment runs. The registry pull
+// token is not an inventory var: the role reads it from the environment.
+func writeInventory(ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, images map[string]string, registry, registryUser string) error {
 	root := inventoryRoot{
 		All: inventoryAll{
 			Vars: map[string]string{
 				"ansible_user":            "root",
 				"ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new",
+				"gitea_registry":          registry,
+				"registry_username":       registryUser,
 			},
 			Hosts: map[string]hostVars{},
 		},
@@ -48,7 +53,7 @@ func writeInventory(ansibleDir, project, env string, services []manifest.Service
 
 		root.All.Hosts[hostname] = hostVars{
 			AnsibleHost:     entry.IP,
-			DockerImage:     placeholderImage(project, svc.Name, env),
+			DockerImage:     images[svc.Name],
 			ContainerPort:   svc.Port,
 			HealthcheckPath: svc.Healthcheck,
 			EnvVars:         svc.EnvFor(env),
@@ -64,11 +69,4 @@ func writeInventory(ansibleDir, project, env string, services []manifest.Service
 		return err
 	}
 	return os.WriteFile(filepath.Join(ansibleDir, "inventory.yml"), data, 0o644)
-}
-
-// placeholderImage is a stand-in image reference. Actually building and
-// pushing a real image is not yet implemented - see the TODO in
-// platform/ansible/roles/service/templates/docker-compose.yml.j2.
-func placeholderImage(project, service, env string) string {
-	return project + "/" + service + ":" + env + "-latest"
 }

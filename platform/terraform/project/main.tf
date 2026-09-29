@@ -21,4 +21,7 @@ module "service" {
   ip_address       = each.value.ip_address
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }

@@ -58,7 +58,7 @@ tracked yet - see docs/architecture.md in urbforge/urbex.`,
 			if creds.ProxmoxToken == "" {
 				return fmt.Errorf("URBEX_PROXMOX_TOKEN (or proxmoxToken in ~/.urbex/credentials.yaml) is required")
 			}
-			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken)
+			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 			if len(args) == 0 {
 				return runBaseStatus(cmd, out, client, cfg)

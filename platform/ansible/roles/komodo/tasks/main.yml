@@ -1,13 +1,46 @@
 ---
-- name: Template Komodo Core docker-compose.yml
+- name: Create Komodo's periphery root and backup directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - /etc/komodo
+    - /etc/komodo/backups
+
+# Holds the Komodo admin/DB/JWT/webhook secrets, taken from the
+# environment of the machine running urbex bootstrap - never from a file
+# in the GitOps repo.
+- name: Template Komodo compose.env
+  template:
+    src: compose.env.j2
+    dest: /opt/urbex/compose.env
+    mode: "0600"
+  register: compose_env
+  no_log: true
+
+- name: Template Komodo docker-compose.yml
   template:
     src: docker-compose.yml.j2
     dest: /opt/urbex/docker-compose.yml
     mode: "0640"
   register: compose_file
 
-- name: Start Komodo Core via docker compose
-  command: docker compose up -d
+- name: Start Komodo via docker compose
+  command: docker compose --env-file compose.env up -d
   args:
     chdir: /opt/urbex
-  when: compose_file.changed
+  register: compose_up
+  # Always run: a failure after templating must not leave the service
+  # down on the next run. up is a no-op when nothing changed, and pulls
+  # images that aren't present yet (e.g. a newly deployed tag).
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+
+- name: Wait for Komodo Core to answer
+  uri:
+    url: "http://localhost:9120/"
+    status_code: 200
+  register: komodo_core
+  until: komodo_core.status == 200
+  retries: 30
+  delay: 2

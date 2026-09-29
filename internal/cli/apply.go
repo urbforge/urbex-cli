@@ -9,6 +9,7 @@ import (
 func newApplyCmd() *cobra.Command {
 	var manifestPath string
 	var gitopsRepoPath string
+	var repoDir string
 
 	cmd := &cobra.Command{
 		Use:   "apply <env>",
@@ -29,7 +30,7 @@ by 'urbex bootstrap').`,
 				return err
 			}
 
-			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, true)
+			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, repoDir, true)
 			if err != nil {
 				return err
 			}

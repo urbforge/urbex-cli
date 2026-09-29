@@ -17,6 +17,9 @@ module "gitea" {
   ip_address       = var.base_service_ips["urbex-gitea"]
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }
 
 module "komodo" {
@@ -34,6 +37,9 @@ module "komodo" {
   ip_address       = var.base_service_ips["urbex-komodo"]
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }
 
 module "technitium" {
@@ -51,6 +57,9 @@ module "technitium" {
   ip_address       = var.base_service_ips["urbex-technitium"]
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }
 
 module "keycloak" {
@@ -68,6 +77,9 @@ module "keycloak" {
   ip_address       = var.base_service_ips["urbex-keycloak"]
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }
 
 module "observability" {
@@ -85,4 +97,7 @@ module "observability" {
   ip_address       = var.base_service_ips["urbex-observability"]
   ip_prefix_length = var.ip_prefix_length
   gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
 }

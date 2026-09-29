@@ -22,6 +22,9 @@ type tfVars struct {
 	Gateway         string            `json:"gateway"`
 	IPPrefixLength  int               `json:"ip_prefix_length"`
 	BaseServiceIPs  map[string]string `json:"base_service_ips"`
+	PoolID          string            `json:"pool_id"`
+	Keyctl          bool              `json:"keyctl"`
+	NetworkBridge   string            `json:"network_bridge"`
 }
 
 // writeTFVars renders terraform.auto.tfvars.json into the base Terraform
@@ -37,6 +40,9 @@ func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]s
 		VMIDBase:        cfg.Proxmox.VMIDBase,
 		Gateway:         cfg.Proxmox.Network.Gateway,
 		IPPrefixLength:  prefixLen,
+		PoolID:          cfg.Proxmox.Pool,
+		Keyctl:          cfg.Proxmox.KeyctlEnabled(),
+		NetworkBridge:   cfg.Proxmox.Network.Bridge,
 		BaseServiceIPs:  serviceIPs,
 	}
 

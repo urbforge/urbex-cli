@@ -2,9 +2,11 @@
 // validated urbex.yaml and an environment, it allocates a VMID/IP for
 // each declared service's LXC (one per service per environment, see
 // docs/decisions/0009-one-lxc-per-service-per-env.md in urbforge/urbex),
-// materializes the generic per-service Terraform module and Ansible
-// inventory into the GitOps repo, then runs terraform plan/apply and (for
-// apply) ansible-playbook.
+// materializes the generic per-service Terraform module into the GitOps
+// repo, then runs terraform plan/apply. Apply (and deploy) then build the
+// service images from the app repo's current commit (internal/imagebuild),
+// deploy them with ansible-playbook, and push the GitOps repo - whose
+// rendered inventory pins every image - to Gitea.
 //
 // DNS registration, Keycloak realm/client provisioning, and ingress
 // (Cloudflare Tunnel) setup are later phases, not yet implemented here -
@@ -18,7 +20,9 @@ import (
 	"path/filepath"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/imagebuild"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
@@ -30,6 +34,12 @@ import (
 // docs/decisions/0009-one-lxc-per-service-per-env.md in urbforge/urbex.
 var ValidEnvs = map[string]bool{"staging": true, "prod": true}
 
+// ImageBuilder builds (or reuses) the image of every service from the
+// app repo's current commit - see internal/imagebuild.
+type ImageBuilder interface {
+	Build(ctx context.Context, project string, services []manifest.Service) (*imagebuild.Release, error)
+}
+
 // Orchestrator runs the plan/apply provisioning flow for one project+env.
 type Orchestrator struct {
 	Manifest    *manifest.Manifest
@@ -37,6 +47,11 @@ type Orchestrator struct {
 	Credentials *credentials.Credentials
 	Runner      runner.CommandRunner
 	Out         io.Writer
+	// Images builds service images; required by Apply and Deploy.
+	Images ImageBuilder
+	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
+	// change; nil skips syncing.
+	SyncGitOps func(ctx context.Context, gitopsRepoPath, message string) error
 }
 
 // Options controls a single Plan or Apply run.
@@ -65,8 +80,8 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// Apply materializes assets, runs `terraform apply`, then configures the
-// resulting LXCs via ansible-playbook.
+// Apply materializes assets, runs `terraform apply`, then builds the
+// service images and deploys them to the resulting LXCs (see release).
 func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	tfDir, err := o.prepare(opts)
 	if err != nil {
@@ -81,25 +96,29 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return fmt.Errorf("terraform apply: %w", err)
 	}
 
-	if err := o.runAnsible(ctx, opts); err != nil {
+	ledger, err := o.loadLedger(opts)
+	if err != nil {
 		return err
 	}
-
-	fmt.Fprintf(o.Out, "Service LXCs for %s (%s) provisioned.\n", o.Manifest.Project, opts.Env)
-	fmt.Fprintln(o.Out, "Next (not yet implemented by urbex apply): register DNS records in Technitium,")
-	fmt.Fprintln(o.Out, "provision the Keycloak realm/clients, and configure Cloudflare Tunnel ingress.")
+	allocations, _ := o.lookupAllocations(ledger, opts.Env)
+	if err := o.release(ctx, opts, allocations, "apply"); err != nil {
+		return err
+	}
+	fmt.Fprintln(o.Out, "Not yet implemented by urbex apply: DNS records in Technitium, the Keycloak")
+	fmt.Fprintln(o.Out, "realm/clients, and Cloudflare Tunnel ingress - services are reachable on their LAN IPs.")
 	return nil
 }
 
-// Deploy re-runs Ansible against service LXCs that urbex apply already
-// provisioned, to pick up urbex.yaml changes (env vars, port, image) -
-// without touching Terraform/infrastructure. Every declared service must
-// already have a VMID/IP allocation (see urbex apply); Deploy itself
-// never allocates one.
+// Deploy builds the service images for the app repo's current commit and
+// redeploys them to LXCs urbex apply already provisioned, also picking up
+// urbex.yaml changes (env vars, port) - without touching
+// Terraform/infrastructure. Every declared service must already have a
+// VMID/IP allocation (see urbex apply); Deploy itself never allocates one.
 //
-// This runs ansible-playbook directly. It is not yet integrated with
-// Komodo's GitOps-driven reconciliation - see
-// docs/decisions/0004-gitops-gitea-komodo.md in urbforge/urbex.
+// Images are built by Komodo; the rollout itself still runs
+// ansible-playbook directly rather than through Komodo's GitOps
+// reconciliation - see docs/decisions/0018-image-build-komodo-gitea-registry.md
+// in urbforge/urbex.
 func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if !ValidEnvs[opts.Env] {
 		return fmt.Errorf("invalid environment %q: must be one of staging, prod", opts.Env)
@@ -108,23 +127,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("urbex.yaml declares no services - nothing to deploy")
 	}
 
-	ledgerPath := filepath.Join(opts.GitOpsRepoPath, "state", "allocations.json")
-	ledger, err := allocation.Load(ledgerPath, o.Config.Proxmox.VMIDBase+100, o.Config.Proxmox.Network.BaseHostOffset+10)
+	ledger, err := o.loadLedger(opts)
 	if err != nil {
-		return fmt.Errorf("loading allocation ledger: %w", err)
+		return err
 	}
-
-	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
-	var unprovisioned []string
-	for _, svc := range o.Manifest.Services {
-		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
-		entry, ok := ledger.Lookup(hostname)
-		if !ok {
-			unprovisioned = append(unprovisioned, hostname)
-			continue
-		}
-		allocations[hostname] = entry
-	}
+	allocations, unprovisioned := o.lookupAllocations(ledger, opts.Env)
 	if len(unprovisioned) > 0 {
 		return fmt.Errorf("service(s) not yet provisioned: %v - run 'urbex apply %s' first", unprovisioned, opts.Env)
 	}
@@ -132,20 +139,80 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing assets: %w", err)
 	}
+	return o.release(ctx, opts, allocations, "deploy")
+}
 
+// release builds the service images for the app repo's current commit,
+// deploys them to the environment's LXCs with Ansible, and records what
+// was deployed in the GitOps repo (the rendered inventory pins each
+// image) before pushing it to Gitea.
+func (o *Orchestrator) release(ctx context.Context, opts Options, allocations map[string]allocation.Entry, verb string) error {
+	if o.Images == nil {
+		return fmt.Errorf("no image builder configured - run 'urbex bootstrap' first")
+	}
+	if missing := o.Credentials.MissingForPlatform(); len(missing) > 0 {
+		return fmt.Errorf("missing platform credentials %v - run 'urbex bootstrap' on this machine first", missing)
+	}
+	rel, err := o.Images.Build(ctx, o.Manifest.Project, o.Manifest.Services)
+	if err != nil {
+		return err
+	}
+	ep, err := bootstrap.EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations); err != nil {
+	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, rel.Images, ep.Registry, bootstrap.GiteaAdminUser); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
-
 	if err := o.runAnsible(ctx, opts); err != nil {
 		return err
 	}
-
-	fmt.Fprintf(o.Out, "Redeployed %s (%s).\n", o.Manifest.Project, opts.Env)
-	fmt.Fprintln(o.Out, "Note: this ran ansible-playbook directly against the existing LXCs - it is")
-	fmt.Fprintln(o.Out, "not yet integrated with Komodo's GitOps reconciliation (docs/decisions/0004-gitops-gitea-komodo.md).")
+	if o.SyncGitOps != nil {
+		msg := fmt.Sprintf("urbex %s %s %s @ %s", verb, o.Manifest.Project, opts.Env, shortSHA(rel.Commit))
+		if err := o.SyncGitOps(ctx, opts.GitOpsRepoPath, msg); err != nil {
+			return fmt.Errorf("deployed, but syncing the gitops repo failed: %w", err)
+		}
+	}
+	fmt.Fprintf(o.Out, "Deployed %s (%s) at %s:\n", o.Manifest.Project, opts.Env, shortSHA(rel.Commit))
+	for _, svc := range o.Manifest.Services {
+		entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
+		fmt.Fprintf(o.Out, "  %-16s http://%s:%d  (%s)\n", svc.Name, entry.IP, svc.Port, rel.Images[svc.Name])
+	}
 	return nil
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
+	ledgerPath := filepath.Join(opts.GitOpsRepoPath, "state", "allocations.json")
+	ledger, err := allocation.Load(ledgerPath, o.Config.Proxmox.VMIDBase+100, o.Config.Proxmox.Network.BaseHostOffset+10)
+	if err != nil {
+		return nil, fmt.Errorf("loading allocation ledger: %w", err)
+	}
+	return ledger, nil
+}
+
+// lookupAllocations returns the ledger entries of every declared service
+// in env, plus the hostnames of those that have none.
+func (o *Orchestrator) lookupAllocations(ledger *allocation.Ledger, env string) (map[string]allocation.Entry, []string) {
+	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
+	var missing []string
+	for _, svc := range o.Manifest.Services {
+		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		entry, ok := ledger.Lookup(hostname)
+		if !ok {
+			missing = append(missing, hostname)
+			continue
+		}
+		allocations[hostname] = entry
+	}
+	return allocations, missing
 }
 
 // Destroy runs `terraform destroy` for every declared service that has
@@ -221,6 +288,12 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := ledger.Save(ledgerPath); err != nil {
 		return fmt.Errorf("saving allocation ledger: %w", err)
 	}
+	if o.SyncGitOps != nil {
+		msg := fmt.Sprintf("urbex destroy %s %s", o.Manifest.Project, opts.Env)
+		if err := o.SyncGitOps(ctx, opts.GitOpsRepoPath, msg); err != nil {
+			return fmt.Errorf("destroyed, but syncing the gitops repo failed: %w", err)
+		}
+	}
 
 	fmt.Fprintf(o.Out, "Destroyed %s (%s): %v.\n", o.Manifest.Project, opts.Env, hostnames)
 	return nil
@@ -232,6 +305,7 @@ func (o *Orchestrator) runAnsible(ctx context.Context, opts Options) error {
 		Dir:  ansibleDir,
 		Name: "ansible-playbook",
 		Args: []string{"-i", "inventory.yml", filepath.Join(opts.GitOpsRepoPath, "ansible", "project-playbook.yml")},
+		Env:  o.Credentials.Env("URBEX_REGISTRY_PULL_TOKEN"),
 	}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
@@ -289,11 +363,6 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "projects", o.Manifest.Project, opts.Env)
 	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen); err != nil {
 		return "", fmt.Errorf("writing terraform vars: %w", err)
-	}
-
-	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations); err != nil {
-		return "", fmt.Errorf("writing ansible inventory: %w", err)
 	}
 
 	return tfDir, nil

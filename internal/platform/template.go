@@ -21,10 +21,13 @@ proxmox:
   lxcTemplate: local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
   sshPublicKey: "ssh-ed25519 AAAA... you@example.com"
   vmIdBase: 9000
+  # pool: urbex   # required if your API token is scoped to a resource pool
+  # keyctl: false # set if the token isn't root@pam (see docs/credentials.md)
   network:
     cidr: 192.168.1.0/24
     gateway: 192.168.1.1
     baseHostOffset: 200 # base services get .200-.204
+    bridge: vmbr0
 
 dns:
   technitiumUrl: http://urbex-technitium.example.internal:5380

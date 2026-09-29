@@ -28,7 +28,7 @@ created by 'urbex bootstrap' are out of scope.`,
 				return err
 			}
 
-			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, true)
+			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, "", true)
 			if err != nil {
 				return err
 			}

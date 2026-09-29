@@ -61,3 +61,15 @@ variable "ip_prefix_length" {
 variable "gateway" {
   type = string
 }
+
+variable "pool_id" {
+  type        = string
+  default     = ""
+  description = "Proxmox resource pool to create the container in; empty for none."
+}
+
+variable "keyctl" {
+  type        = bool
+  default     = true
+  description = "Enable the keyctl feature (needed by Docker on most hosts; root@pam only)."
+}

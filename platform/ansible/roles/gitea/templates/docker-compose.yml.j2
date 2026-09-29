@@ -1,17 +1,22 @@
 # Managed by urbex bootstrap - see docs/decisions/0004-gitops-gitea-komodo.md
-# in urbforge/urbex. Edit this file directly in the GitOps repo for
-# steady-state changes; re-running bootstrap does not overwrite it.
+# and docs/decisions/0018-image-build-komodo-gitea-registry.md in
+# urbforge/urbex.
 services:
   gitea:
-    image: gitea/gitea:1.22
+    image: gitea/gitea:1.24
     restart: unless-stopped
     environment:
       - USER_UID=1000
       - USER_GID=1000
-      - GITEA__server__DOMAIN={{ inventory_hostname }}
+      - GITEA__server__DOMAIN={{ ansible_host }}
       # TODO: point ROOT_URL at the real public URL once ingress
       # (docs/decisions/0005-cloudflare-tunnel-ingress.md) is wired up.
+      # The container registry's token endpoint is derived from it, so it
+      # must stay reachable from every LXC that pulls images.
       - GITEA__server__ROOT_URL=http://{{ ansible_host }}:3000/
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__packages__ENABLED=true
     volumes:
       - gitea-data:/data
     ports:

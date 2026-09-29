@@ -7,8 +7,14 @@ resource "proxmox_virtual_environment_container" "this" {
   node_name = var.node_name
   vm_id     = var.vm_id
 
-  unprivileged = true
-  started      = true
+  unprivileged  = true
+  started       = true
+  start_on_boot = true
+
+  # Empty means "no pool". On a Proxmox where the API token is scoped to a
+  # pool (e.g. PVEVMAdmin on /pool/urbex), containers must be created in
+  # that pool or the token can't see or manage them afterwards.
+  pool_id = var.pool_id != "" ? var.pool_id : null
 
   initialization {
     hostname = var.hostname
@@ -48,8 +54,13 @@ resource "proxmox_virtual_environment_container" "this" {
     type             = "debian"
   }
 
-  # Required for Docker (and docker compose) to run inside the LXC.
+  # nesting is required for Docker (and docker compose) to run inside the
+  # LXC; keyctl too on most hosts, or overlayfs mounts fail with
+  # "permission denied". Proxmox only lets root@pam change feature flags
+  # other than nesting, so a non-root API token must set keyctl = false
+  # (platform config proxmox.keyctl) and have it enabled another way.
   features {
     nesting = true
+    keyctl  = var.keyctl
   }
 }

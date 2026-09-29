@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/imagebuild"
+	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
@@ -33,7 +38,11 @@ func resolveGitOpsRepoPath(flagValue string) (string, error) {
 // deploy only runs Ansible over SSH and needs none). It writes validation
 // errors to out itself (mirroring `urbex init`'s behavior) before
 // returning a plain error.
-func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath string, requireCreds bool) (*provision.Orchestrator, error) {
+//
+// repoDir is the app repo's working copy, from which apply/deploy build
+// images; empty means the orchestrator gets no image builder (plan,
+// destroy).
+func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, repoDir string, requireCreds bool) (*provision.Orchestrator, error) {
 	out := cmd.OutOrStdout()
 
 	m, result, err := manifest.LoadTyped(manifestPath)
@@ -78,11 +87,31 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath s
 		}
 	}
 
-	return &provision.Orchestrator{
+	ep, err := bootstrap.EndpointsFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	o := &provision.Orchestrator{
 		Manifest:    m,
 		Config:      cfg,
 		Credentials: creds,
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
 		Out:         out,
-	}, nil
+		SyncGitOps: func(ctx context.Context, path, message string) error {
+			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
+		},
+	}
+	if repoDir != "" {
+		o.Images = &imagebuild.Builder{
+			Gitea:     gitea.New(ep.GiteaURL, creds.GiteaToken),
+			Komodo:    komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
+			Git:       imagebuild.GitCLI{},
+			Endpoints: ep,
+			Org:       cfg.Git.Org,
+			Token:     creds.GiteaToken,
+			RepoDir:   repoDir,
+			Out:       out,
+		}
+	}
+	return o, nil
 }

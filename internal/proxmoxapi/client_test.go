@@ -23,7 +23,7 @@ func TestListContainerHostnames(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, "user@pve!urbex=secret")
+	client := New(server.URL, "user@pve!urbex=secret", false)
 
 	hostnames, err := client.ListContainerHostnames(context.Background(), "pve")
 	if err != nil {
@@ -44,7 +44,7 @@ func TestListContainerHostnames_ErrorStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, "bad-token")
+	client := New(server.URL, "bad-token", false)
 
 	_, err := client.ListContainerHostnames(context.Background(), "pve")
 	if err == nil {
@@ -59,7 +59,7 @@ func TestListContainerHostnames_EmptyResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, "user@pve!urbex=secret")
+	client := New(server.URL, "user@pve!urbex=secret", false)
 
 	hostnames, err := client.ListContainerHostnames(context.Background(), "pve")
 	if err != nil {
