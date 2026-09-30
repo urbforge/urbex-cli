@@ -1,0 +1,36 @@
+---
+# Connects this LXC to Komodo Core as a Server named after its hostname,
+# so Komodo can roll out the project's containers on it - see
+# docs/decisions/0019-branch-environments-komodo-rollouts.md in
+# urbforge/urbex.
+- name: Create Periphery's root directory
+  file:
+    path: /etc/komodo
+    state: directory
+    mode: "0750"
+
+# The onboarding key comes from the environment of the machine running
+# urbex (kept in ~/.urbex/credentials.yaml), never from the GitOps repo.
+# It is only used the first time this server connects; afterwards
+# Periphery authenticates with its own key pair, kept in the keys volume.
+- name: Template Periphery's environment
+  template:
+    src: periphery.env.j2
+    dest: /opt/urbex/periphery.env
+    mode: "0600"
+  no_log: true
+
+- name: Template Periphery docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+
+- name: Start Periphery via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  register: compose_up
+  # Always run: a failure after templating must not leave the agent
+  # down on the next run. up is a no-op when nothing changed.
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

@@ -17,6 +17,9 @@ services:
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__service__DISABLE_REGISTRATION=true
       - GITEA__packages__ENABLED=true
+      # Komodo's webhook listener is on the LAN; Gitea only delivers to
+      # public addresses by default.
+      - GITEA__webhook__ALLOWED_HOST_LIST=private
     volumes:
       - gitea-data:/data
     ports:

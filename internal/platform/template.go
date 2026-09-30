@@ -18,7 +18,8 @@ proxmox:
   insecure: false
   node: pve
   storagePool: local-lvm
-  lxcTemplate: local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
+  # Debian 13; list what your node has with: pveam list local
+  lxcTemplate: local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst
   sshPublicKey: "ssh-ed25519 AAAA... you@example.com"
   vmIdBase: 9000
   # pool: urbex   # required if your API token is scoped to a resource pool

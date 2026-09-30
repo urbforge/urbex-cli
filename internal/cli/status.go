@@ -9,11 +9,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/status"
 )
 
@@ -29,10 +31,11 @@ Technitium, Keycloak, observability) currently exist on Proxmox.
 
 With an environment argument (staging or prod), shows, for each service
 declared in urbex.yaml, whether urbex plan/apply has allocated it a
-VMID/IP and whether its LXC currently exists on Proxmox.
+VMID/IP, whether its LXC currently exists on Proxmox, and what Komodo
+reports it is running (container state and image).
 
-DNS records, TLS certificates, and the latest deployed release are not
-tracked yet - see docs/architecture.md in urbforge/urbex.`,
+DNS records and TLS certificates are not tracked yet - see
+docs/architecture.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -63,7 +66,7 @@ tracked yet - see docs/architecture.md in urbforge/urbex.`,
 			if len(args) == 0 {
 				return runBaseStatus(cmd, out, client, cfg)
 			}
-			return runProjectStatus(cmd, out, client, cfg, repoPath, manifestPath, args[0])
+			return runProjectStatus(cmd, out, client, cfg, creds, repoPath, manifestPath, args[0])
 		},
 	}
 
@@ -86,7 +89,7 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 	return nil
 }
 
-func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, repoPath, manifestPath, env string) error {
+func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) error {
 	if !provision.ValidEnvs[env] {
 		return fmt.Errorf("invalid environment %q: must be one of staging, prod", env)
 	}
@@ -114,12 +117,36 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		return fmt.Errorf("checking Proxmox: %w", err)
 	}
 
-	fmt.Fprintf(out, "%s (%s):\n", m.Project, env)
-	for _, s := range statuses {
-		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%s\n",
-			s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
+	// What Komodo is running, when this machine has been bootstrapped.
+	deployed := map[string]rollout.Deployed{}
+	if len(creds.MissingForPlatform()) == 0 {
+		ep, err := bootstrap.EndpointsFor(cfg)
+		if err != nil {
+			return err
+		}
+		target := rollout.Target{Project: m.Project, Env: env, Services: m.Services}
+		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target)
+		if err != nil {
+			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
+		}
+		for _, d := range list {
+			deployed[d.Service] = d
+		}
 	}
-	fmt.Fprintln(out, "\nDNS, TLS certificates, and the latest deployed release are not tracked yet.")
+
+	fmt.Fprintf(out, "%s (%s, branch %s):\n", m.Project, env, rollout.Branch(env))
+	for _, s := range statuses {
+		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%-3s",
+			s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
+		if d, ok := deployed[s.Service]; ok {
+			fmt.Fprintf(out, " deployment=%s", d.State)
+			if d.Image != "" {
+				fmt.Fprintf(out, " image=%s", d.Image)
+			}
+		}
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "\nDNS and TLS certificates are not tracked yet.")
 	return nil
 }
 

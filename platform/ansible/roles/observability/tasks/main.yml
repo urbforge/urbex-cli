@@ -1,15 +1,22 @@
 ---
+# World-readable: Prometheus runs as an unprivileged user inside its
+# container and the file is bind-mounted. It holds no secrets.
 - name: Template Prometheus configuration
   template:
     src: prometheus.yml.j2
     dest: /opt/urbex/prometheus.yml
-    mode: "0640"
+    mode: "0644"
+  register: prometheus_config
 
+# The Grafana admin password comes from the environment of the machine
+# running urbex bootstrap (generated once, kept in
+# ~/.urbex/credentials.yaml) - never from a file in the GitOps repo.
 - name: Template observability docker-compose.yml
   template:
     src: docker-compose.yml.j2
     dest: /opt/urbex/docker-compose.yml
     mode: "0640"
+  no_log: true
   register: compose_file
 
 - name: Start the observability stack via docker compose
@@ -21,3 +28,10 @@
   # down on the next run. up is a no-op when nothing changed, and pulls
   # images that aren't present yet (e.g. a newly deployed tag).
   changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+
+# compose up doesn't notice a changed bind-mounted file.
+- name: Restart Prometheus to pick up its new configuration
+  command: docker compose restart prometheus
+  args:
+    chdir: /opt/urbex
+  when: prometheus_config is changed

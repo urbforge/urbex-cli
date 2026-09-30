@@ -3,10 +3,10 @@
 // each declared service's LXC (one per service per environment, see
 // docs/decisions/0009-one-lxc-per-service-per-env.md in urbforge/urbex),
 // materializes the generic per-service Terraform module into the GitOps
-// repo, then runs terraform plan/apply. Apply (and deploy) then build the
-// service images from the app repo's current commit (internal/imagebuild),
-// deploy them with ansible-playbook, and push the GitOps repo - whose
-// rendered inventory pins every image - to Gitea.
+// repo, then runs terraform plan/apply. Apply then installs Docker and
+// Komodo Periphery on the LXCs with ansible-playbook and hands the
+// environment over to Komodo (internal/rollout), which builds and deploys
+// it now and on every later push to the environment's branch.
 //
 // DNS registration, Keycloak realm/client provisioning, and ingress
 // (Cloudflare Tunnel) setup are later phases, not yet implemented here -
@@ -15,18 +15,20 @@ package provision
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
-	"github.com/urbforge/urbex-cli/internal/imagebuild"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
@@ -34,10 +36,13 @@ import (
 // docs/decisions/0009-one-lxc-per-service-per-env.md in urbforge/urbex.
 var ValidEnvs = map[string]bool{"staging": true, "prod": true}
 
-// ImageBuilder builds (or reuses) the image of every service from the
-// app repo's current commit - see internal/imagebuild.
-type ImageBuilder interface {
-	Build(ctx context.Context, project string, services []manifest.Service) (*imagebuild.Release, error)
+// Rollouter sets up and runs an environment's build-and-deploy pipeline
+// on Komodo - see internal/rollout.
+type Rollouter interface {
+	Setup(ctx context.Context, t rollout.Target) (*rollout.Resources, error)
+	Run(ctx context.Context, t rollout.Target) ([]rollout.Deployed, error)
+	Remove(ctx context.Context, t rollout.Target) error
+	RemoveServers(ctx context.Context, t rollout.Target) error
 }
 
 // Orchestrator runs the plan/apply provisioning flow for one project+env.
@@ -47,8 +52,8 @@ type Orchestrator struct {
 	Credentials *credentials.Credentials
 	Runner      runner.CommandRunner
 	Out         io.Writer
-	// Images builds service images; required by Apply and Deploy.
-	Images ImageBuilder
+	// Rollout drives Komodo; required by Apply, Deploy, and Destroy.
+	Rollout Rollouter
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
 	// change; nil skips syncing.
 	SyncGitOps func(ctx context.Context, gitopsRepoPath, message string) error
@@ -80,11 +85,15 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// Apply materializes assets, runs `terraform apply`, then builds the
-// service images and deploys them to the resulting LXCs (see release).
+// Apply materializes assets, runs `terraform apply`, installs Docker and
+// Komodo Periphery on the resulting LXCs, then sets up and runs the
+// environment's rollout on Komodo (see release).
 func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	tfDir, err := o.prepare(opts)
 	if err != nil {
+		return err
+	}
+	if err := o.checkPlatform(); err != nil {
 		return err
 	}
 
@@ -101,6 +110,18 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	allocations, _ := o.lookupAllocations(ledger, opts.Env)
+	ep, err := bootstrap.EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
+	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
+	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep); err != nil {
+		return fmt.Errorf("writing ansible inventory: %w", err)
+	}
+	if err := o.runAnsible(ctx, opts); err != nil {
+		return err
+	}
+
 	if err := o.release(ctx, opts, allocations, "apply"); err != nil {
 		return err
 	}
@@ -109,22 +130,20 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// Deploy builds the service images for the app repo's current commit and
-// redeploys them to LXCs urbex apply already provisioned, also picking up
-// urbex.yaml changes (env vars, port) - without touching
-// Terraform/infrastructure. Every declared service must already have a
-// VMID/IP allocation (see urbex apply); Deploy itself never allocates one.
-//
-// Images are built by Komodo; the rollout itself still runs
-// ansible-playbook directly rather than through Komodo's GitOps
-// reconciliation - see docs/decisions/0018-image-build-komodo-gitea-registry.md
-// in urbforge/urbex.
+// Deploy re-syncs the environment's Komodo resources from urbex.yaml
+// (env vars, port, healthcheck, Dockerfile) and has Komodo build and
+// deploy the head of the environment's branch - what a push to that
+// branch does on its own. It touches neither Terraform nor the LXCs:
+// every declared service must already have been applied.
 func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if !ValidEnvs[opts.Env] {
 		return fmt.Errorf("invalid environment %q: must be one of staging, prod", opts.Env)
 	}
 	if len(o.Manifest.Services) == 0 {
 		return fmt.Errorf("urbex.yaml declares no services - nothing to deploy")
+	}
+	if err := o.checkPlatform(); err != nil {
+		return err
 	}
 
 	ledger, err := o.loadLedger(opts)
@@ -135,58 +154,69 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if len(unprovisioned) > 0 {
 		return fmt.Errorf("service(s) not yet provisioned: %v - run 'urbex apply %s' first", unprovisioned, opts.Env)
 	}
-
-	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
-		return fmt.Errorf("materializing assets: %w", err)
-	}
 	return o.release(ctx, opts, allocations, "deploy")
 }
 
-// release builds the service images for the app repo's current commit,
-// deploys them to the environment's LXCs with Ansible, and records what
-// was deployed in the GitOps repo (the rendered inventory pins each
-// image) before pushing it to Gitea.
-func (o *Orchestrator) release(ctx context.Context, opts Options, allocations map[string]allocation.Entry, verb string) error {
-	if o.Images == nil {
-		return fmt.Errorf("no image builder configured - run 'urbex bootstrap' first")
+func (o *Orchestrator) checkPlatform() error {
+	if o.Rollout == nil {
+		return fmt.Errorf("no rollout configured - run 'urbex bootstrap' first")
 	}
 	if missing := o.Credentials.MissingForPlatform(); len(missing) > 0 {
 		return fmt.Errorf("missing platform credentials %v - run 'urbex bootstrap' on this machine first", missing)
 	}
-	rel, err := o.Images.Build(ctx, o.Manifest.Project, o.Manifest.Services)
-	if err != nil {
-		return err
-	}
-	ep, err := bootstrap.EndpointsFor(o.Config)
-	if err != nil {
-		return err
-	}
-	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, rel.Images, ep.Registry, bootstrap.GiteaAdminUser); err != nil {
-		return fmt.Errorf("writing ansible inventory: %w", err)
-	}
-	if err := o.runAnsible(ctx, opts); err != nil {
-		return err
-	}
-	if o.SyncGitOps != nil {
-		msg := fmt.Sprintf("urbex %s %s %s @ %s", verb, o.Manifest.Project, opts.Env, shortSHA(rel.Commit))
-		if err := o.SyncGitOps(ctx, opts.GitOpsRepoPath, msg); err != nil {
-			return fmt.Errorf("deployed, but syncing the gitops repo failed: %w", err)
-		}
-	}
-	fmt.Fprintf(o.Out, "Deployed %s (%s) at %s:\n", o.Manifest.Project, opts.Env, shortSHA(rel.Commit))
-	for _, svc := range o.Manifest.Services {
-		entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
-		fmt.Fprintf(o.Out, "  %-16s http://%s:%d  (%s)\n", svc.Name, entry.IP, svc.Port, rel.Images[svc.Name])
-	}
 	return nil
 }
 
-func shortSHA(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
+func (o *Orchestrator) target(env string) rollout.Target {
+	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: o.Manifest.Services}
+}
+
+// release declares the environment's Builds, Deployments, Procedure and
+// webhook (so every later push to its branch deploys on its own), runs
+// the Procedure once now, and records the declared resources in the
+// GitOps repo before pushing it to Gitea.
+func (o *Orchestrator) release(ctx context.Context, opts Options, allocations map[string]allocation.Entry, verb string) error {
+	target := o.target(opts.Env)
+	resources, err := o.Rollout.Setup(ctx, target)
+	if err != nil {
+		return err
 	}
-	return sha
+	if err := writeResources(opts.GitOpsRepoPath, target, resources); err != nil {
+		return fmt.Errorf("recording komodo resources: %w", err)
+	}
+	deployed, runErr := o.Rollout.Run(ctx, target)
+	if o.SyncGitOps != nil {
+		msg := fmt.Sprintf("urbex %s %s %s", verb, o.Manifest.Project, opts.Env)
+		if err := o.SyncGitOps(ctx, opts.GitOpsRepoPath, msg); err != nil && runErr == nil {
+			return fmt.Errorf("deployed, but syncing the gitops repo failed: %w", err)
+		}
+	}
+	if runErr != nil {
+		return runErr
+	}
+
+	branch := rollout.Branch(opts.Env)
+	fmt.Fprintf(o.Out, "Deployed %s (%s) from branch %s:\n", o.Manifest.Project, opts.Env, branch)
+	for i, svc := range o.Manifest.Services {
+		entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
+		fmt.Fprintf(o.Out, "  %-16s http://%s:%d  %s (%s)\n", svc.Name, entry.IP, svc.Port, deployed[i].State, deployed[i].Image)
+	}
+	fmt.Fprintf(o.Out, "From now on, merging into %s deploys %s automatically.\n", branch, opts.Env)
+	return nil
+}
+
+// writeResources records the Komodo resources urbex declared for a
+// project environment at komodo/<project>/<env>.json in the GitOps repo.
+func writeResources(gitopsRepoPath string, t rollout.Target, res *rollout.Resources) error {
+	dir := filepath.Join(gitopsRepoPath, "komodo", t.Project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, t.Env+".json"), append(data, '\n'), 0o644)
 }
 
 func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
@@ -257,6 +287,20 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return nil
 	}
 
+	// Komodo first, while the LXCs can still answer: the webhook, the
+	// Procedure, and each service's Deployment and Build. Their Servers
+	// go after the LXCs, or the agents would just register again.
+	target := rollout.Target{Project: o.Manifest.Project, Env: opts.Env, Services: toDestroy}
+	if o.Rollout != nil {
+		if err := o.Rollout.Remove(ctx, target); err != nil {
+			return fmt.Errorf("removing komodo resources: %w", err)
+		}
+		record := filepath.Join(opts.GitOpsRepoPath, "komodo", o.Manifest.Project, opts.Env+".json")
+		if err := os.Remove(record); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base assets: %w", err)
 	}
@@ -280,6 +324,11 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	}
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"destroy", "-auto-approve"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform destroy: %w", err)
+	}
+	if o.Rollout != nil {
+		if err := o.Rollout.RemoveServers(ctx, target); err != nil {
+			return fmt.Errorf("removing komodo servers: %w", err)
+		}
 	}
 
 	for _, hostname := range hostnames {
@@ -305,7 +354,7 @@ func (o *Orchestrator) runAnsible(ctx context.Context, opts Options) error {
 		Dir:  ansibleDir,
 		Name: "ansible-playbook",
 		Args: []string{"-i", "inventory.yml", filepath.Join(opts.GitOpsRepoPath, "ansible", "project-playbook.yml")},
-		Env:  o.Credentials.Env("URBEX_REGISTRY_PULL_TOKEN"),
+		Env:  o.Credentials.Env("URBEX_KOMODO_ONBOARDING_KEY"),
 	}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
@@ -371,7 +420,7 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 // Hostname is the LXC hostname for one service in one environment, e.g.
 // ("my-app", "api", "staging") -> "my-app-api-staging".
 func Hostname(project, service, env string) string {
-	return project + "-" + service + "-" + env
+	return rollout.ResourceName(project, service, env)
 }
 
 func tfEnv(creds *credentials.Credentials) []string {

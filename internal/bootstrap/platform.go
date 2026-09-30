@@ -22,13 +22,9 @@ const (
 	GitOpsRepoName   = "gitops"
 )
 
-// Scopes of the Gitea tokens bootstrap creates: one for the CLI (and
-// Komodo, which clones repos and pushes images with it), one read-only
-// token project LXCs use to pull images.
-var (
-	cliTokenScopes  = []string{"write:organization", "write:repository", "write:package"}
-	pullTokenScopes = []string{"read:package"}
-)
+// Scopes of the Gitea token bootstrap creates, used by the CLI and by
+// Komodo, which clones repos and pushes/pulls images with it.
+var cliTokenScopes = []string{"write:organization", "write:repository", "write:package"}
 
 // Endpoints are the LAN addresses of the base services, derived from the
 // deterministic static-IP allocation in urbex.platform.yaml. They are
@@ -72,6 +68,7 @@ type KomodoAPI interface {
 	WaitReady(ctx context.Context, timeout time.Duration) error
 	Login(ctx context.Context, username, password string) (string, error)
 	CreateAPIKey(ctx context.Context, jwt, name string) (string, string, error)
+	CreateOnboardingKey(ctx context.Context, name string) (string, error)
 	EnsureGitProviderAccount(ctx context.Context, domain string, https bool, username, token string) error
 	EnsureDockerRegistryAccount(ctx context.Context, domain, username, token string) error
 }
@@ -101,6 +98,7 @@ var ansibleSecretEnv = []string{
 	"URBEX_KOMODO_JWT_SECRET",
 	"URBEX_KOMODO_WEBHOOK_SECRET",
 	"URBEX_KEYCLOAK_ADMIN_PASSWORD",
+	"URBEX_GRAFANA_ADMIN_PASSWORD",
 }
 
 // ensureSecrets generates any missing platform secret the base-service
@@ -128,9 +126,9 @@ func ensureSecrets(creds *credentials.Credentials) error {
 }
 
 // setupPlatform wires the freshly provisioned base services together:
-// Gitea tokens, org and GitOps repo; a Komodo API key; Komodo's git
-// provider and registry accounts pointing at Gitea; and finally the first
-// push of the GitOps repo.
+// a Gitea token, org and GitOps repo; a Komodo API key and the onboarding
+// key project LXCs join with; Komodo's git provider and registry accounts
+// pointing at Gitea; and finally the first push of the GitOps repo.
 func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitopsRepoPath string) error {
 	ep, err := EndpointsFor(o.Config)
 	if err != nil {
@@ -149,15 +147,6 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		}
 		if err := creds.Update(func(c *credentials.Credentials) { c.GiteaToken = token }); err != nil {
 			return fmt.Errorf("saving gitea token: %w", err)
-		}
-	}
-	if creds.RegistryPullToken == "" {
-		token, err := g.CreateToken(ctx, GiteaAdminUser, creds.GiteaAdminPassword, "urbex-pull", pullTokenScopes)
-		if err != nil {
-			return err
-		}
-		if err := creds.Update(func(c *credentials.Credentials) { c.RegistryPullToken = token }); err != nil {
-			return fmt.Errorf("saving registry pull token: %w", err)
 		}
 	}
 	g = clients.Gitea(ep.GiteaURL, creds.GiteaToken)
@@ -187,6 +176,16 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		}
 	}
 	k = clients.Komodo(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret)
+	if creds.KomodoOnboardingKey == "" {
+		// Project LXCs' Periphery agents register themselves with this key.
+		key, err := k.CreateOnboardingKey(ctx, "urbex-projects")
+		if err != nil {
+			return err
+		}
+		if err := creds.Update(func(c *credentials.Credentials) { c.KomodoOnboardingKey = key }); err != nil {
+			return fmt.Errorf("saving komodo onboarding key: %w", err)
+		}
+	}
 	if err := k.EnsureGitProviderAccount(ctx, ep.Registry, false, GiteaAdminUser, creds.GiteaToken); err != nil {
 		return err
 	}

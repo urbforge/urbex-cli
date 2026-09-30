@@ -1,0 +1,23 @@
+# Managed by urbex apply - see
+# docs/decisions/0019-branch-environments-komodo-rollouts.md in
+# urbforge/urbex.
+#
+# Only the Komodo Periphery agent is defined here. The project's own
+# container is not: Komodo creates and replaces it through this agent
+# whenever a build of the environment's branch finishes.
+services:
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    init: true
+    restart: unless-stopped
+    env_file: ./periphery.env
+    volumes:
+      # Periphery's identity: must survive container re-creation, or Core
+      # rejects the server as a different one.
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      - /etc/komodo:/etc/komodo
+
+volumes:
+  keys:

@@ -43,7 +43,7 @@ func validConfig() *platform.Config {
 			APIURL:       "https://proxmox.example.internal:8006/api2/json",
 			Node:         "pve",
 			StoragePool:  "local-lvm",
-			LXCTemplate:  "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst",
+			LXCTemplate:  "local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst",
 			SSHPublicKey: "ssh-ed25519 AAAA... test",
 			VMIDBase:     9000,
 			Network: platform.NetworkConfig{
@@ -62,12 +62,13 @@ func validCredentials() *credentials.Credentials {
 // fakePlatform records what bootstrap's platform setup phase asks of
 // Gitea, Komodo, and git.
 type fakePlatform struct {
-	tokens      map[string]string // token name -> password used
-	orgs, repos []string
-	apiKeys     int
-	gitAccounts []string
-	regAccounts []string
-	synced      []string // remote URLs
+	tokens         map[string]string // token name -> password used
+	orgs, repos    []string
+	apiKeys        int
+	onboardingKeys int
+	gitAccounts    []string
+	regAccounts    []string
+	synced         []string // remote URLs
 }
 
 func (f *fakePlatform) clients() Clients {
@@ -109,6 +110,10 @@ func (k *fakeKomodo) Login(ctx context.Context, user, password string) (string, 
 func (k *fakeKomodo) CreateAPIKey(ctx context.Context, jwt, name string) (string, string, error) {
 	k.f.apiKeys++
 	return "K_key_K", "S_secret_S", nil
+}
+func (k *fakeKomodo) CreateOnboardingKey(ctx context.Context, name string) (string, error) {
+	k.f.onboardingKeys++
+	return "O_onboarding_O", nil
 }
 func (k *fakeKomodo) EnsureGitProviderAccount(ctx context.Context, domain string, https bool, user, token string) error {
 	k.f.gitAccounts = append(k.f.gitAccounts, domain+"|"+token)
@@ -325,11 +330,11 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 		t.Error("the proxmox token must not be passed to ansible")
 	}
 
-	if fp.tokens["urbex-cli"] != creds.GiteaAdminPassword || fp.tokens["urbex-pull"] == "" {
-		t.Errorf("expected cli and pull tokens created with the admin password, got %v", fp.tokens)
+	if fp.tokens["urbex-cli"] != creds.GiteaAdminPassword || len(fp.tokens) != 1 {
+		t.Errorf("expected exactly the cli token, created with the admin password, got %v", fp.tokens)
 	}
-	if creds.GiteaToken != "token-urbex-cli" || creds.RegistryPullToken != "token-urbex-pull" {
-		t.Errorf("tokens not stored in credentials: %+v", creds)
+	if creds.GiteaToken != "token-urbex-cli" || creds.KomodoOnboardingKey != "O_onboarding_O" {
+		t.Errorf("token/onboarding key not stored in credentials: %+v", creds)
 	}
 	if creds.KomodoAPIKey != "K_key_K" || creds.KomodoAPISecret != "S_secret_S" {
 		t.Errorf("komodo api key not stored: %+v", creds)
@@ -361,11 +366,11 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 
 	// Re-running keeps existing secrets and tokens instead of rotating them.
 	password, token := creds.GiteaAdminPassword, creds.GiteaToken
-	fp.tokens, fp.apiKeys = nil, 0
+	fp.tokens, fp.apiKeys, fp.onboardingKeys = nil, 0, 0
 	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
-	if creds.GiteaAdminPassword != password || creds.GiteaToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 {
-		t.Errorf("expected no secret/token rotation on re-run (tokens=%v apiKeys=%d)", fp.tokens, fp.apiKeys)
+	if creds.GiteaAdminPassword != password || creds.GiteaToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 || fp.onboardingKeys != 0 {
+		t.Errorf("expected no secret/token rotation on re-run (tokens=%v apiKeys=%d onboardingKeys=%d)", fp.tokens, fp.apiKeys, fp.onboardingKeys)
 	}
 }

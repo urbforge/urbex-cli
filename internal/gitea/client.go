@@ -29,15 +29,18 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// retryDelay is the pause between retries of "try again later" answers.
+	retryDelay time.Duration
 }
 
 // New creates a Client authenticated with an API token. token may be
 // empty for calls that authenticate otherwise (see CreateToken).
 func New(baseURL, token string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		token:      token,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		retryDelay: 2 * time.Second,
 	}
 }
 
@@ -117,18 +120,155 @@ func (c *Client) EnsureRepo(ctx context.Context, owner, name string) error {
 	return nil
 }
 
-// ContainerImageExists reports whether owner/name:tag exists in Gitea's
-// container registry.
-func (c *Client) ContainerImageExists(ctx context.Context, owner, name, tag string) (bool, error) {
-	path := "/packages/" + url.PathEscape(owner) + "/container/" + url.PathEscape(name) + "/" + url.PathEscape(tag)
-	err := c.do(ctx, http.MethodGet, path, nil, nil, nil)
+// BranchExists reports whether owner/repo has the given branch.
+func (c *Client) BranchExists(ctx context.Context, owner, repo, branch string) (bool, error) {
+	err := c.do(ctx, http.MethodGet, repoPath(owner, repo)+"/branches/"+url.PathEscape(branch), nil, nil, nil)
 	if err == nil {
 		return true, nil
 	}
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
-	return false, fmt.Errorf("looking up image %s/%s:%s: %w", owner, name, tag, err)
+	return false, fmt.Errorf("looking up branch %s of %s/%s: %w", branch, owner, repo, err)
+}
+
+type webhook struct {
+	ID     int64 `json:"id"`
+	Config struct {
+		URL string `json:"url"`
+	} `json:"config"`
+}
+
+// EnsureWebhook makes owner/repo call targetURL (JSON, signed with
+// secret) on every push to branch, creating the webhook or updating the
+// existing one with the same URL.
+func (c *Client) EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branch string) error {
+	hook, err := c.findWebhook(ctx, owner, repo, targetURL)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"active":        true,
+		"events":        []string{"push"},
+		"branch_filter": branch,
+		"config":        map[string]string{"url": targetURL, "content_type": "json", "secret": secret},
+	}
+	if hook != nil {
+		path := fmt.Sprintf("%s/hooks/%d", repoPath(owner, repo), hook.ID)
+		if err := c.do(ctx, http.MethodPatch, path, body, nil, nil); err != nil {
+			return fmt.Errorf("updating webhook of %s/%s: %w", owner, repo, err)
+		}
+		return nil
+	}
+	body["type"] = "gitea"
+	if err := c.do(ctx, http.MethodPost, repoPath(owner, repo)+"/hooks", body, nil, nil); err != nil {
+		return fmt.Errorf("creating webhook of %s/%s: %w", owner, repo, err)
+	}
+	return nil
+}
+
+// DeleteWebhook removes owner/repo's webhook to targetURL, if any.
+func (c *Client) DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error {
+	hook, err := c.findWebhook(ctx, owner, repo, targetURL)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if hook == nil {
+		return nil
+	}
+	path := fmt.Sprintf("%s/hooks/%d", repoPath(owner, repo), hook.ID)
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil, nil); err != nil {
+		return fmt.Errorf("deleting webhook of %s/%s: %w", owner, repo, err)
+	}
+	return nil
+}
+
+func (c *Client) findWebhook(ctx context.Context, owner, repo, targetURL string) (*webhook, error) {
+	var hooks []webhook
+	if err := c.do(ctx, http.MethodGet, repoPath(owner, repo)+"/hooks", nil, &hooks, nil); err != nil {
+		return nil, fmt.Errorf("listing webhooks of %s/%s: %w", owner, repo, err)
+	}
+	for i := range hooks {
+		if hooks[i].Config.URL == targetURL {
+			return &hooks[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// CommitsAhead returns how many commits head has that base doesn't - 0
+// means merging head into base would change nothing.
+func (c *Client) CommitsAhead(ctx context.Context, owner, repo, base, head string) (int, error) {
+	var cmp struct {
+		TotalCommits int `json:"total_commits"`
+	}
+	path := repoPath(owner, repo) + "/compare/" + url.PathEscape(base) + "..." + url.PathEscape(head)
+	if err := c.do(ctx, http.MethodGet, path, nil, &cmp, nil); err != nil {
+		return 0, fmt.Errorf("comparing %s with %s in %s/%s: %w", head, base, owner, repo, err)
+	}
+	return cmp.TotalCommits, nil
+}
+
+// PullRequest identifies a pull request on Gitea.
+type PullRequest struct {
+	Number  int64  `json:"number"`
+	HTMLURL string `json:"html_url"`
+	Head    struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
+// EnsurePullRequest returns the open pull request from head into base,
+// creating it with title if there is none. created reports which.
+func (c *Client) EnsurePullRequest(ctx context.Context, owner, repo, head, base, title string) (pr *PullRequest, created bool, err error) {
+	var open []PullRequest
+	if err := c.do(ctx, http.MethodGet, repoPath(owner, repo)+"/pulls?state=open", nil, &open, nil); err != nil {
+		return nil, false, fmt.Errorf("listing pull requests of %s/%s: %w", owner, repo, err)
+	}
+	for i := range open {
+		if open[i].Head.Ref == head && open[i].Base.Ref == base {
+			return &open[i], false, nil
+		}
+	}
+	var pr2 PullRequest
+	body := map[string]string{"head": head, "base": base, "title": title}
+	if err := c.do(ctx, http.MethodPost, repoPath(owner, repo)+"/pulls", body, &pr2, nil); err != nil {
+		return nil, false, fmt.Errorf("opening pull request %s -> %s of %s/%s: %w", head, base, owner, repo, err)
+	}
+	return &pr2, true, nil
+}
+
+// MergePullRequest merges pull request number with a merge commit. Right
+// after a pull request is opened Gitea is still computing whether it can
+// be merged and answers "try again later", so that is retried for a while.
+func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, number int64) error {
+	path := fmt.Sprintf("%s/pulls/%d/merge", repoPath(owner, repo), number)
+	var err error
+	for attempt := 0; attempt < 15; attempt++ {
+		err = c.do(ctx, http.MethodPost, path, map[string]string{"Do": "merge"}, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "try again later") {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.retryDelay):
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("merging pull request #%d of %s/%s: %w", number, owner, repo, err)
+	}
+	return nil
+}
+
+func repoPath(owner, repo string) string {
+	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 }
 
 type basicAuth struct{ username, password string }

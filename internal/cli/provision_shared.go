@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -11,11 +12,11 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/gitea"
-	"github.com/urbforge/urbex-cli/internal/imagebuild"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
@@ -39,9 +40,9 @@ func resolveGitOpsRepoPath(flagValue string) (string, error) {
 // errors to out itself (mirroring `urbex init`'s behavior) before
 // returning a plain error.
 //
-// repoDir is the app repo's working copy, from which apply/deploy build
-// images; empty means the orchestrator gets no image builder (plan,
-// destroy).
+// repoDir is the app repo's working copy, used by apply/deploy only to
+// create the environment's branch on Gitea when it doesn't exist yet;
+// plan and destroy pass "".
 func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, repoDir string, requireCreds bool) (*provision.Orchestrator, error) {
 	out := cmd.OutOrStdout()
 
@@ -101,17 +102,22 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
 		},
 	}
-	if repoDir != "" {
-		o.Images = &imagebuild.Builder{
-			Gitea:     gitea.New(ep.GiteaURL, creds.GiteaToken),
-			Komodo:    komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
-			Git:       imagebuild.GitCLI{},
-			Endpoints: ep,
-			Org:       cfg.Git.Org,
-			Token:     creds.GiteaToken,
-			RepoDir:   repoDir,
-			Out:       out,
-		}
-	}
+	o.Rollout = newRollout(cfg, creds, ep, repoDir, out)
 	return o, nil
+}
+
+// newRollout builds the Gitea+Komodo rollout driver for an already
+// bootstrapped platform.
+func newRollout(cfg *platform.Config, creds *credentials.Credentials, ep bootstrap.Endpoints, repoDir string, out io.Writer) *rollout.Rollout {
+	return &rollout.Rollout{
+		Gitea:         gitea.New(ep.GiteaURL, creds.GiteaToken),
+		Komodo:        komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
+		Git:           rollout.GitCLI{},
+		Endpoints:     ep,
+		Org:           cfg.Git.Org,
+		Token:         creds.GiteaToken,
+		WebhookSecret: creds.KomodoWebhookSecret,
+		RepoDir:       repoDir,
+		Out:           out,
+	}
 }

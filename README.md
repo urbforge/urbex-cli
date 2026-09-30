@@ -21,55 +21,57 @@ All 8 subcommands are implemented:
   into the GitOps repo, runs `terraform init/apply` and
   `ansible-playbook` (skippable with `--dry-run`), then **sets up the
   platform**: generates admin passwords and secrets into
-  `~/.urbex/credentials.yaml`, creates Gitea tokens, the org and its
-  `gitops` repo, a Komodo API key and Komodo's Gitea git/registry
-  accounts, and pushes the GitOps repo to Gitea. Re-runs keep existing
-  secrets and tokens.
+  `~/.urbex/credentials.yaml`, creates a Gitea token, the org and its
+  `gitops` repo, a Komodo API key, the onboarding key project LXCs join
+  Komodo with, and Komodo's Gitea git/registry accounts, and pushes the
+  GitOps repo to Gitea. Re-runs keep existing secrets and tokens.
 - `urbex plan <env>` — reads `urbex.yaml`, allocates a VMID/IP for each
   declared service's LXC (one per service per environment, from a ledger
   shared by every project in the GitOps repo), materializes the
   per-service Terraform module into `terraform/projects/<project>/<env>/`,
   and runs `terraform plan`.
 - `urbex apply <env>` — like `plan`, then `terraform apply`, then
-  **builds and deploys the app repo's HEAD commit**: pushes it to the
-  app's repo on Gitea, has Komodo build each service's image (the
-  service's own Dockerfile, or Urbex's for go/java/python) and push it
-  to Gitea's registry tagged with the commit, deploys it with Ansible,
-  and commits/pushes the GitOps repo, whose inventory pins the deployed
-  image. Prints each service's URL.
-- `urbex deploy <env>` — the same build + deploy for LXCs `apply`
-  already provisioned (no Terraform), picking up code and `urbex.yaml`
-  changes. Images already built for a commit are reused.
+  installs Docker and the Komodo Periphery agent on each LXC (Ansible)
+  and **hands the environment over to Komodo**: per service a Build
+  (from the app's repo on Gitea; the service's own Dockerfile, or
+  Urbex's for go/java/python) and a Deployment, a Procedure running
+  them, and a Gitea webhook triggering it on every push to the
+  environment's branch (`staging`, or `main` for prod). Runs the
+  Procedure once and prints each service's URL. From then on, merging a
+  pull request into the branch deploys the environment with no command
+  at all.
+- `urbex deploy <env>` — re-syncs the environment's Komodo resources
+  from `urbex.yaml` and has Komodo build and deploy its branch now: the
+  manual trigger, and how manifest changes (env vars, port, healthcheck)
+  take effect. No Terraform, no SSH.
 - `urbex status [env]` — with no argument, which of the 5 base-service
   LXCs exist on Proxmox; with an environment, per service, whether it
-  has an allocation and whether its LXC exists.
-- `urbex promote` — creates and pushes an annotated Git tag (`vX.Y.Z`,
-  auto-incrementing the patch version unless `--version` is given) to
-  `origin` and to Gitea, then deploys that commit to prod, reusing the
-  image built for staging (`--skip-deploy` to only tag).
-- `urbex destroy <env>` — `terraform destroy` for every service applied
-  to the environment, clears their ledger entries, and syncs the GitOps
-  repo. Base services are out of scope.
+  has an allocation, whether its LXC exists, and the container state and
+  image Komodo reports.
+- `urbex promote` — opens (or finds) the `staging` → `main` pull request
+  on Gitea; `--merge` merges it, which deploys production.
+- `urbex destroy <env>` — removes the environment's webhook and Komodo
+  resources, runs `terraform destroy`, clears the ledger entries, and
+  syncs the GitOps repo. Base services are out of scope.
 
 **Not implemented yet:** DNS registration, Keycloak realm/client
 provisioning, Cloudflare Tunnel ingress (services are reachable on their
-LAN IPs), and Komodo-driven rollouts - Komodo builds the images, but the
-rollout itself is Ansible run from the operator's machine. See
+LAN IPs), and applying `urbex.yaml` changes on merge. See
 [`docs/status.md`](https://github.com/urbforge/urbex/blob/main/docs/status.md)
 in the docs repo.
 
 ### What has been validated
 
-Beyond the unit tests, the embedded assets and the Gitea/Komodo
-integration have been exercised against real software: `terraform
-validate` with the `bpg/proxmox` provider; the `common`, `gitea`,
-`komodo`, and `service` Ansible roles on Debian 12 systemd containers
-standing in for LXCs (idempotent on re-run); and the platform setup plus
-Komodo builds against the resulting Gitea 1.24 and Komodo 2.2.0, ending
-with a service pulled from Gitea's registry and reported healthy. **Not
-yet run against a real Proxmox server** (`terraform apply`, Ansible over
-SSH into real LXCs); the `technitium`, `keycloak`, and `observability`
-roles haven't run either.
+Beyond the unit tests, the real `urbex` binary has run end to end
+against Debian 13 systemd machines reachable over SSH at the static IPs
+it allocates, with only `terraform` and the Proxmox API stubbed:
+`bootstrap` (all five base-service roles, idempotent on re-run), `apply`
+for staging and prod, a pull request merged into `staging` going live
+about 10 seconds later on its own, `promote --merge` doing the same for
+prod, `deploy` after a manifest change, `status`, `destroy`, and
+re-applying onto a recreated machine. `terraform validate` passes with
+the real `bpg/proxmox` provider. **Not yet run against a real Proxmox
+server** (`terraform apply` creating the LXCs).
 
 ## Build & test
 
@@ -94,14 +96,14 @@ go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo   # provisions +
 # from an app repo containing urbex.yaml:
 export URBEX_GITOPS_REPO=/path/to/gitops-repo
 go run ./cmd/urbex plan staging
-go run ./cmd/urbex apply staging     # LXCs + build + deploy of the committed HEAD
+go run ./cmd/urbex apply staging     # LXCs + Komodo pipeline + first deploy; merges into staging deploy from now on
 go run ./cmd/urbex status            # base-service status
-go run ./cmd/urbex status staging    # per-service status for this project+env
-go run ./cmd/urbex deploy staging    # build + redeploy after a new commit or urbex.yaml change
+go run ./cmd/urbex status staging    # per-service status, including what Komodo is running
+go run ./cmd/urbex deploy staging    # re-sync from urbex.yaml and redeploy now
 
-go run ./cmd/urbex apply prod                 # apply prod first
-go run ./cmd/urbex promote                    # tags, pushes, and deploys the same image to prod
-go run ./cmd/urbex promote --skip-deploy       # only tag/push
+go run ./cmd/urbex apply prod                 # apply prod first (tracks branch main)
+go run ./cmd/urbex promote                    # opens the staging -> main pull request
+go run ./cmd/urbex promote --merge            # ...and merges it, deploying prod
 go run ./cmd/urbex destroy staging            # tears down staging's LXCs
 ```
 
@@ -119,19 +121,17 @@ internal/netalloc/           static IP block allocation (base-service LXCs)
 internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
 internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
 internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight check only)
-internal/gitea/              minimal Gitea API client (tokens, org, repos, registry lookups)
-internal/komodo/             minimal Komodo v2 API client (API keys, accounts, builds)
-internal/gitsync/            git commit/push helpers (GitOps repo, app repo to Gitea)
-internal/imagebuild/         builds service images on Komodo from an app repo commit
+internal/gitea/              minimal Gitea API client (tokens, org, repos, webhooks, pull requests)
+internal/komodo/             minimal Komodo v2 API client (keys, accounts, servers, builds, deployments, procedures)
+internal/gitsync/            git commit/push helpers (GitOps repo, environment branches)
+internal/rollout/            declares and runs an environment's build+deploy pipeline on Komodo
 internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
 internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
 internal/bootstrap/          urbex bootstrap orchestration (base services + Gitea/Komodo setup)
 internal/provision/          urbex plan/apply/deploy/destroy orchestration (project services)
 internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
-internal/gittag/             semver tag parsing/increment (pure, no I/O beyond listing tags)
-internal/promote/            urbex promote: creates/pushes the Git tag
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
-platform/ansible/            embedded Ansible playbooks/roles (base services + generic service role)
+platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
 platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes
 ```
 

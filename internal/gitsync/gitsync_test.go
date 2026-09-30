@@ -58,20 +58,3 @@ func TestCommitAllThenPush(t *testing.T) {
 		t.Errorf("remote main = %s, want %s", pushed, head)
 	}
 }
-
-func TestIsDirty(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a"), []byte("1"), 0o644)
-	if _, err := CommitAll(ctx, dir, "init"); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(dir, "untracked"), []byte("x"), 0o644)
-	if dirty, err := IsDirty(ctx, dir); err != nil || dirty {
-		t.Errorf("untracked files alone must not count as dirty: dirty=%v err=%v", dirty, err)
-	}
-	os.WriteFile(filepath.Join(dir, "a"), []byte("2"), 0o644)
-	if dirty, err := IsDirty(ctx, dir); err != nil || !dirty {
-		t.Errorf("expected dirty after modifying a tracked file: dirty=%v err=%v", dirty, err)
-	}
-}

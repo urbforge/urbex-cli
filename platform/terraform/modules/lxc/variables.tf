@@ -35,7 +35,7 @@ variable "storage_pool" {
 
 variable "template_file_id" {
   type        = string
-  description = "Proxmox storage ID of the LXC template (e.g. a Debian 12 template)."
+  description = "Proxmox storage ID of the LXC template (a Debian 13 template)."
 }
 
 variable "ssh_public_key" {

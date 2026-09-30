@@ -1,5 +1,5 @@
 ---
-# Installs Docker Engine + the compose plugin on a fresh Debian-based LXC,
+# Installs Docker Engine + the compose plugin on a fresh Debian 13 LXC,
 # per docs/decisions/0003-terraform-ansible-provisioning.md in
 # urbforge/urbex.
 
@@ -18,7 +18,7 @@
     name: docker
     types: [deb]
     uris: https://download.docker.com/linux/debian
-    suites: ["{{ ansible_distribution_release }}"]
+    suites: ["{{ ansible_facts['distribution_release'] }}"]
     components: [stable]
     signed_by: https://download.docker.com/linux/debian/gpg
 

@@ -1,7 +1,7 @@
 // Package gitsync runs the git operations urbex needs to keep Gitea the
 // source of truth: committing the GitOps repo working directory after
-// every change, and pushing it and the app repo to Gitea so Komodo can
-// clone from there. See docs/decisions/0004-gitops-gitea-komodo.md and
+// every change and pushing it, and creating an app repo's environment
+// branch on Gitea so Komodo has something to build. See docs/decisions/0004-gitops-gitea-komodo.md and
 // docs/decisions/0018-image-build-komodo-gitea-registry.md in
 // urbforge/urbex.
 package gitsync
@@ -75,16 +75,6 @@ func HeadCommit(ctx context.Context, dir string) (string, error) {
 	return git(ctx, dir, nil, "rev-parse", "HEAD")
 }
 
-// IsDirty reports whether the repo at dir has uncommitted changes to
-// tracked files - which urbex won't deploy, since it builds from commits.
-func IsDirty(ctx context.Context, dir string) (bool, error) {
-	out, err := git(ctx, dir, nil, "status", "--porcelain", "--untracked-files=no")
-	if err != nil {
-		return false, err
-	}
-	return out != "", nil
-}
-
 func git(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -100,10 +90,4 @@ func git(ctx context.Context, dir string, env []string, args ...string) (string,
 		return "", fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-// ShortCommit returns the abbreviated SHA of HEAD, as `git rev-parse
-// --short` prints it - the same form Komodo tags commit images with.
-func ShortCommit(ctx context.Context, dir string) (string, error) {
-	return git(ctx, dir, nil, "rev-parse", "--short", "HEAD")
 }

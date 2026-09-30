@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCreateToken_DeletesExistingThenCreatesWithBasicAuth(t *testing.T) {
@@ -108,27 +109,166 @@ func TestEnsureRepo_CreatesPrivateRepoUnderOrg(t *testing.T) {
 	}
 }
 
-func TestContainerImageExists(t *testing.T) {
+func TestBranchExists(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/packages/urbex/container/hello-api/abc1234":
+		if r.URL.Path == "/api/v1/repos/urbex/hello/branches/staging" {
 			w.Write([]byte(`{}`))
-		case "/api/v1/packages/urbex/container/hello-api/missing":
-			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	if ok, err := c.BranchExists(context.Background(), "urbex", "hello", "staging"); err != nil || !ok {
+		t.Errorf("expected staging to exist, got ok=%v err=%v", ok, err)
+	}
+	if ok, err := c.BranchExists(context.Background(), "urbex", "hello", "main"); err != nil || ok {
+		t.Errorf("expected main to be missing, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestEnsureWebhook_CreatesThenUpdatesByURL(t *testing.T) {
+	const target = "http://10.0.0.201:9120/listener/github/procedure/hello-staging/staging"
+	var hooks []map[string]any
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/v1/repos/urbex/hello/hooks":
+			json.NewEncoder(w).Encode(hooks)
+		case "POST /api/v1/repos/urbex/hello/hooks":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			config := body["config"].(map[string]any)
+			if body["type"] != "gitea" || body["branch_filter"] != "staging" || config["secret"] != "s3cret" || config["content_type"] != "json" {
+				t.Errorf("unexpected webhook body %v", body)
+			}
+			hooks = append(hooks, map[string]any{"id": 7, "config": map[string]any{"url": config["url"]}})
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		case "PATCH /api/v1/repos/urbex/hello/hooks/7":
+			w.Write([]byte(`{}`))
+		case "DELETE /api/v1/repos/urbex/hello/hooks/7":
+			hooks = nil
+			w.WriteHeader(http.StatusNoContent)
 		default:
-			w.WriteHeader(http.StatusInternalServerError)
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer server.Close()
 
 	c := New(server.URL, "tok")
-	if ok, err := c.ContainerImageExists(context.Background(), "urbex", "hello-api", "abc1234"); err != nil || !ok {
-		t.Errorf("expected existing image, got ok=%v err=%v", ok, err)
+	for i := 0; i < 2; i++ {
+		if err := c.EnsureWebhook(context.Background(), "urbex", "hello", target, "s3cret", "staging"); err != nil {
+			t.Fatalf("EnsureWebhook: %v", err)
+		}
 	}
-	if ok, err := c.ContainerImageExists(context.Background(), "urbex", "hello-api", "missing"); err != nil || ok {
-		t.Errorf("expected missing image, got ok=%v err=%v", ok, err)
+	if err := c.DeleteWebhook(context.Background(), "urbex", "hello", target); err != nil {
+		t.Fatalf("DeleteWebhook: %v", err)
 	}
-	if _, err := c.ContainerImageExists(context.Background(), "urbex", "other", "x"); err == nil {
-		t.Error("expected an error on a 500 response")
+	if err := c.DeleteWebhook(context.Background(), "urbex", "hello", target); err != nil {
+		t.Fatalf("DeleteWebhook (already gone): %v", err)
+	}
+	want := []string{"GET", "POST", "GET", "PATCH", "GET", "DELETE", "GET"}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected calls %v", calls)
+	}
+	for i, w := range want {
+		if calls[i][:len(w)] != w {
+			t.Errorf("call %d = %s, want %s", i, calls[i], w)
+		}
+	}
+}
+
+func TestEnsurePullRequest_ReusesOpenOneOrCreates(t *testing.T) {
+	existing := `[]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/v1/repos/urbex/hello/pulls":
+			w.Write([]byte(existing))
+		case "POST /api/v1/repos/urbex/hello/pulls":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["head"] != "staging" || body["base"] != "main" {
+				t.Errorf("unexpected pull request body %v", body)
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"number":3,"html_url":"http://gitea/urbex/hello/pulls/3"}`))
+		case "POST /api/v1/repos/urbex/hello/pulls/3/merge":
+			w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	pr, created, err := c.EnsurePullRequest(context.Background(), "urbex", "hello", "staging", "main", "Promote")
+	if err != nil || !created || pr.Number != 3 {
+		t.Fatalf("expected PR #3 to be created, got %+v created=%v err=%v", pr, created, err)
+	}
+
+	existing = `[{"number":9,"head":{"ref":"feature"},"base":{"ref":"main"}},{"number":3,"head":{"ref":"staging"},"base":{"ref":"main"}}]`
+	pr, created, err = c.EnsurePullRequest(context.Background(), "urbex", "hello", "staging", "main", "Promote")
+	if err != nil || created || pr.Number != 3 {
+		t.Fatalf("expected open PR #3 to be reused, got %+v created=%v err=%v", pr, created, err)
+	}
+	if err := c.MergePullRequest(context.Background(), "urbex", "hello", pr.Number); err != nil {
+		t.Fatalf("MergePullRequest: %v", err)
+	}
+}
+
+func TestMergePullRequest_RetriesWhileGiteaChecksMergeability(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte(`{"message":"Please try again later"}`))
+			return
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	c.retryDelay = time.Millisecond
+	if err := c.MergePullRequest(context.Background(), "urbex", "hello", 3); err != nil {
+		t.Fatalf("MergePullRequest: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestMergePullRequest_DoesNotRetryRealErrors(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"message":"merge conflict"}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	c.retryDelay = time.Millisecond
+	if err := c.MergePullRequest(context.Background(), "urbex", "hello", 3); err == nil || attempts != 1 {
+		t.Errorf("expected one failed attempt, got err=%v attempts=%d", err, attempts)
+	}
+}
+
+func TestCommitsAhead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v1/repos/urbex/hello/compare/main...staging" {
+			t.Errorf("unexpected path %s", r.URL.EscapedPath())
+		}
+		w.Write([]byte(`{"total_commits":2,"commits":[{},{}]}`))
+	}))
+	defer server.Close()
+
+	n, err := New(server.URL, "tok").CommitsAhead(context.Background(), "urbex", "hello", "main", "staging")
+	if err != nil || n != 2 {
+		t.Errorf("CommitsAhead = %d, %v; want 2", n, err)
 	}
 }
