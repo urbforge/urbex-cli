@@ -1,0 +1,9 @@
+# The operator's machine: everything `urbex` shells out to, for real,
+# except terraform - the "LXCs" are containers created by run.sh, so
+# terraform is a stub that only logs its arguments.
+FROM docker.io/library/python:3.12-slim
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir -q --root-user-action=ignore --disable-pip-version-check ansible-core
+COPY terraform /usr/local/bin/terraform

@@ -1,0 +1,13 @@
+# A stand-in for a Proxmox LXC created from the Debian 13 template: a
+# systemd machine reachable over SSH as root with the test's key. It runs
+# privileged so Docker can run inside it, as nesting allows in an LXC.
+FROM docker.io/library/debian:trixie
+ARG PUBKEY
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      systemd systemd-sysv dbus iptables openssh-server python3 sudo \
+ && rm -rf /var/lib/apt/lists/* \
+ && systemctl enable ssh \
+ && mkdir -p /root/.ssh && chmod 700 /root/.ssh \
+ && echo "$PUBKEY" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+CMD ["/sbin/init"]

@@ -1,0 +1,12 @@
+apiVersion: urbex/v1
+project: hello
+services:
+  - name: api
+    runtime: go
+    port: 8080
+    healthcheck: /healthz
+    env:
+      staging:
+        GREETING_ENV: staging
+      prod:
+        GREETING_ENV: prod
