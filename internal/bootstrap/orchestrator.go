@@ -24,6 +24,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/runner"
+	"github.com/urbforge/urbex-cli/internal/secrets"
 )
 
 // ProxmoxLister is the subset of proxmoxapi.Client used for the
@@ -73,6 +74,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
 		return fmt.Errorf("missing required credentials: %v", missing)
+	}
+	// The age key encrypts every secret in the GitOps repo: better to
+	// learn it is malformed now than after provisioning.
+	if _, err := secrets.Recipient(o.Credentials.AgeKey); err != nil {
+		return err
 	}
 
 	toCreate, alreadyPresent, err := o.checkExisting(ctx, opts.GitOpsRepoPath)

@@ -26,8 +26,10 @@ See https://github.com/urbforge/urbex for architecture and design decisions.`,
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newPlanCmd())
 	root.AddCommand(newApplyCmd())
+	root.AddCommand(newReleaseCmd())
 	root.AddCommand(newDeployCmd())
 	root.AddCommand(newPromoteCmd())
+	root.AddCommand(newSecretCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newDestroyCmd())
 

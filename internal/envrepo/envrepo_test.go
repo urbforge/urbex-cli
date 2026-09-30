@@ -1,0 +1,137 @@
+package envrepo
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/secrets"
+)
+
+func service() manifest.Service {
+	return manifest.Service{
+		Name: "api", Runtime: "go", Port: 8080, Healthcheck: "/healthz",
+		Env: map[string]map[string]string{"staging": {"LOG_LEVEL": "debug", "A": "1"}, "prod": {"LOG_LEVEL": "info"}},
+	}
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
+	const image = "10.0.0.200:3000/urbex/my-app-api"
+
+	if err := repo.WriteService("staging", "my-app", service(), image); err != nil {
+		t.Fatalf("WriteService: %v", err)
+	}
+
+	compose := read(t, filepath.Join(dir, ComposeFile))
+	for _, want := range []string{
+		"image: " + image + ":${VERSION}",
+		"- config.env",
+		"- path: ${URBEX_SECRETS_FILE:-secrets.env}",
+		"required: false",
+		`PORT: "8080"`,
+		`- "8080:8080"`,
+		`"http://localhost:8080/healthz"`,
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("expected %q in compose.yaml:\n%s", want, compose)
+		}
+	}
+	if config := read(t, filepath.Join(dir, ConfigFile)); !strings.HasSuffix(config, "A=1\nLOG_LEVEL=debug\n") {
+		t.Errorf("expected config.env seeded from the manifest's staging env, got:\n%s", config)
+	}
+	if got := read(t, filepath.Join(dir, SecretsFile)); got != secrets.Placeholder {
+		t.Errorf("expected an empty secrets file, got:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, VersionFile)); !os.IsNotExist(err) {
+		t.Errorf("a new service must have no version yet, stat err = %v", err)
+	}
+
+	// The GitOps repo is authoritative from here on: a second apply,
+	// with a changed manifest, regenerates compose.yaml only.
+	os.WriteFile(filepath.Join(dir, ConfigFile), []byte("LOG_LEVEL=warn\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, SecretsFile), []byte("X=ENC[..]\nsops_version=3\n"), 0o644)
+	changed := service()
+	changed.Port = 9090
+	changed.Healthcheck = ""
+	if err := repo.WriteService("staging", "my-app", changed, image); err != nil {
+		t.Fatalf("WriteService: %v", err)
+	}
+	compose = read(t, filepath.Join(dir, ComposeFile))
+	if !strings.Contains(compose, `- "9090:9090"`) || strings.Contains(compose, "healthcheck") {
+		t.Errorf("expected compose.yaml regenerated from the changed manifest:\n%s", compose)
+	}
+	if got := read(t, filepath.Join(dir, ConfigFile)); got != "LOG_LEVEL=warn\n" {
+		t.Errorf("config.env must not be overwritten, got:\n%s", got)
+	}
+	if got := read(t, filepath.Join(dir, SecretsFile)); !strings.Contains(got, "sops_version") {
+		t.Errorf("secrets must not be overwritten, got:\n%s", got)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	if err := repo.SetVersion("staging", "my-app", "api", "1.4.2"); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
+		t.Errorf("expected setting a version before apply to fail with a hint, got %v", err)
+	}
+	if err := repo.WriteService("staging", "my-app", service(), "img"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := repo.Version("staging", "my-app", "api"); err != nil || v != "" {
+		t.Errorf("Version before any deploy = %q, %v; want none", v, err)
+	}
+	if err := repo.SetVersion("staging", "my-app", "api", "1.4.2"); err != nil {
+		t.Fatalf("SetVersion: %v", err)
+	}
+	if v, err := repo.Version("staging", "my-app", "api"); err != nil || v != "1.4.2" {
+		t.Errorf("Version = %q, %v; want 1.4.2", v, err)
+	}
+	if got := read(t, filepath.Join(repo.Path, "environments/staging/my-app/api/version.env")); !strings.HasSuffix(got, "\nVERSION=1.4.2\n") {
+		t.Errorf("version.env must be a dotenv compose can load, got:\n%s", got)
+	}
+}
+
+func TestEnvironmentsAndRemoveProject(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	if envs, err := repo.Environments("my-app"); err != nil || len(envs) != 0 {
+		t.Errorf("Environments on an empty repo = %v, %v", envs, err)
+	}
+	for _, env := range []string{"staging", "prod"} {
+		if err := repo.WriteService(env, "my-app", service(), "img"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.WriteService("staging", "other", service(), "img"); err != nil {
+		t.Fatal(err)
+	}
+	if envs, _ := repo.Environments("my-app"); strings.Join(envs, ",") != "prod,staging" {
+		t.Errorf("Environments = %v, want prod and staging", envs)
+	}
+	if err := repo.RemoveProject("staging", "my-app"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.Exists("staging", "my-app") || !repo.Exists("staging", "other") || !repo.Exists("prod", "my-app") {
+		t.Error("RemoveProject must remove exactly one project's folder in one environment")
+	}
+	if envs, _ := repo.Environments("my-app"); strings.Join(envs, ",") != "prod" {
+		t.Errorf("Environments = %v, want prod", envs)
+	}
+}
+
+func TestServiceDirUsesForwardSlashes(t *testing.T) {
+	if got := ServiceDir("staging", "my-app", "api"); got != "environments/staging/my-app/api" {
+		t.Errorf("ServiceDir = %q", got)
+	}
+}

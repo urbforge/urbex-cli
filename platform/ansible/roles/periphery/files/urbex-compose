@@ -1,0 +1,19 @@
+#!/bin/sh
+# Wraps the `docker compose up` of a Komodo Stack deployed from the GitOps
+# repo (Komodo's compose_cmd_wrapper; it runs in the Stack's folder,
+# inside the Periphery container). Managed by urbex apply - see
+# docs/decisions/0020-trunk-releases-gitops-environments.md in
+# urbforge/urbex.
+#
+# If the service has secrets, sops decrypts them with the platform's age
+# key (SOPS_AGE_KEY) into a temporary file that only exists while compose
+# runs, and hands its path to the compose file as URBEX_SECRETS_FILE.
+# Plaintext secrets are never written next to the repo. A service without
+# secrets still has the file - Komodo tracks it - but with no sops
+# metadata in it, and compose runs as is.
+set -eu
+
+if grep -q '^sops_' secrets.sops.env 2>/dev/null; then
+  exec /opt/urbex/bin/sops exec-file --no-fifo secrets.sops.env "URBEX_SECRETS_FILE={} $*"
+fi
+exec "$@"

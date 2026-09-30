@@ -1,11 +1,17 @@
-// Package rollout declares, in Komodo and Gitea, everything needed for a
-// project environment to build and deploy itself whenever its branch
-// changes: per service a Komodo Build (from the app repo on Gitea, pushed
-// to Gitea's registry) and a Deployment (on the service's LXC), a
-// Procedure running them all, and a Gitea webhook that triggers the
-// Procedure on every push to the environment's branch. See
-// docs/decisions/0018-image-build-komodo-gitea-registry.md and
-// docs/decisions/0019-branch-environments-komodo-rollouts.md in
+// Package rollout declares, in Komodo and Gitea, what makes a project
+// build its releases and an environment run the versions the GitOps repo
+// says:
+//
+//   - per service, a Komodo Build from the project's repo, run for every
+//     release tag (vX.Y.Z) by the platform's release Action, which a
+//     webhook on the project repo triggers;
+//   - per service and environment, a Komodo Stack on the service's LXC,
+//     whose source is the service's folder under environments/ in the
+//     GitOps repo - redeployed, when that folder changes, by the
+//     platform's GitOps Procedure.
+//
+// See docs/decisions/0018-image-build-komodo-gitea-registry.md and
+// docs/decisions/0020-trunk-releases-gitops-environments.md in
 // urbforge/urbex.
 package rollout
 
@@ -14,14 +20,15 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
+	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/gitsync"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/semver"
 	platformassets "github.com/urbforge/urbex-cli/platform"
 )
 
@@ -29,39 +36,38 @@ import (
 // Dockerfile for language runtimes, inside Komodo's clone of the repo.
 const GeneratedDockerfile = "Dockerfile.urbex"
 
-// branches maps each environment to the app-repo branch it deploys.
-var branches = map[string]string{"staging": "staging", "prod": "main"}
-
-// Branch returns the app-repo branch whose head env runs.
-func Branch(env string) string { return branches[env] }
-
-// ResourceName names a service's LXC, Komodo Server, Build, and
-// Deployment in one environment, e.g. "my-app-api-staging".
+// ResourceName names a service's LXC, Komodo Server, and Stack in one
+// environment, e.g. "my-app-api-staging".
 func ResourceName(project, service, env string) string {
 	return project + "-" + service + "-" + env
 }
 
-// ProcedureName names an environment's build-and-deploy Procedure.
-func ProcedureName(project, env string) string { return project + "-" + env }
+// BuildName names a service's Komodo Build and its image, e.g.
+// "my-app-api". Builds don't belong to an environment: a release is
+// built once and deployed everywhere.
+func BuildName(project, service string) string { return project + "-" + service }
 
 // Gitea is the subset of the Gitea client a rollout uses.
 type Gitea interface {
 	EnsureRepo(ctx context.Context, owner, name string) error
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
-	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branch string) error
+	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branchFilter string) error
 	DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error
+	ListTags(ctx context.Context, owner, repo string) ([]string, error)
+	CreateTag(ctx context.Context, owner, repo, tag, target, message string) error
+	ContainerImageExists(ctx context.Context, owner, name, tag string) (bool, error)
 }
 
 // Komodo is the subset of the Komodo client a rollout uses.
 type Komodo interface {
 	WaitServers(ctx context.Context, names []string, timeout time.Duration) (rekeyed []string, err error)
 	EnsureBuild(ctx context.Context, name string, cfg komodo.BuildConfig) error
-	EnsureDeployment(ctx context.Context, name string, cfg komodo.DeploymentConfig) error
-	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
-	RunProcedure(ctx context.Context, name string) (*komodo.Update, error)
-	WaitUpdate(ctx context.Context, id string, interval time.Duration) (*komodo.Update, error)
+	EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error
+	ListStacks(ctx context.Context) (map[string]komodo.StackStatus, error)
+	DeployStack(ctx context.Context, name string) (*komodo.Update, error)
 	ExplainFailure(ctx context.Context, u *komodo.Update) string
-	ListDeployments(ctx context.Context) (map[string]komodo.DeploymentStatus, error)
+	RunProcedure(ctx context.Context, name string) error
+	DestroyStack(ctx context.Context, name string) error
 	DeleteResource(ctx context.Context, kind, name string) error
 }
 
@@ -70,7 +76,8 @@ type Git interface {
 	Push(ctx context.Context, dir, remoteURL, token string, refspecs ...string) error
 }
 
-// Rollout manages project environments through Gitea and Komodo.
+// Rollout manages projects and their environments through Gitea and
+// Komodo.
 type Rollout struct {
 	Gitea     Gitea
 	Komodo    Komodo
@@ -81,14 +88,21 @@ type Rollout struct {
 	// WebhookSecret is Komodo's webhook secret, which Gitea signs with.
 	WebhookSecret string
 	// RepoDir is the local working copy of the app repo, used only to
-	// create an environment's branch on Gitea when it doesn't exist yet.
+	// create the project's main branch on Gitea when it doesn't exist yet.
 	RepoDir string
 	Out     io.Writer
-	// PollInterval is how often a running procedure is polled; 0 means 3s.
+	// PollInterval is how often Komodo and the registry are polled while
+	// waiting; 0 means 3s.
 	PollInterval time.Duration
-	// ServerTimeout is how long to wait for the LXCs' Periphery agents to
-	// connect to Komodo; 0 means 3 minutes.
-	ServerTimeout time.Duration
+	// CacheWindow is how long Reconcile waits before asking Komodo to
+	// look at the GitOps repo; 0 means 6s.
+	CacheWindow time.Duration
+	// NudgeAfter is how long to wait for a push to deploy on its own
+	// before asking Komodo to reconcile; 0 means 12s.
+	NudgeAfter time.Duration
+	// Timeout bounds each wait (servers connecting, a release building,
+	// an environment converging); 0 means 10 minutes.
+	Timeout time.Duration
 }
 
 // Target is one environment of one project.
@@ -98,177 +112,304 @@ type Target struct {
 	Services []manifest.Service
 }
 
-// Resources are the Komodo resources of a Target, as urbex declared
-// them. They are also written to the GitOps repo as the record of what
-// Komodo was asked to run.
-type Resources struct {
-	Procedure     string                             `json:"procedure"`
-	ProcedureSpec komodo.ProcedureConfig             `json:"procedureConfig"`
-	Branch        string                             `json:"branch"`
-	Webhook       string                             `json:"webhook"`
-	Builds        map[string]komodo.BuildConfig      `json:"builds"`
-	Deployments   map[string]komodo.DeploymentConfig `json:"deployments"`
-}
-
-// Deployed is the state of one service after a run.
+// Deployed is the state of one service in an environment.
 type Deployed struct {
 	Service string
-	Image   string
-	State   string
+	// Want is the version the GitOps repo asks for ("" if none is set).
+	Want string
+	// Image is what Komodo reports running ("" if nothing is).
+	Image string
+	State string
 }
 
-// Setup makes Gitea and Komodo ready to build and deploy t on every push
-// to its branch: the app repo and the branch on Gitea, the Builds,
-// Deployments, and Procedure on Komodo, and the webhook tying them
-// together. It is idempotent and re-syncs everything from t.
-func (r *Rollout) Setup(ctx context.Context, t Target) (*Resources, error) {
-	branch := Branch(t.Env)
-	if branch == "" {
-		return nil, fmt.Errorf("no branch defined for environment %q", t.Env)
+func (r *Rollout) interval() time.Duration {
+	if r.PollInterval == 0 {
+		return 3 * time.Second
 	}
-	if err := r.Gitea.EnsureRepo(ctx, r.Org, t.Project); err != nil {
-		return nil, err
-	}
-	if err := r.ensureBranch(ctx, t.Project, branch); err != nil {
-		return nil, err
-	}
+	return r.PollInterval
+}
 
-	var names []string
-	for _, svc := range t.Services {
-		names = append(names, ResourceName(t.Project, svc.Name, t.Env))
+// cacheWindow is how long Komodo can keep serving a stale view of a repo
+// after pulling it (5 seconds), with a margin.
+func (r *Rollout) cacheWindow() time.Duration {
+	if r.CacheWindow == 0 {
+		return 6 * time.Second
 	}
-	timeout := r.ServerTimeout
-	if timeout == 0 {
-		timeout = 3 * time.Minute
-	}
-	rekeyed, err := r.Komodo.WaitServers(ctx, names, timeout)
-	for _, name := range rekeyed {
-		fmt.Fprintf(r.Out, "Komodo server %s reconnected with a new key (its LXC was recreated): accepted.\n", name)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%w - is Periphery running on those LXCs? ('urbex apply %s' installs it)", err, t.Env)
-	}
+	return r.CacheWindow
+}
 
-	procedure := ProcedureName(t.Project, t.Env)
-	res := &Resources{
-		Procedure:   procedure,
-		Branch:      branch,
-		Webhook:     r.Endpoints.KomodoURL + "/listener/github/procedure/" + procedure + "/" + branch,
-		Builds:      map[string]komodo.BuildConfig{},
-		Deployments: map[string]komodo.DeploymentConfig{},
+// nudgeAfter is how long WaitDeployed lets a push work on its own before
+// asking Komodo to reconcile: comfortably more than Komodo's repo cache.
+func (r *Rollout) nudgeAfter() time.Duration {
+	if r.NudgeAfter == 0 {
+		return 12 * time.Second
 	}
-	for i, svc := range t.Services {
-		build, err := r.buildConfig(t, svc, branch)
+	return r.NudgeAfter
+}
+
+func (r *Rollout) timeout() time.Duration {
+	if r.Timeout == 0 {
+		return 10 * time.Minute
+	}
+	return r.Timeout
+}
+
+// Image is a service's image reference without its tag.
+func (r *Rollout) Image(project, service string) string {
+	return r.Endpoints.Registry + "/" + r.Org + "/" + BuildName(project, service)
+}
+
+// SetupProject makes a project releasable: its repo on Gitea (creating
+// the main branch from the local HEAD if Gitea doesn't have it), a Build
+// per service, and the webhook that has Komodo build every release tag.
+// It is idempotent and re-syncs the Builds from the manifest.
+func (r *Rollout) SetupProject(ctx context.Context, project string, services []manifest.Service) error {
+	if err := r.Gitea.EnsureRepo(ctx, r.Org, project); err != nil {
+		return err
+	}
+	if err := r.ensureTrunk(ctx, project); err != nil {
+		return err
+	}
+	for _, svc := range services {
+		cfg, err := r.buildConfig(project, svc)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := r.Komodo.EnsureBuild(ctx, names[i], build); err != nil {
-			return nil, err
+		if err := r.Komodo.EnsureBuild(ctx, BuildName(project, svc.Name), cfg); err != nil {
+			return err
 		}
-		deployment := deploymentConfig(names[i], svc, t.Env)
-		if err := r.Komodo.EnsureDeployment(ctx, names[i], deployment); err != nil {
-			return nil, err
-		}
-		res.Builds[names[i]] = build
-		res.Deployments[names[i]] = deployment
 	}
-
-	// A Procedure rather than Komodo's redeploy-on-build: that one skips
-	// containers that aren't running, so a crashed service would never
-	// pick up its fix.
-	res.ProcedureSpec = komodo.ProcedureConfig{
-		WebhookEnabled: true,
-		Stages: []komodo.Stage{
-			komodo.NewStage("Build", "RunBuild", "build", names),
-			komodo.NewStage("Deploy", "Deploy", "deployment", names),
-		},
-	}
-	if err := r.Komodo.EnsureProcedure(ctx, procedure, res.ProcedureSpec); err != nil {
-		return nil, err
-	}
-	if err := r.Gitea.EnsureWebhook(ctx, r.Org, t.Project, res.Webhook, r.WebhookSecret, branch); err != nil {
-		return nil, err
-	}
-	return res, nil
+	// Every push: the Action itself tells release tags from the rest.
+	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
+	return r.Gitea.EnsureWebhook(ctx, r.Org, project, hook, r.WebhookSecret, "*")
 }
 
-// ensureBranch creates branch on Gitea from the local HEAD if Gitea
-// doesn't have it yet, so a new project or environment has something to
-// build. An existing branch is never touched: it moves by merging.
-func (r *Rollout) ensureBranch(ctx context.Context, project, branch string) error {
-	exists, err := r.Gitea.BranchExists(ctx, r.Org, project, branch)
+// ensureTrunk creates the project's main branch on Gitea from the local
+// HEAD if Gitea doesn't have it yet. An existing branch is never
+// touched.
+func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
+	exists, err := r.Gitea.BranchExists(ctx, r.Org, project, bootstrap.TrunkBranch)
 	if err != nil || exists {
 		return err
 	}
 	if r.RepoDir == "" {
-		return fmt.Errorf("branch %s doesn't exist in %s/%s on gitea - push it first", branch, r.Org, project)
+		return fmt.Errorf("%s/%s has no %s branch on gitea - push it first", r.Org, project, bootstrap.TrunkBranch)
 	}
 	url := r.Endpoints.RepoURL(r.Org, project)
-	if err := r.Git.Push(ctx, r.RepoDir, url, r.Token, "HEAD:refs/heads/"+branch); err != nil {
-		return fmt.Errorf("creating branch %s on gitea from %s: %w", branch, r.RepoDir, err)
+	if err := r.Git.Push(ctx, r.RepoDir, url, r.Token, "HEAD:refs/heads/"+bootstrap.TrunkBranch); err != nil {
+		return fmt.Errorf("creating branch %s on gitea from %s: %w", bootstrap.TrunkBranch, r.RepoDir, err)
 	}
-	fmt.Fprintf(r.Out, "Created branch %s of %s/%s on Gitea from the local HEAD.\n", branch, r.Org, project)
+	fmt.Fprintf(r.Out, "Created %s/%s on Gitea with branch %s from the local HEAD.\n", r.Org, project, bootstrap.TrunkBranch)
 	return nil
 }
 
-// Run builds and deploys t now, the same way a push to its branch does,
-// and returns what each service is running afterwards.
-func (r *Rollout) Run(ctx context.Context, t Target) ([]Deployed, error) {
-	procedure := ProcedureName(t.Project, t.Env)
-	fmt.Fprintf(r.Out, "Building and deploying %s from branch %s on Komodo...\n", procedure, Branch(t.Env))
-	started, err := r.Komodo.RunProcedure(ctx, procedure)
-	if err != nil {
-		return nil, err
+// WriteEnv (re)generates what urbex owns in each service's folder of the
+// GitOps repo - see envrepo.Repo.WriteService.
+func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
+	for _, svc := range t.Services {
+		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc.Name)); err != nil {
+			return fmt.Errorf("writing %s: %w", envrepo.ServiceDir(t.Env, t.Project, svc.Name), err)
+		}
 	}
-	interval := r.PollInterval
-	if interval == 0 {
-		interval = 3 * time.Second
-	}
-	done, err := r.Komodo.WaitUpdate(ctx, started.ID.OID, interval)
-	if err != nil {
-		return nil, err
-	}
-	if !done.Success {
-		return nil, fmt.Errorf("komodo procedure %s failed - %s", procedure, r.Komodo.ExplainFailure(ctx, done))
-	}
-	return r.Status(ctx, t)
+	return nil
 }
 
-// Status returns what Komodo reports each service of t is running.
-func (r *Rollout) Status(ctx context.Context, t Target) ([]Deployed, error) {
-	statuses, err := r.Komodo.ListDeployments(ctx)
+// SetupEnv makes an environment deployable from the GitOps repo: it
+// writes each service's folder under environments/ and declares its
+// Komodo Stack on the service's LXC. It deploys nothing by itself.
+func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) error {
+	names := make([]string, len(t.Services))
+	for i, svc := range t.Services {
+		names[i] = ResourceName(t.Project, svc.Name, t.Env)
+	}
+	rekeyed, err := r.Komodo.WaitServers(ctx, names, r.timeout())
+	for _, name := range rekeyed {
+		fmt.Fprintf(r.Out, "Komodo server %s reconnected with a new key (its LXC was recreated): accepted.\n", name)
+	}
+	if err != nil {
+		return fmt.Errorf("%w - is Periphery running on those LXCs? ('urbex apply %s' installs it)", err, t.Env)
+	}
+
+	if err := r.WriteEnv(t, repo); err != nil {
+		return err
+	}
+	for i, svc := range t.Services {
+		if err := r.Komodo.EnsureStack(ctx, names[i], r.stackConfig(names[i], t, svc)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Tags returns the project's release history as its tags on Gitea.
+func (r *Rollout) Tags(ctx context.Context, project string) ([]string, error) {
+	return r.Gitea.ListTags(ctx, r.Org, project)
+}
+
+// Release tags version on the project's main branch - which makes Komodo
+// build it - and waits until every service's image is in the registry.
+func (r *Rollout) Release(ctx context.Context, project string, services []manifest.Service, version semver.Version) error {
+	message := "Release " + version.String()
+	if err := r.Gitea.CreateTag(ctx, r.Org, project, version.Tag(), bootstrap.TrunkBranch, message); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.Out, "Tagged %s on %s; Komodo is building it...\n", version.Tag(), bootstrap.TrunkBranch)
+
+	deadline := time.Now().Add(r.timeout())
+	for {
+		missing, err := r.MissingImages(ctx, project, services, version.String())
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("release %s: no image yet for %v - check the %s Action and the Builds in Komodo (%s)",
+				version, missing, bootstrap.ReleaseAction, r.Endpoints.KomodoURL)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.interval()):
+		}
+	}
+}
+
+// MissingImages returns the services that have no image for version in
+// the registry.
+func (r *Rollout) MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error) {
+	var missing []string
+	for _, svc := range services {
+		ok, err := r.Gitea.ContainerImageExists(ctx, r.Org, BuildName(project, svc.Name), version)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			missing = append(missing, svc.Name)
+		}
+	}
+	return missing, nil
+}
+
+// Deploy has Komodo deploy every Stack of t from the GitOps repo as
+// pushed, unconditionally - for when nothing in the repo changed but the
+// environment must be (re)created, as after urbex apply.
+func (r *Rollout) Deploy(ctx context.Context, t Target) error {
+	for _, svc := range t.Services {
+		name := ResourceName(t.Project, svc.Name, t.Env)
+		done, err := r.Komodo.DeployStack(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !done.Success {
+			return fmt.Errorf("komodo could not deploy stack %s - %s", name, r.Komodo.ExplainFailure(ctx, done))
+		}
+	}
+	return nil
+}
+
+// Reconcile makes sure Komodo acts on a push to the GitOps repo that was
+// just made: it asks Komodo to look at the repo and redeploy the Stacks
+// whose folder changed - what the repo's webhook does on a push, and the
+// Procedure's own schedule does periodically.
+//
+// The webhook alone isn't enough when pushes follow each other closely:
+// Komodo caches a repo for a few seconds after pulling it, so the
+// webhook of the second push can see the state of the first. Reconcile
+// therefore waits out that window first; if the webhook did its job,
+// this run finds nothing changed.
+func (r *Rollout) Reconcile(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(r.cacheWindow()):
+	}
+	return r.Komodo.RunProcedure(ctx, bootstrap.GitOpsProcedure)
+}
+
+// WaitDeployed waits until Komodo runs, for every service of t, the
+// version the GitOps repo asks for. Pushing the GitOps repo is what
+// makes Komodo deploy; if the environment hasn't moved after a while -
+// Komodo can miss a push that comes seconds after it last looked at the
+// repo - WaitDeployed asks it to reconcile.
+func (r *Rollout) WaitDeployed(ctx context.Context, t Target, repo envrepo.Repo) ([]Deployed, error) {
+	deadline := time.Now().Add(r.timeout())
+	nudge := time.Now().Add(r.nudgeAfter())
+	for {
+		deployed, err := r.Status(ctx, t, repo)
+		if err != nil {
+			return nil, err
+		}
+		var pending []string
+		for _, d := range deployed {
+			if d.Want == "" || d.State != "running" || !strings.HasSuffix(d.Image, ":"+d.Want) {
+				pending = append(pending, fmt.Sprintf("%s (want %s, %s %s)", d.Service, orNone(d.Want), d.State, orNone(d.Image)))
+			}
+		}
+		if len(pending) == 0 {
+			return deployed, nil
+		}
+		if time.Now().After(nudge) {
+			// Best effort: a failure here shows up as not converging.
+			_ = r.Komodo.RunProcedure(ctx, bootstrap.GitOpsProcedure)
+			nudge = time.Now().Add(2 * r.nudgeAfter())
+		}
+		if time.Now().After(deadline) {
+			return deployed, fmt.Errorf("%s (%s) did not converge: %s - check the %s Procedure and the Stacks in Komodo (%s)",
+				t.Project, t.Env, strings.Join(pending, "; "), bootstrap.GitOpsProcedure, r.Endpoints.KomodoURL)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(r.interval()):
+		}
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "nothing"
+	}
+	return s
+}
+
+// Status returns, for every service of t, the version the GitOps repo
+// asks for and what Komodo reports running.
+func (r *Rollout) Status(ctx context.Context, t Target, repo envrepo.Repo) ([]Deployed, error) {
+	stacks, err := r.Komodo.ListStacks(ctx)
 	if err != nil {
 		return nil, err
 	}
 	deployed := make([]Deployed, 0, len(t.Services))
 	for _, svc := range t.Services {
-		st, ok := statuses[ResourceName(t.Project, svc.Name, t.Env)]
-		if !ok {
-			st.State = "not_declared"
+		want, err := repo.Version(t.Env, t.Project, svc.Name)
+		if err != nil {
+			return nil, err
 		}
-		deployed = append(deployed, Deployed{Service: svc.Name, Image: st.Image, State: st.State})
+		d := Deployed{Service: svc.Name, Want: want, State: "not_declared"}
+		if st, ok := stacks[ResourceName(t.Project, svc.Name, t.Env)]; ok {
+			d.State = st.State
+			if len(st.Images) > 0 {
+				d.Image = st.Images[0]
+			}
+		}
+		deployed = append(deployed, d)
 	}
 	return deployed, nil
 }
 
-// Remove deletes t's webhook and its Komodo Procedure, Deployments, and
-// Builds. Call it before destroying the LXCs, while their agents can
-// still take the containers down, and RemoveServers after.
-func (r *Rollout) Remove(ctx context.Context, t Target) error {
-	procedure := ProcedureName(t.Project, t.Env)
-	webhook := r.Endpoints.KomodoURL + "/listener/github/procedure/" + procedure + "/" + Branch(t.Env)
-	if err := r.Gitea.DeleteWebhook(ctx, r.Org, t.Project, webhook); err != nil {
-		return err
-	}
-	if err := r.Komodo.DeleteResource(ctx, "Procedure", procedure); err != nil {
-		return err
-	}
-	// Deployments reference Builds, so they go first.
-	for _, kind := range []string{"Deployment", "Build"} {
-		for _, svc := range t.Services {
-			if err := r.Komodo.DeleteResource(ctx, kind, ResourceName(t.Project, svc.Name, t.Env)); err != nil {
-				return err
-			}
+// RemoveEnv takes t's services down and deletes their Stacks. Call it
+// before destroying the LXCs, while their agents can still do it, and
+// RemoveServers after.
+func (r *Rollout) RemoveEnv(ctx context.Context, t Target) error {
+	for _, svc := range t.Services {
+		name := ResourceName(t.Project, svc.Name, t.Env)
+		if err := r.Komodo.DestroyStack(ctx, name); err != nil {
+			return err
+		}
+		if err := r.Komodo.DeleteResource(ctx, "Stack", name); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -286,21 +427,36 @@ func (r *Rollout) RemoveServers(ctx context.Context, t Target) error {
 	return nil
 }
 
-// buildConfig is the Komodo Build of one service in one environment:
-// clone the environment's branch from Gitea, build with the service's own
-// Dockerfile (runtime docker) or Urbex's per-runtime one, and push to
-// Gitea's registry as <project>-<service>:<version>-<env>.
-func (r *Rollout) buildConfig(t Target, svc manifest.Service, branch string) (komodo.BuildConfig, error) {
+// RemoveProject deletes a project's Builds and its release webhook, once
+// no environment runs it anymore. The repo and its images stay on Gitea.
+func (r *Rollout) RemoveProject(ctx context.Context, project string, services []manifest.Service) error {
+	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
+	if err := r.Gitea.DeleteWebhook(ctx, r.Org, project, hook); err != nil {
+		return err
+	}
+	for _, svc := range services {
+		if err := r.Komodo.DeleteResource(ctx, "Build", BuildName(project, svc.Name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildConfig is the Komodo Build of one service: clone the project's
+// repo from Gitea, build with the service's own Dockerfile (runtime
+// docker) or Urbex's per-runtime one, and push to Gitea's registry as
+// <project>-<service>:<version>. Which commit and version is set by the
+// release Action for each tag; the Build never runs on its own.
+func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.BuildConfig, error) {
 	cfg := komodo.BuildConfig{
 		BuilderID:          bootstrap.KomodoServerName,
 		GitProvider:        r.Endpoints.Registry, // Gitea's host:port serves both git and the registry
 		GitHTTPS:           false,
 		GitAccount:         bootstrap.GiteaAdminUser,
-		Repo:               r.Org + "/" + t.Project,
-		Branch:             branch,
-		ImageName:          t.Project + "-" + svc.Name,
-		ImageTag:           t.Env,
-		AutoIncrement:      true,
+		Repo:               r.Org + "/" + project,
+		Branch:             bootstrap.TrunkBranch,
+		ImageName:          BuildName(project, svc.Name),
+		AutoIncrement:      false,
 		IncludeVersionTags: true,
 		IncludeCommitTag:   true,
 		ImageRegistry: []komodo.ImageRegistry{{
@@ -332,41 +488,40 @@ func (r *Rollout) buildConfig(t Target, svc manifest.Service, branch string) (ko
 	return cfg, nil
 }
 
-// deploymentConfig is the Komodo Deployment of one service in one
-// environment: the latest image of its Build, on its own LXC, with the
-// port, environment, and healthcheck from the manifest.
-func deploymentConfig(name string, svc manifest.Service, env string) komodo.DeploymentConfig {
-	environment := []string{fmt.Sprintf("PORT=%d", svc.Port)}
-	vars := svc.EnvFor(env)
-	keys := make([]string, 0, len(vars))
-	for k := range vars {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		environment = append(environment, k+"="+vars[k])
-	}
+// ComposeWrapper is the command every Stack runs `docker compose up`
+// through: a script on the LXC (see the periphery Ansible role) that
+// decrypts the service's secrets, if it has any, for the duration of the
+// command.
+const ComposeWrapper = "/opt/urbex/bin/urbex-compose [[COMPOSE_COMMAND]]"
 
-	cfg := komodo.DeploymentConfig{
-		ServerID:    name, // the LXC's Periphery registers under its hostname
-		Image:       komodo.BuildImage(name),
-		Network:     "bridge",
-		Restart:     "unless-stopped",
-		Ports:       fmt.Sprintf("%d:%d", svc.Port, svc.Port),
-		Environment: strings.Join(environment, "\n"),
-		ExtraArgs:   []string{},
+// stackConfig is the Komodo Stack of one service in one environment: the
+// compose project in the service's folder of the GitOps repo, on the
+// service's LXC. The version file is an --env-file (it sets the image
+// tag); it, the configuration, and the secrets are tracked, so a change
+// to any of them redeploys the Stack.
+//
+// Nothing here depends on the folder's contents, on purpose: the Stack
+// is declared once and everything after that is a commit. Updating a
+// Stack right before pushing would also defeat the deploy - Komodo
+// caches the repo for a few seconds after looking at it.
+func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komodo.StackConfig {
+	return komodo.StackConfig{
+		ServerID:           name, // the LXC's Periphery registers under its hostname
+		GitProvider:        r.Endpoints.Registry,
+		GitHTTPS:           false,
+		GitAccount:         bootstrap.GiteaAdminUser,
+		Repo:               r.Org + "/" + bootstrap.GitOpsRepoName,
+		Branch:             bootstrap.TrunkBranch,
+		RunDirectory:       envrepo.ServiceDir(t.Env, t.Project, svc.Name),
+		AdditionalEnvFiles: []komodo.EnvFile{{Path: envrepo.VersionFile, Track: true}},
+		ConfigFiles: []komodo.ConfigFile{
+			{Path: envrepo.ConfigFile, Requires: "Redeploy"},
+			{Path: envrepo.SecretsFile, Requires: "Redeploy"},
+		},
+		RegistryProvider:  r.Endpoints.Registry,
+		RegistryAccount:   bootstrap.GiteaAdminUser,
+		ComposeCmdWrapper: ComposeWrapper,
 	}
-	if svc.Healthcheck != "" {
-		// Extra args land verbatim in the `docker run` command line, so
-		// the health command has to carry its own quotes.
-		cfg.ExtraArgs = []string{
-			fmt.Sprintf(`--health-cmd="wget -q --spider http://localhost:%d%s"`, svc.Port, svc.Healthcheck),
-			"--health-interval=30s",
-			"--health-timeout=5s",
-			"--health-retries=3",
-		}
-	}
-	return cfg
 }
 
 // GitCLI implements Git with the git binary (see internal/gitsync).

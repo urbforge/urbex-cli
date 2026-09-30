@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/platform"
 )
 
@@ -55,8 +56,12 @@ func validConfig() *platform.Config {
 	}
 }
 
+// A real age secret key (generated for these tests, used nowhere else):
+// bootstrap derives the recipient of the GitOps repo's secrets from it.
+const testAgeKey = "AGE-SECRET-KEY-13E9XGFYJN5M6PKTQJFHSXX3MCEZS9XT2EA88VFZ3Z3RFA3VHXGGQ6LS0RC"
+
 func validCredentials() *credentials.Credentials {
-	return &credentials.Credentials{ProxmoxToken: "pve-token", AgeKey: "age-key"}
+	return &credentials.Credentials{ProxmoxToken: "pve-token", AgeKey: testAgeKey}
 }
 
 // fakePlatform records what bootstrap's platform setup phase asks of
@@ -69,6 +74,9 @@ type fakePlatform struct {
 	gitAccounts    []string
 	regAccounts    []string
 	synced         []string // remote URLs
+	hooks          []string
+	actions        map[string]komodo.ActionConfig
+	procedures     map[string]komodo.ProcedureConfig
 }
 
 func (f *fakePlatform) clients() Clients {
@@ -100,6 +108,10 @@ func (g *fakeGitea) EnsureRepo(ctx context.Context, owner, name string) error {
 	g.f.repos = append(g.f.repos, owner+"/"+name)
 	return nil
 }
+func (g *fakeGitea) EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, filter string) error {
+	g.f.hooks = append(g.f.hooks, owner+"/"+repo+" -> "+targetURL+" ("+filter+")")
+	return nil
+}
 
 type fakeKomodo struct{ f *fakePlatform }
 
@@ -114,6 +126,20 @@ func (k *fakeKomodo) CreateAPIKey(ctx context.Context, jwt, name string) (string
 func (k *fakeKomodo) CreateOnboardingKey(ctx context.Context, name string) (string, error) {
 	k.f.onboardingKeys++
 	return "O_onboarding_O", nil
+}
+func (k *fakeKomodo) EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error {
+	if k.f.actions == nil {
+		k.f.actions = map[string]komodo.ActionConfig{}
+	}
+	k.f.actions[name] = cfg
+	return nil
+}
+func (k *fakeKomodo) EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error {
+	if k.f.procedures == nil {
+		k.f.procedures = map[string]komodo.ProcedureConfig{}
+	}
+	k.f.procedures[name] = cfg
+	return nil
 }
 func (k *fakeKomodo) EnsureGitProviderAccount(ctx context.Context, domain string, https bool, user, token string) error {
 	k.f.gitAccounts = append(k.f.gitAccounts, domain+"|"+token)
@@ -353,6 +379,33 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 		t.Errorf("unexpected gitops push targets %v", fp.synced)
 	}
 
+	// What every project shares: the Action that builds release tags and
+	// the Procedure that deploys from the GitOps repo, on its webhook and
+	// on a schedule.
+	action := fp.actions["urbex-release"]
+	if !action.WebhookEnabled || !strings.Contains(action.FileContents, "refs") || !strings.Contains(action.FileContents, "RunBuild") {
+		t.Errorf("expected the release action with its script, got %+v", action)
+	}
+	proc := fp.procedures["urbex-gitops"]
+	if !proc.WebhookEnabled || !proc.ScheduleEnabled || proc.Schedule == "" || len(proc.Stages) != 1 {
+		t.Fatalf("unexpected gitops procedure %+v", proc)
+	}
+	exec := proc.Stages[0].Executions[0].Execution
+	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != "*" {
+		t.Errorf("expected the procedure to redeploy changed stacks, got %+v", exec)
+	}
+	const hook = "urbex/gitops -> http://192.168.1.201:9120/listener/github/procedure/urbex-gitops/main (main)"
+	if len(fp.hooks) != 1 || fp.hooks[0] != hook {
+		t.Errorf("unexpected webhooks %v", fp.hooks)
+	}
+	sopsConfig, err := os.ReadFile(filepath.Join(dir, ".sops.yaml"))
+	if err != nil || !strings.Contains(string(sopsConfig), "age: age1") {
+		t.Errorf("expected .sops.yaml with the age recipient (%v):\n%s", err, sopsConfig)
+	}
+	if strings.Contains(string(sopsConfig), "AGE-SECRET-KEY") {
+		t.Error("the age secret key must never be written to the gitops repo")
+	}
+
 	inventory, err := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -372,5 +425,19 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	}
 	if creds.GiteaAdminPassword != password || creds.GiteaToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 || fp.onboardingKeys != 0 {
 		t.Errorf("expected no secret/token rotation on re-run (tokens=%v apiKeys=%d onboardingKeys=%d)", fp.tokens, fp.apiKeys, fp.onboardingKeys)
+	}
+}
+
+func TestRun_RejectsAMalformedAgeKeyBeforeProvisioning(t *testing.T) {
+	dir := t.TempDir()
+	o, runner, _ := newRunOrchestrator(t, &fakeProxmox{})
+	o.Credentials.AgeKey = "not-an-age-key"
+
+	err := o.Run(context.Background(), Options{GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "URBEX_AGE_KEY") {
+		t.Fatalf("expected an age key error, got %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("expected nothing to be provisioned with a malformed age key, got %+v", runner.calls)
 	}
 }

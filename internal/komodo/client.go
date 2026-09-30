@@ -153,7 +153,6 @@ type BuildConfig struct {
 	Repo               string          `json:"repo"`
 	Branch             string          `json:"branch"`
 	ImageName          string          `json:"image_name"`
-	ImageTag           string          `json:"image_tag"`
 	ImageRegistry      []ImageRegistry `json:"image_registry"`
 	IncludeCommitTag   bool            `json:"include_commit_tag"`
 	IncludeLatestTag   bool            `json:"include_latest_tag"`
@@ -187,47 +186,71 @@ func (c *Client) EnsureBuild(ctx context.Context, name string, cfg BuildConfig) 
 	return c.ensureResource(ctx, "Build", name, cfg)
 }
 
-// DeploymentConfig is the subset of Komodo's DeploymentConfig urbex sets:
-// one container, on one Server, running the image of a Komodo Build.
-type DeploymentConfig struct {
-	ServerID        string          `json:"server_id"`
-	Image           DeploymentImage `json:"image"`
-	RedeployOnBuild bool            `json:"redeploy_on_build"`
-	Network         string          `json:"network"`
-	Restart         string          `json:"restart"`
-	// Ports and Environment are newline-separated "host:container" and
-	// "KEY=value" entries.
-	Ports       string `json:"ports"`
-	Environment string `json:"environment"`
-	// ExtraArgs are interpolated verbatim into `docker run`.
-	ExtraArgs []string `json:"extra_args"`
+// StackConfig is the subset of Komodo's StackConfig urbex sets: a
+// compose project on one Server, whose files live in a folder of a git
+// repo.
+type StackConfig struct {
+	ServerID    string `json:"server_id"`
+	GitProvider string `json:"git_provider"`
+	GitHTTPS    bool   `json:"git_https"`
+	GitAccount  string `json:"git_account"`
+	Repo        string `json:"repo"`
+	Branch      string `json:"branch"`
+	// RunDirectory is the folder of the repo holding the compose file.
+	RunDirectory string `json:"run_directory"`
+	// AdditionalEnvFiles are passed to compose with --env-file, for
+	// interpolation in the compose file.
+	AdditionalEnvFiles []EnvFile `json:"additional_env_files"`
+	// ConfigFiles are other files whose changes should redeploy the Stack.
+	ConfigFiles      []ConfigFile `json:"config_files"`
+	RegistryProvider string       `json:"registry_provider"`
+	RegistryAccount  string       `json:"registry_account"`
+	// ComposeCmdWrapper wraps `docker compose up`; [[COMPOSE_COMMAND]]
+	// stands for the wrapped command.
+	ComposeCmdWrapper string `json:"compose_cmd_wrapper"`
+	WebhookEnabled    bool   `json:"webhook_enabled"`
 }
 
-// DeploymentImage points a Deployment at a Build's image.
-type DeploymentImage struct {
-	Type   string                `json:"type"`
-	Params DeploymentImageParams `json:"params"`
+// EnvFile is a compose --env-file, tracked for changes.
+type EnvFile struct {
+	Path  string `json:"path"`
+	Track bool   `json:"track"`
 }
 
-type DeploymentImageParams struct {
-	BuildID string `json:"build_id"`
+// ConfigFile is a file a Stack depends on. Requires says what a change
+// to it calls for: "Redeploy", "Restart", or "None" (Komodo's default,
+// which makes tracking the file pointless for deploys).
+type ConfigFile struct {
+	Path     string `json:"path"`
+	Requires string `json:"requires"`
 }
 
-// BuildImage is the DeploymentImage for the latest version of a Build.
-func BuildImage(build string) DeploymentImage {
-	return DeploymentImage{Type: "Build", Params: DeploymentImageParams{BuildID: build}}
+// EnsureStack creates the named Stack with cfg, or updates it in place.
+func (c *Client) EnsureStack(ctx context.Context, name string, cfg StackConfig) error {
+	return c.ensureResource(ctx, "Stack", name, cfg)
 }
 
-// EnsureDeployment creates the named Deployment with cfg, or updates it
-// in place.
-func (c *Client) EnsureDeployment(ctx context.Context, name string, cfg DeploymentConfig) error {
-	return c.ensureResource(ctx, "Deployment", name, cfg)
+// ActionConfig is the subset of Komodo's ActionConfig urbex sets.
+type ActionConfig struct {
+	// FileContents is the TypeScript the Action runs.
+	FileContents   string `json:"file_contents"`
+	WebhookEnabled bool   `json:"webhook_enabled"`
+}
+
+// EnsureAction creates the named Action with cfg, or updates it in place.
+func (c *Client) EnsureAction(ctx context.Context, name string, cfg ActionConfig) error {
+	return c.ensureResource(ctx, "Action", name, cfg)
 }
 
 // ProcedureConfig is the subset of Komodo's ProcedureConfig urbex sets.
 type ProcedureConfig struct {
 	WebhookEnabled bool    `json:"webhook_enabled"`
 	Stages         []Stage `json:"stages"`
+	// Schedule is a cron expression with seconds
+	// ("second minute hour day month weekday"), used when ScheduleEnabled.
+	ScheduleFormat  string `json:"schedule_format"`
+	Schedule        string `json:"schedule"`
+	ScheduleEnabled bool   `json:"schedule_enabled"`
 }
 
 // Stage is a set of executions run in parallel; stages run in order.
@@ -242,7 +265,8 @@ type EnabledExecution struct {
 	Execution Execution `json:"execution"`
 }
 
-// Execution is one Komodo operation, e.g. {RunBuild {build: name}}.
+// Execution is one Komodo operation, e.g. {BatchDeployStackIfChanged
+// {pattern: "*"}}.
 type Execution struct {
 	Type   string            `json:"type"`
 	Params map[string]string `json:"params"`
@@ -268,7 +292,7 @@ func (c *Client) EnsureProcedure(ctx context.Context, name string, cfg Procedure
 }
 
 // ensureResource creates or updates a named resource of the given kind
-// (Build, Deployment, Procedure). Komodo resolves resources by name as
+// (Build, Stack, Procedure, Action). Komodo resolves resources by name as
 // well as by id, so urbex never stores ids.
 func (c *Client) ensureResource(ctx context.Context, kind, name string, cfg any) error {
 	exists, err := c.resourceExists(ctx, kind, name)
@@ -302,7 +326,7 @@ func (c *Client) resourceExists(ctx context.Context, kind, name string) (bool, e
 	return false, nil
 }
 
-// DeleteResource deletes the named Build, Deployment, Procedure, or
+// DeleteResource deletes the named Build, Stack, Procedure, Action, or
 // Server if it exists.
 func (c *Client) DeleteResource(ctx context.Context, kind, name string) error {
 	exists, err := c.resourceExists(ctx, kind, name)
@@ -338,8 +362,9 @@ func (c *Client) CreateOnboardingKey(ctx context.Context, name string) (string, 
 // WaitServers accepts the attempted key, and returns the names of the
 // Servers it re-keyed.
 func (c *Client) WaitServers(ctx context.Context, names []string, timeout time.Duration) (rekeyed []string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// A deadline checked between polls, not a context deadline: a poll
+	// cut short would hide which servers are still missing.
+	deadline := time.Now().Add(timeout)
 	wanted := make(map[string]bool, len(names))
 	for _, n := range names {
 		wanted[n] = true
@@ -377,38 +402,65 @@ func (c *Client) WaitServers(ctx context.Context, names []string, timeout time.D
 		if len(pending) == 0 {
 			return rekeyed, nil
 		}
+		if time.Now().After(deadline) {
+			return rekeyed, fmt.Errorf("komodo servers not connected: %v", pending)
+		}
 		select {
 		case <-ctx.Done():
-			return rekeyed, fmt.Errorf("komodo servers not connected: %v", pending)
+			return rekeyed, ctx.Err()
 		case <-time.After(c.pollInterval):
 		}
 	}
 }
 
-// DeploymentStatus is what Komodo reports about a Deployment's container.
-type DeploymentStatus struct {
+// StackStatus is what Komodo reports about a Stack.
+type StackStatus struct {
 	Name  string
-	State string // e.g. "running", "not_deployed", "exited"
-	Image string
+	State string // e.g. "running", "down", "unhealthy", "deploying"
+	// Images are the images of the Stack's running services.
+	Images []string
 }
 
-// ListDeployments returns the status of every Deployment, by name.
-func (c *Client) ListDeployments(ctx context.Context) (map[string]DeploymentStatus, error) {
+// ListStacks returns the status of every Stack, by name.
+func (c *Client) ListStacks(ctx context.Context) (map[string]StackStatus, error) {
 	var items []struct {
 		Name string `json:"name"`
 		Info struct {
-			State string `json:"state"`
-			Image string `json:"image"`
+			State    string `json:"state"`
+			Services []struct {
+				Image string `json:"image"`
+			} `json:"services"`
 		} `json:"info"`
 	}
-	if err := c.call(ctx, "read", "ListDeployments", map[string]any{}, &items); err != nil {
-		return nil, fmt.Errorf("listing komodo deployments: %w", err)
+	if err := c.call(ctx, "read", "ListStacks", map[string]any{}, &items); err != nil {
+		return nil, fmt.Errorf("listing komodo stacks: %w", err)
 	}
-	out := make(map[string]DeploymentStatus, len(items))
+	out := make(map[string]StackStatus, len(items))
 	for _, it := range items {
-		out[it.Name] = DeploymentStatus{Name: it.Name, State: it.Info.State, Image: it.Info.Image}
+		st := StackStatus{Name: it.Name, State: it.Info.State}
+		for _, svc := range it.Info.Services {
+			st.Images = append(st.Images, svc.Image)
+		}
+		out[it.Name] = st
 	}
 	return out, nil
+}
+
+// DestroyStack takes the named Stack's containers down (`compose down`)
+// and waits for it, if the Stack exists.
+func (c *Client) DestroyStack(ctx context.Context, name string) error {
+	exists, err := c.resourceExists(ctx, "Stack", name)
+	if err != nil || !exists {
+		return err
+	}
+	var u Update
+	if err := c.call(ctx, "execute", "DestroyStack", map[string]string{"stack": name}, &u); err != nil {
+		return fmt.Errorf("destroying komodo stack %s: %w", name, err)
+	}
+	if _, err := c.WaitUpdate(ctx, u.ID.OID, c.pollInterval); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Update is Komodo's record of one operation (e.g. a build run).
@@ -485,14 +537,22 @@ func (c *Client) ExplainFailure(ctx context.Context, u *Update) string {
 	return u.FailureSummary()
 }
 
-// RunProcedure starts the named procedure and returns the Update
-// tracking it.
-func (c *Client) RunProcedure(ctx context.Context, name string) (*Update, error) {
-	var u Update
-	if err := c.call(ctx, "execute", "RunProcedure", map[string]string{"procedure": name}, &u); err != nil {
-		return nil, fmt.Errorf("running komodo procedure %s: %w", name, err)
+// RunProcedure starts the named procedure without waiting for it.
+func (c *Client) RunProcedure(ctx context.Context, name string) error {
+	if err := c.call(ctx, "execute", "RunProcedure", map[string]string{"procedure": name}, nil); err != nil {
+		return fmt.Errorf("running komodo procedure %s: %w", name, err)
 	}
-	return &u, nil
+	return nil
+}
+
+// DeployStack deploys the named Stack from its repo as it is now and
+// waits for the result.
+func (c *Client) DeployStack(ctx context.Context, name string) (*Update, error) {
+	var u Update
+	if err := c.call(ctx, "execute", "DeployStack", map[string]string{"stack": name}, &u); err != nil {
+		return nil, fmt.Errorf("deploying komodo stack %s: %w", name, err)
+	}
+	return c.WaitUpdate(ctx, u.ID.OID, c.pollInterval)
 }
 
 // GetUpdate fetches an Update by id.

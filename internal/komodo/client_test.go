@@ -105,40 +105,32 @@ func TestEnsureBuild_CreatesWhenMissing(t *testing.T) {
 	}
 }
 
-func TestRunProcedureWaitAndExplainFailure(t *testing.T) {
+func TestWaitUpdateAndExplainFailure(t *testing.T) {
 	polls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/execute/RunProcedure":
-			w.Write([]byte(`{"_id":{"$oid":"p1"},"status":"InProgress"}`))
-		case "/read/GetUpdate":
-			var body map[string]string
-			json.NewDecoder(r.Body).Decode(&body)
-			if body["id"] == "aaaaaaaaaaaaaaaaaaaaaaaa" {
-				w.Write([]byte(`{"status":"Complete","success":false,
-					"logs":[{"stage":"Docker Run","success":false,"stderr":"<span>unknown flag</span>"}]}`))
-				return
-			}
-			polls++
-			if polls < 2 {
-				w.Write([]byte(`{"_id":{"$oid":"p1"},"status":"InProgress"}`))
-				return
-			}
-			w.Write([]byte(`{"_id":{"$oid":"p1"},"status":"Complete","success":false,
-				"logs":[{"stage":"Execute procedure","success":true},
-				{"stage":"execution error","success":false,"stdout":"ERROR: see update '<b>aaaaaaaaaaaaaaaaaaaaaaaa</b>'"}]}`))
-		default:
+		if r.URL.Path != "/read/GetUpdate" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["id"] == "aaaaaaaaaaaaaaaaaaaaaaaa" {
+			w.Write([]byte(`{"status":"Complete","success":false,
+				"logs":[{"stage":"Compose Up","success":false,"stderr":"<span>unknown flag</span>"}]}`))
+			return
+		}
+		polls++
+		if polls < 2 {
+			w.Write([]byte(`{"_id":{"$oid":"p1"},"status":"InProgress"}`))
+			return
+		}
+		w.Write([]byte(`{"_id":{"$oid":"p1"},"status":"Complete","success":false,
+			"logs":[{"stage":"Execute procedure","success":true},
+			{"stage":"execution error","success":false,"stdout":"ERROR: see update '<b>aaaaaaaaaaaaaaaaaaaaaaaa</b>'"}]}`))
 	}))
 	defer server.Close()
 
 	c := New(server.URL, "k", "s")
-	started, err := c.RunProcedure(context.Background(), "hello-staging")
-	if err != nil {
-		t.Fatalf("RunProcedure: %v", err)
-	}
-	done, err := c.WaitUpdate(context.Background(), started.ID.OID, time.Millisecond)
+	done, err := c.WaitUpdate(context.Background(), "p1", time.Millisecond)
 	if err != nil {
 		t.Fatalf("WaitUpdate: %v", err)
 	}
@@ -146,7 +138,7 @@ func TestRunProcedureWaitAndExplainFailure(t *testing.T) {
 		t.Fatalf("expected a failed update, got %+v", done)
 	}
 	got := c.ExplainFailure(context.Background(), done)
-	if !strings.Contains(got, `"Docker Run"`) || !strings.Contains(got, "unknown flag") || strings.Contains(got, "<span>") {
+	if !strings.Contains(got, `"Compose Up"`) || !strings.Contains(got, "unknown flag") || strings.Contains(got, "<span>") {
 		t.Errorf("expected the nested update's failure without HTML, got %q", got)
 	}
 }
@@ -158,19 +150,19 @@ func TestAPIErrorIsSurfaced(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, "k", "s").RunProcedure(context.Background(), "nope")
+	err := New(server.URL, "k", "s").RunProcedure(context.Background(), "nope")
 	if err == nil || !strings.Contains(err.Error(), "Did not find any Procedure matching nope") {
 		t.Errorf("expected the komodo error message, got %v", err)
 	}
 }
 
-func TestEnsureDeployment_UpdatesExistingByName(t *testing.T) {
+func TestEnsureStack_UpdatesExistingByNameAndListsStatus(t *testing.T) {
 	var updated map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/read/ListDeployments":
-			w.Write([]byte(`[{"name":"hello-api-staging","info":{"state":"running","image":"r/o/hello-api:0.0.4-staging"}}]`))
-		case "/write/UpdateDeployment":
+		case "/read/ListStacks":
+			w.Write([]byte(`[{"name":"hello-api-staging","info":{"state":"running","services":[{"service":"app","image":"r/o/hello-api:1.4.2"}]}}]`))
+		case "/write/UpdateStack":
 			json.NewDecoder(r.Body).Decode(&updated)
 			w.Write([]byte(`{}`))
 		default:
@@ -180,22 +172,58 @@ func TestEnsureDeployment_UpdatesExistingByName(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "k", "s")
-	cfg := DeploymentConfig{ServerID: "hello-api-staging", Image: BuildImage("hello-api-staging"), Ports: "8080:8080"}
-	if err := c.EnsureDeployment(context.Background(), "hello-api-staging", cfg); err != nil {
-		t.Fatalf("EnsureDeployment: %v", err)
+	cfg := StackConfig{
+		ServerID:           "hello-api-staging",
+		Repo:               "urbex/gitops",
+		RunDirectory:       "environments/staging/hello/api",
+		AdditionalEnvFiles: []EnvFile{{Path: "version.env", Track: true}},
+		ConfigFiles:        []ConfigFile{{Path: "config.env", Requires: "Redeploy"}},
+	}
+	if err := c.EnsureStack(context.Background(), "hello-api-staging", cfg); err != nil {
+		t.Fatalf("EnsureStack: %v", err)
 	}
 	config, _ := updated["config"].(map[string]any)
-	image, _ := config["image"].(map[string]any)
-	if updated["id"] != "hello-api-staging" || image["type"] != "Build" || config["ports"] != "8080:8080" {
-		t.Errorf("unexpected update body %v", updated)
+	files, _ := config["config_files"].([]any)
+	if updated["id"] != "hello-api-staging" || config["run_directory"] != "environments/staging/hello/api" || len(files) != 1 {
+		t.Fatalf("unexpected update body %v", updated)
+	}
+	if file := files[0].(map[string]any); file["requires"] != "Redeploy" {
+		t.Errorf("tracked files must require a redeploy, got %v", file)
 	}
 
-	statuses, err := c.ListDeployments(context.Background())
+	statuses, err := c.ListStacks(context.Background())
 	if err != nil {
-		t.Fatalf("ListDeployments: %v", err)
+		t.Fatalf("ListStacks: %v", err)
 	}
-	if st := statuses["hello-api-staging"]; st.State != "running" || st.Image != "r/o/hello-api:0.0.4-staging" {
+	if st := statuses["hello-api-staging"]; st.State != "running" || len(st.Images) != 1 || st.Images[0] != "r/o/hello-api:1.4.2" {
 		t.Errorf("unexpected status %+v", st)
+	}
+}
+
+func TestDeployStack_WaitsForTheUpdate(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/execute/DeployStack":
+			w.Write([]byte(`{"_id":{"$oid":"u1"},"status":"InProgress"}`))
+		case "/read/GetUpdate":
+			polls++
+			if polls < 2 {
+				w.Write([]byte(`{"status":"InProgress"}`))
+				return
+			}
+			w.Write([]byte(`{"status":"Complete","success":true}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "k", "s")
+	c.pollInterval = time.Millisecond
+	done, err := c.DeployStack(context.Background(), "hello-api-staging")
+	if err != nil || !done.Success || polls != 2 {
+		t.Errorf("DeployStack = %+v, %v after %d polls", done, err, polls)
 	}
 }
 

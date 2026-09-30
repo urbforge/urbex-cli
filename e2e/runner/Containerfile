@@ -2,8 +2,12 @@
 # except terraform - the "LXCs" are containers created by run.sh, so
 # terraform is a stub that only logs its arguments.
 FROM docker.io/library/python:3.12-slim
+ARG SOPS_VERSION=3.13.3
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl age \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir -q --root-user-action=ignore --disable-pip-version-check ansible-core
+ && pip install --no-cache-dir -q --root-user-action=ignore --disable-pip-version-check ansible-core \
+ && curl -fsSL -o /usr/local/bin/sops \
+      "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.$(dpkg --print-architecture)" \
+ && chmod +x /usr/local/bin/sops
 COPY terraform /usr/local/bin/terraform

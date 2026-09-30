@@ -51,25 +51,58 @@ git_remote() { # the app repo's clone URL on Gitea, with credentials
   echo "http://urbex-admin:$(cred giteaToken)@$NET.200:3000/urbex/hello.git"
 }
 
-# merge_change <base-branch> <feature-branch> <new-version>: what a
-# developer does, with no urbex involved - branch off, change the app's
-# version, push, open a pull request on Gitea, merge it.
-merge_change() {
-  rm -rf /work/dev && git clone -q -b "$1" "$(git_remote)" /work/dev
+gitops_remote() { # the GitOps repo's clone URL on Gitea, with credentials
+  echo "http://urbex-admin:$(cred giteaToken)@$NET.200:3000/urbex/gitops.git"
+}
+
+# push_main <new-version>: what a developer does on a trunk-based
+# project, with no urbex involved - change the app (here, its version)
+# and push to main.
+push_main() {
+  rm -rf /work/dev && git clone -q -b main "$(git_remote)" /work/dev
   (
     cd /work/dev
-    git checkout -q -b "$2"
-    sed -i "s/^const version = .*/const version = \"$3\"/" main.go
-    git commit -qam "Release $3"
-    git push -q origin "$2" 2>/dev/null
+    sed -i "s/^const version = .*/const version = \"$1\"/" main.go
+    git commit -qam "App $1"
+    git push -q origin main 2>/dev/null
   )
-  _pr=$(gitea_api POST /repos/urbex/hello/pulls "{\"head\":\"$2\",\"base\":\"$1\",\"title\":\"$3\"}" |
-    python3 -c 'import sys,json; print(json.load(sys.stdin)["number"])')
-  # Gitea needs a moment to compute mergeability.
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    _res=$(gitea_api POST "/repos/urbex/hello/pulls/$_pr/merge" '{"Do":"merge"}')
-    case "$_res" in *"try again"*) sleep 2 ;; *) break ;; esac
+  echo "pushed $1 to main"
+}
+
+# push_tag <tag>: release by hand - tag main's head and push the tag.
+push_tag() {
+  (
+    cd /work/dev
+    git tag -a "$1" -m "Release $1"
+    git push -q origin "$1" 2>/dev/null
+  )
+  echo "pushed tag $1"
+}
+
+# expect_image <name> <tag> [timeout-seconds]: poll Gitea's registry.
+expect_image() {
+  _deadline=$(( $(date +%s) + ${3:-180} ))
+  while :; do
+    _res=$(gitea_api GET "/packages/urbex/container/$1/$2")
+    case "$_res" in *'"version"'*) echo "ok: image $1:$2 is in the registry"; return 0 ;; esac
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "image $1:$2 never appeared in the registry"
+    sleep 2
   done
-  [ -z "$_res" ] || fail "merging pull request #$_pr: $_res"
-  echo "merged pull request #$_pr ($2 -> $1)"
+}
+
+# unchanged_http <url> <substring> <seconds>: the response must keep
+# containing the substring for that long.
+unchanged_http() {
+  _deadline=$(( $(date +%s) + $3 ))
+  while [ "$(date +%s)" -lt "$_deadline" ]; do
+    _out=$(curl -s -m 5 "$1" || true)
+    case "$_out" in *"$2"*) ;; *) fail "$1 changed to '$_out' (expected to keep '$2')" ;; esac
+    sleep 3
+  done
+  echo "ok: $1 still -> $_out"
+}
+
+komodo_api() { # komodo_api <read|write|execute>/<Type> <json>
+  curl -s -X POST "$KOMODO/$1" -H "x-api-key: $(cred komodoApiKey)" \
+    -H "x-api-secret: $(cred komodoApiSecret)" -H 'content-type: application/json' -d "$2"
 }

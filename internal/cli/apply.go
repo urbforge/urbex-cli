@@ -15,17 +15,23 @@ func newApplyCmd() *cobra.Command {
 		Use:   "apply <env>",
 		Short: "Apply the planned infrastructure changes for an environment",
 		Long: `Like 'urbex plan', but runs 'terraform apply', then installs Docker and
-the Komodo Periphery agent on each service's LXC and hands the
-environment over to Komodo: per service a Build (from the app's repo on
-Gitea) and a Deployment, a Procedure that runs them, and a Gitea webhook
-that triggers it on every push to the environment's branch - staging for
-staging, main for prod. It then runs the Procedure once, so the
-environment is up when apply returns.
+the Komodo Periphery agent on each service's LXC, and sets up:
 
-If the environment's branch doesn't exist on Gitea yet, it is created
-from the local HEAD of --repo-dir. DNS registration, Keycloak
-realm/client provisioning, and Cloudflare Tunnel ingress are not yet
-implemented: services are reachable on their LAN IPs, printed at the end.
+  - the project: its repo on Gitea (creating main from the local HEAD of
+    --repo-dir if Gitea doesn't have it), a Komodo Build per service,
+    and the webhook that has Komodo build every release tag (vX.Y.Z);
+  - the environment: each service's folder in the GitOps repo
+    (environments/<env>/<project>/<service>/: compose file,
+    configuration, secrets, version) and the Komodo Stack that deploys
+    it.
+
+A new environment runs nothing until a version is set: 'urbex release',
+then 'urbex deploy <env>'. Re-applying an environment that has one waits
+for Komodo to run it.
+
+DNS registration, Keycloak realm/client provisioning, and Cloudflare
+Tunnel ingress are not yet implemented: services are reachable on their
+LAN IPs, printed at the end.
 
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap').`,
@@ -50,7 +56,7 @@ by 'urbex bootstrap').`,
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
-	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the environment's branch on Gitea if it is missing")
+	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the project's main branch on Gitea if it is missing")
 
 	return cmd
 }

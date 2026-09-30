@@ -11,6 +11,8 @@ import (
 	"github.com/urbforge/urbex-cli/internal/gitsync"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/secrets"
+	platformassets "github.com/urbforge/urbex-cli/platform"
 )
 
 // Fixed names of what bootstrap sets up inside Gitea and Komodo.
@@ -20,6 +22,17 @@ const (
 	KomodoServerName = "urbex-komodo" // Periphery server + builder on the Komodo LXC
 	KomodoVersion    = "2.2.0"        // Core and Periphery must match exactly
 	GitOpsRepoName   = "gitops"
+
+	// TrunkBranch is the one long-lived branch of every repo urbex
+	// manages: projects are developed trunk-based, and the GitOps repo is
+	// deployed from it.
+	TrunkBranch = "main"
+	// ReleaseAction is the Komodo Action that builds a project's release
+	// tags; GitOpsProcedure is the Komodo Procedure that redeploys the
+	// Stacks whose folder of the GitOps repo changed. See
+	// docs/decisions/0020-trunk-releases-gitops-environments.md.
+	ReleaseAction   = "urbex-release"
+	GitOpsProcedure = "urbex-gitops"
 )
 
 // Scopes of the Gitea token bootstrap creates, used by the CLI and by
@@ -50,6 +63,18 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 	}, nil
 }
 
+// ActionWebhook is the URL Gitea calls to run a Komodo Action on a push
+// to any ref - branches and tags alike.
+func (e Endpoints) ActionWebhook(action string) string {
+	return e.KomodoURL + "/listener/github/action/" + action + "/__ANY__"
+}
+
+// ProcedureWebhook is the URL Gitea calls to run a Komodo Procedure on a
+// push to branch.
+func (e Endpoints) ProcedureWebhook(procedure, branch string) string {
+	return e.KomodoURL + "/listener/github/procedure/" + procedure + "/" + branch
+}
+
 // RepoURL is the http clone URL of org/repo on Gitea.
 func (e Endpoints) RepoURL(org, repo string) string {
 	return e.GiteaURL + "/" + url.PathEscape(org) + "/" + url.PathEscape(repo) + ".git"
@@ -61,6 +86,7 @@ type GiteaAPI interface {
 	CreateToken(ctx context.Context, username, password, name string, scopes []string) (string, error)
 	EnsureOrg(ctx context.Context, org string) error
 	EnsureRepo(ctx context.Context, owner, name string) error
+	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branchFilter string) error
 }
 
 // KomodoAPI is the subset of the Komodo client bootstrap uses.
@@ -71,6 +97,8 @@ type KomodoAPI interface {
 	CreateOnboardingKey(ctx context.Context, name string) (string, error)
 	EnsureGitProviderAccount(ctx context.Context, domain string, https bool, username, token string) error
 	EnsureDockerRegistryAccount(ctx context.Context, domain, username, token string) error
+	EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error
+	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
 }
 
 // Clients builds API clients and syncs repos; replaced by fakes in tests.
@@ -128,7 +156,9 @@ func ensureSecrets(creds *credentials.Credentials) error {
 // setupPlatform wires the freshly provisioned base services together:
 // a Gitea token, org and GitOps repo; a Komodo API key and the onboarding
 // key project LXCs join with; Komodo's git provider and registry accounts
-// pointing at Gitea; and finally the first push of the GitOps repo.
+// pointing at Gitea; the release Action and the GitOps Procedure; the
+// first push of the GitOps repo, and the webhook that makes every later
+// push deploy.
 func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitopsRepoPath string) error {
 	ep, err := EndpointsFor(o.Config)
 	if err != nil {
@@ -192,12 +222,53 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	if err := k.EnsureDockerRegistryAccount(ctx, ep.Registry, GiteaAdminUser, creds.GiteaToken); err != nil {
 		return err
 	}
+
+	// The two pieces of Komodo that every project shares: the Action that
+	// builds release tags, and the Procedure that redeploys the Stacks
+	// whose folder of the GitOps repo changed.
+	script, err := platformassets.Komodo.ReadFile("komodo/release.ts")
+	if err != nil {
+		return err
+	}
+	if err := k.EnsureAction(ctx, ReleaseAction, komodo.ActionConfig{FileContents: string(script), WebhookEnabled: true}); err != nil {
+		return err
+	}
+	// On every push to the GitOps repo (its webhook), and every 15
+	// minutes regardless: the periodic run converges anything a webhook
+	// missed.
+	gitops := komodo.ProcedureConfig{
+		WebhookEnabled:  true,
+		ScheduleFormat:  "Cron",
+		Schedule:        "0 */15 * * * *",
+		ScheduleEnabled: true,
+		Stages: []komodo.Stage{
+			komodo.NewStage("Deploy changed stacks", "BatchDeployStackIfChanged", "pattern", []string{"*"}),
+		},
+	}
+	if err := k.EnsureProcedure(ctx, GitOpsProcedure, gitops); err != nil {
+		return err
+	}
 	fmt.Fprintf(o.Out, "Komodo ready at %s (builder %s).\n", ep.KomodoURL, KomodoServerName)
+
+	// Secrets in the GitOps repo are encrypted for the platform's age key.
+	recipient, err := secrets.Recipient(creds.AgeKey)
+	if err != nil {
+		return err
+	}
+	if err := secrets.WriteSopsConfig(gitopsRepoPath, recipient); err != nil {
+		return fmt.Errorf("writing .sops.yaml: %w", err)
+	}
 
 	if err := clients.SyncRepo(ctx, gitopsRepoPath, ep.RepoURL(o.Config.Git.Org, GitOpsRepoName), creds.GiteaToken, "urbex bootstrap"); err != nil {
 		return fmt.Errorf("syncing gitops repo: %w", err)
 	}
 	fmt.Fprintf(o.Out, "GitOps repo pushed to %s.\n", ep.RepoURL(o.Config.Git.Org, GitOpsRepoName))
+
+	// From now on a push to the GitOps repo is what deploys.
+	hook := ep.ProcedureWebhook(GitOpsProcedure, TrunkBranch)
+	if err := g.EnsureWebhook(ctx, o.Config.Git.Org, GitOpsRepoName, hook, creds.KomodoWebhookSecret, TrunkBranch); err != nil {
+		return err
+	}
 	return nil
 }
 

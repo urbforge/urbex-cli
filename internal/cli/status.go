@@ -11,6 +11,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
@@ -31,8 +32,8 @@ Technitium, Keycloak, observability) currently exist on Proxmox.
 
 With an environment argument (staging or prod), shows, for each service
 declared in urbex.yaml, whether urbex plan/apply has allocated it a
-VMID/IP, whether its LXC currently exists on Proxmox, and what Komodo
-reports it is running (container state and image).
+VMID/IP, whether its LXC currently exists on Proxmox, the version the
+GitOps repo sets for it, and what Komodo reports it is running.
 
 DNS records and TLS certificates are not tracked yet - see
 docs/architecture.md in urbforge/urbex.`,
@@ -117,7 +118,8 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		return fmt.Errorf("checking Proxmox: %w", err)
 	}
 
-	// What Komodo is running, when this machine has been bootstrapped.
+	// What the GitOps repo asks for and what Komodo runs, when this
+	// machine has been bootstrapped.
 	deployed := map[string]rollout.Deployed{}
 	if len(creds.MissingForPlatform()) == 0 {
 		ep, err := bootstrap.EndpointsFor(cfg)
@@ -125,7 +127,7 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 			return err
 		}
 		target := rollout.Target{Project: m.Project, Env: env, Services: m.Services}
-		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target)
+		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
 		if err != nil {
 			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
 		}
@@ -134,12 +136,16 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		}
 	}
 
-	fmt.Fprintf(out, "%s (%s, branch %s):\n", m.Project, env, rollout.Branch(env))
+	fmt.Fprintf(out, "%s (%s):\n", m.Project, env)
 	for _, s := range statuses {
 		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%-3s",
 			s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
 		if d, ok := deployed[s.Service]; ok {
-			fmt.Fprintf(out, " deployment=%s", d.State)
+			want := d.Want
+			if want == "" {
+				want = "none"
+			}
+			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
 			if d.Image != "" {
 				fmt.Fprintf(out, " image=%s", d.Image)
 			}

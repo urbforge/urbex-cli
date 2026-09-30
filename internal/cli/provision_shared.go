@@ -32,18 +32,27 @@ func resolveGitOpsRepoPath(flagValue string) (string, error) {
 	return "", fmt.Errorf("--gitops-repo (or URBEX_GITOPS_REPO) is required")
 }
 
-// newProvisionOrchestrator loads and validates everything urbex
-// plan/apply/deploy need: the local app manifest and the platform config
-// from an already-bootstrapped GitOps repo, plus credentials when
-// requireCreds is true (plan/apply need the Proxmox token for Terraform;
-// deploy only runs Ansible over SSH and needs none). It writes validation
-// errors to out itself (mirroring `urbex init`'s behavior) before
-// returning a plain error.
+// project is everything a command acting on one project needs: the
+// orchestrator, and the rollout driver behind it for what only the CLI
+// does with it (releases, status).
+type project struct {
+	*provision.Orchestrator
+	rollout *rollout.Rollout
+	creds   *credentials.Credentials
+}
+
+// newProvisionOrchestrator loads and validates everything a project
+// command needs: the local app manifest and the platform config from an
+// already-bootstrapped GitOps repo, plus credentials when requireCreds is
+// true (plan/apply/destroy need the Proxmox token for Terraform; the
+// others only talk to Gitea and Komodo). It writes validation errors to
+// out itself (mirroring `urbex init`'s behavior) before returning a plain
+// error.
 //
-// repoDir is the app repo's working copy, used by apply/deploy only to
-// create the environment's branch on Gitea when it doesn't exist yet;
-// plan and destroy pass "".
-func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, repoDir string, requireCreds bool) (*provision.Orchestrator, error) {
+// repoDir is the app repo's working copy, used by apply only to create
+// the project's main branch on Gitea when it doesn't exist yet; the
+// other commands pass "".
+func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, repoDir string, requireCreds bool) (*project, error) {
 	out := cmd.OutOrStdout()
 
 	m, result, err := manifest.LoadTyped(manifestPath)
@@ -102,8 +111,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
 		},
 	}
-	o.Rollout = newRollout(cfg, creds, ep, repoDir, out)
-	return o, nil
+	ro := newRollout(cfg, creds, ep, repoDir, out)
+	o.Rollout = ro
+	return &project{Orchestrator: o, rollout: ro, creds: creds}, nil
 }
 
 // newRollout builds the Gitea+Komodo rollout driver for an already

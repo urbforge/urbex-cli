@@ -1,7 +1,7 @@
 ---
 # Connects this LXC to Komodo Core as a Server named after its hostname,
 # so Komodo can roll out the project's containers on it - see
-# docs/decisions/0019-branch-environments-komodo-rollouts.md in
+# docs/decisions/0020-trunk-releases-gitops-environments.md in
 # urbforge/urbex.
 - name: Create Periphery's root directory
   file:
@@ -9,10 +9,38 @@
     state: directory
     mode: "0750"
 
-# The onboarding key comes from the environment of the machine running
-# urbex (kept in ~/.urbex/credentials.yaml), never from the GitOps repo.
-# It is only used the first time this server connects; afterwards
-# Periphery authenticates with its own key pair, kept in the keys volume.
+# Komodo decrypts an environment's secrets at deploy time by running
+# `docker compose up` through a wrapper that calls sops (see
+# docs/decisions/0020-trunk-releases-gitops-environments.md). Both run
+# inside the Periphery container, which gets this directory mounted - the
+# directory, not the files, so that replacing them here reaches it.
+- name: Create the directory of tools shared with Periphery
+  file:
+    path: /opt/urbex/bin
+    state: directory
+    mode: "0755"
+
+- name: Install sops
+  get_url:
+    url: "https://github.com/getsops/sops/releases/download/v{{ sops_version }}/sops-v{{ sops_version }}.linux.{{ sops_arch }}"
+    dest: /opt/urbex/bin/sops
+    checksum: "sha256:{{ sops_checksums[sops_arch] }}"
+    mode: "0755"
+  vars:
+    sops_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Install the compose wrapper that decrypts secrets
+  copy:
+    src: urbex-compose
+    dest: /opt/urbex/bin/urbex-compose
+    mode: "0755"
+
+# The onboarding key and the age key come from the environment of the
+# machine running
+# urbex (~/.urbex/credentials.yaml), never from the GitOps repo. The
+# onboarding key is only used the first time this server connects;
+# afterwards Periphery authenticates with its own key pair, kept in the
+# keys volume. The age key is what sops decrypts secrets with.
 - name: Template Periphery's environment
   template:
     src: periphery.env.j2
