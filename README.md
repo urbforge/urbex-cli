@@ -87,8 +87,8 @@ above - bootstrap, apply, continuous deployment to staging, release,
 promote, secrets, a hand-edited configuration, pinning, rollback,
 destroy, re-apply onto a new machine - against Debian 13 systemd machines reachable over SSH, with
 only `terraform` and the Proxmox API stubbed. `terraform validate`
-passes with the real `bpg/proxmox` provider. **Not yet run against a
-real Proxmox server** (`terraform apply` creating the LXCs).
+passes with the real `bpg/proxmox` provider, and the whole flow has been
+run on a real Proxmox VE 9.2 node with a pool-scoped, non-root token.
 
 ## Build & test
 

@@ -26,6 +26,13 @@
     dest: /opt/urbex/bin/sops
     checksum: "sha256:{{ sops_checksums[sops_arch] }}"
     mode: "0755"
+    # GitHub's release downloads can be slow to start: the default 10s
+    # timeout fails on an ordinary home connection now and then.
+    timeout: 60
+  register: sops_download
+  retries: 4
+  delay: 10
+  until: sops_download is succeeded
   vars:
     sops_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
 

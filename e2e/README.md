@@ -84,5 +84,6 @@ change the /24 and the podman network name if they clash with yours.
 
 It does not prove the Terraform modules create LXCs on a real Proxmox
 (pool placement, the `keyctl` feature, the Debian 13 template): that
-needs a real node. `terraform validate` on `platform/terraform` checks
+needs a real node, and was checked by hand - see `docs/status.md` in
+urbforge/urbex. `terraform validate` on `platform/terraform` checks
 their syntax against the real provider.
