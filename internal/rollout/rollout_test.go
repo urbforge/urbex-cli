@@ -71,6 +71,7 @@ func (f *fakeGitea) ContainerImageExists(ctx context.Context, owner, name, tag s
 
 type fakeKomodo struct {
 	waited     []string
+	waitedIdle []string
 	waitErr    error
 	builds     map[string]komodo.BuildConfig
 	stacks     map[string]komodo.StackConfig
@@ -132,6 +133,11 @@ func (f *fakeKomodo) DestroyStack(ctx context.Context, name string) error {
 	f.destroyed = append(f.destroyed, name)
 	return nil
 }
+func (f *fakeKomodo) WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error {
+	f.waitedIdle = append(f.waitedIdle, builds...)
+	return nil
+}
+
 func (f *fakeKomodo) DeleteResource(ctx context.Context, kind, name string) error {
 	f.deleted = append(f.deleted, kind+" "+name)
 	return nil
@@ -422,6 +428,10 @@ func TestRemove_EnvThenServersThenProject(t *testing.T) {
 	}
 	if strings.Join(k.deleted, ",") != "Build my-app-api,Build my-app-worker" || len(g.hooks) != 0 {
 		t.Errorf("expected builds and the release webhook gone, got %v / %v", k.deleted, g.hooks)
+	} // A build started by a push just before is waited for: Komodo
+	// refuses to delete a busy Build.
+	if strings.Join(k.waitedIdle, ",") != "my-app-api,my-app-worker" {
+		t.Errorf("expected to wait for the builds to be idle before deleting them, waited for %v", k.waitedIdle)
 	}
 }
 

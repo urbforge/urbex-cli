@@ -657,3 +657,65 @@ func (c *Client) post(ctx context.Context, path string, body, out any, headers m
 	}
 	return nil
 }
+
+// WaitIdle waits until none of the given Builds is building and the given
+// Action (if any) has no run in progress - e.g. before deleting them, which
+// Komodo refuses for a busy Build ("Build busy").
+func (c *Client) WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		busy, err := c.busy(ctx, builds, action)
+		if err != nil || busy == "" {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("komodo %s still busy after %s", busy, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.pollInterval):
+		}
+	}
+}
+
+// busy names the first of the Builds or the Action that is running, or
+// returns "" when none is.
+func (c *Client) busy(ctx context.Context, builds []string, action string) (string, error) {
+	// Komodo reports a Build's state as a boolean and an Action's as the
+	// number of runs in progress: anything but false or 0 is busy.
+	active := func(v json.RawMessage) bool {
+		s := strings.TrimSpace(string(v))
+		return s != "" && s != "false" && s != "0" && s != "null"
+	}
+	if action != "" {
+		var st struct {
+			Running json.RawMessage `json:"running"`
+		}
+		if err := c.call(ctx, "read", "GetActionActionState", map[string]string{"action": action}, &st); err != nil {
+			return "", fmt.Errorf("reading komodo action %s: %w", action, err)
+		}
+		if active(st.Running) {
+			return "action " + action, nil
+		}
+	}
+	for _, b := range builds {
+		exists, err := c.resourceExists(ctx, "Build", b)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			continue
+		}
+		var st struct {
+			Building json.RawMessage `json:"building"`
+		}
+		if err := c.call(ctx, "read", "GetBuildActionState", map[string]string{"build": b}, &st); err != nil {
+			return "", fmt.Errorf("reading komodo build %s: %w", b, err)
+		}
+		if active(st.Building) {
+			return "build " + b, nil
+		}
+	}
+	return "", nil
+}

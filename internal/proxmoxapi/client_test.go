@@ -69,3 +69,20 @@ func TestListContainerHostnames_EmptyResult(t *testing.T) {
 		t.Errorf("expected no hostnames, got %v", hostnames)
 	}
 }
+
+// Proxmox returns a container's vmid as a number, but some versions and
+// endpoints use a string: both are accepted.
+func TestListContainerIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"name":"urbex-gitea","vmid":9000},{"name":"hello-api-prod","vmid":"9101"}]}`))
+	}))
+	defer server.Close()
+
+	ids, err := New(server.URL, "t", false).ListContainerIDs(context.Background(), "pve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{9000, 9101}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+}

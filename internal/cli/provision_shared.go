@@ -16,6 +16,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
@@ -106,6 +107,7 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 		Config:      cfg,
 		Credentials: creds,
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
+		Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
 		Out:         out,
 		SyncGitOps: func(ctx context.Context, path, message string) error {
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)

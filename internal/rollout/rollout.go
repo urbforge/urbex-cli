@@ -75,6 +75,7 @@ type Komodo interface {
 	RunAction(ctx context.Context, name string, args map[string]any) (*komodo.Update, error)
 	DestroyStack(ctx context.Context, name string) error
 	DeleteResource(ctx context.Context, kind, name string) error
+	WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error
 }
 
 // Git is the subset of git operations a rollout uses on the app repo.
@@ -502,6 +503,15 @@ func (r *Rollout) RemoveServers(ctx context.Context, t Target) error {
 func (r *Rollout) RemoveProject(ctx context.Context, project string, services []manifest.Service) error {
 	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
 	if err := r.Gitea.DeleteWebhook(ctx, r.Org, project, hook); err != nil {
+		return err
+	}
+	// No push starts a build any more, but one may be running - a push
+	// just before - and Komodo refuses to delete a busy Build.
+	builds := make([]string, 0, len(services))
+	for _, svc := range services {
+		builds = append(builds, BuildName(project, svc.Name))
+	}
+	if err := r.Komodo.WaitIdle(ctx, builds, bootstrap.ReleaseAction, r.timeout()); err != nil {
 		return err
 	}
 	for _, svc := range services {

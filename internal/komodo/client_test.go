@@ -313,3 +313,36 @@ func TestNewStage(t *testing.T) {
 		t.Errorf("unexpected stage %+v", st)
 	}
 }
+
+// Komodo reports a Build's state as a boolean and an Action's as a count
+// of runs: WaitIdle waits until both are idle.
+func TestWaitIdle_WaitsForTheActionAndTheBuilds(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/read/GetActionActionState":
+			polls++
+			if polls < 3 {
+				w.Write([]byte(`{"running":1}`))
+			} else {
+				w.Write([]byte(`{"running":0}`))
+			}
+		case "/read/ListBuilds":
+			w.Write([]byte(`[{"id":"b1","name":"my-app-api"}]`))
+		case "/read/GetBuildActionState":
+			w.Write([]byte(`{"building":false}`))
+		default:
+			t.Errorf("unexpected call %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "k", "s")
+	c.pollInterval = time.Millisecond
+	if err := c.WaitIdle(context.Background(), []string{"my-app-api"}, "urbex-release", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if polls != 3 {
+		t.Errorf("expected to poll the action until idle (3 polls), got %d", polls)
+	}
+}

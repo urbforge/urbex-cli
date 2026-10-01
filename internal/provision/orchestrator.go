@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,7 +63,10 @@ type Orchestrator struct {
 	Config      *platform.Config
 	Credentials *credentials.Credentials
 	Runner      runner.CommandRunner
-	Out         io.Writer
+	// Proxmox, if set, lets plan/apply/destroy drop LXCs deleted outside
+	// Terraform from its state (see forgetVanished).
+	Proxmox ContainerLister
+	Out     io.Writer
 	// Rollout drives Komodo; required by everything but Plan.
 	Rollout Rollouter
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
@@ -90,6 +94,11 @@ type Options struct {
 // Plan materializes assets and runs `terraform plan`, without applying
 // anything or running Ansible.
 func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
+	// The ledger is shared: allocate from what Gitea has, not from a stale
+	// copy.
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
 	tfDir, err := o.prepare(opts)
 	if err != nil {
 		return err
@@ -98,6 +107,9 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	env := tfEnv(o.Credentials)
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
+	}
+	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
+		return err
 	}
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"plan"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform plan: %w", err)
@@ -123,6 +135,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	env := tfEnv(o.Credentials)
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
+	}
+	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
+		return err
 	}
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"apply", "-auto-approve"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform apply: %w", err)
@@ -572,6 +587,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("missing required credentials: %v", missing)
 	}
 
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
 	ledgerPath := filepath.Join(opts.GitOpsRepoPath, "state", "allocations.json")
 	ledger, err := allocation.Load(ledgerPath, o.Config.Proxmox.VMIDBase+100, o.Config.Proxmox.Network.BaseHostOffset+10)
 	if err != nil {
@@ -605,9 +623,6 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 			return fmt.Errorf("removing komodo stacks: %w", err)
 		}
 	}
-	if err := repo.RemoveProject(opts.Env, o.Manifest.Project); err != nil {
-		return err
-	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base assets: %w", err)
@@ -630,6 +645,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
+	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
+		return err
+	}
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"destroy", "-auto-approve"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform destroy: %w", err)
 	}
@@ -639,17 +657,44 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		}
 		// The Builds and the release webhook belong to the project, not
 		// to an environment: they go with its last environment.
-		remaining, err := repo.Environments(o.Manifest.Project)
+		envs, err := repo.Environments(o.Manifest.Project)
 		if err != nil {
 			return err
 		}
-		if len(remaining) == 0 {
+		remaining := 0
+		for _, env := range envs {
+			if env != opts.Env {
+				remaining++
+			}
+		}
+		if remaining == 0 {
 			if err := o.Rollout.RemoveProject(ctx, o.Manifest.Project, o.Manifest.Services); err != nil {
 				return fmt.Errorf("removing komodo builds: %w", err)
 			}
 		}
 	}
 
+	// The environment's folder goes last, right before the commit: the
+	// release Action can still update it (a push to main) until then, and
+	// a change to a file we delete would conflict when pulling. Its Stacks
+	// are already gone, so nothing deploys it meanwhile.
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
+	if err := repo.RemoveProject(opts.Env, o.Manifest.Project); err != nil {
+		return err
+	}
+	// Terraform's state of the destroyed LXCs is empty now; it and the
+	// environment's inventory are of no further use.
+	for _, dir := range []string{
+		tfDir,
+		filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env),
+	} {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+		os.Remove(filepath.Dir(dir)) // the project's directory, once it has no environment left
+	}
 	for _, hostname := range hostnames {
 		ledger.Remove(hostname)
 	}

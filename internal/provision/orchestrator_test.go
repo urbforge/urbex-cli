@@ -30,6 +30,14 @@ func (f *fakeRunner) Run(ctx context.Context, c runner.Command) error {
 	return f.err
 }
 
+// runnerFunc runs a function for each command, and succeeds.
+type runnerFunc func(runner.Command)
+
+func (f runnerFunc) Run(_ context.Context, c runner.Command) error {
+	f(c)
+	return nil
+}
+
 func validPlatformConfig() *platform.Config {
 	return &platform.Config{
 		Domain: "example.com",
@@ -869,5 +877,54 @@ func TestPublish_PushesAndReconciles(t *testing.T) {
 	}
 	if len(*synced) != 1 || (*synced)[0] != "urbex set secret X of api in my-app staging" || ro.reconciles != 1 {
 		t.Errorf("expected one push and one reconcile, got %v / %d", *synced, ro.reconciles)
+	}
+}
+
+// Destroy works from what Gitea has, removes the environment's folder
+// only after terraform destroy - right before committing, so a release
+// Action updating it meanwhile can't conflict - and leaves nothing of the
+// environment behind in the GitOps repo.
+func TestDestroy_RefreshesAndLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	folder := filepath.Join(dir, "environments", "staging", "my-app")
+	refreshes := 0
+	o.RefreshGitOps = func(context.Context, string) error { refreshes++; return nil }
+	folderAtTerraformDestroy := false
+	o.Runner = runnerFunc(func(cmd runner.Command) {
+		if len(cmd.Args) > 0 && cmd.Args[0] == "destroy" {
+			_, err := os.Stat(folder)
+			folderAtTerraformDestroy = err == nil
+		}
+	})
+	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	if refreshes < 2 {
+		t.Errorf("expected the gitops repo to be refreshed before reading it and before removing the folder, got %d refreshes", refreshes)
+	}
+	if !folderAtTerraformDestroy {
+		t.Error("the environment's folder should still exist while terraform destroys the LXCs")
+	}
+	for _, gone := range []string{
+		folder,
+		filepath.Join(dir, "terraform", "projects", "my-app"),
+		filepath.Join(dir, "ansible", "projects", "my-app"),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s should be gone after destroying the project's only environment", gone)
+		}
 	}
 }
