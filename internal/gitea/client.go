@@ -197,28 +197,62 @@ func (c *Client) findWebhook(ctx context.Context, owner, repo, targetURL string)
 	return nil, nil
 }
 
-// ListTags returns the names of owner/repo's tags.
-func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]string, error) {
-	var names []string
+// Tag is a tag of a repo and the commit it points to.
+type Tag struct {
+	Name   string
+	Commit string // full hash
+}
+
+// ListTags returns owner/repo's tags.
+func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]Tag, error) {
+	var all []Tag
 	for page := 1; ; page++ {
 		var tags []struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Commit struct {
+				SHA string `json:"sha"`
+			} `json:"commit"`
 		}
 		path := fmt.Sprintf("%s/tags?page=%d&limit=50", repoPath(owner, repo), page)
 		if err := c.do(ctx, http.MethodGet, path, nil, &tags, nil); err != nil {
 			return nil, fmt.Errorf("listing tags of %s/%s: %w", owner, repo, err)
 		}
 		for _, t := range tags {
-			names = append(names, t.Name)
+			all = append(all, Tag{Name: t.Name, Commit: t.Commit.SHA})
 		}
 		if len(tags) < 50 {
-			return names, nil
+			return all, nil
 		}
 	}
 }
 
+// BranchCommit returns the full hash of the head of owner/repo's branch.
+func (c *Client) BranchCommit(ctx context.Context, owner, repo, branch string) (string, error) {
+	var b struct {
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	if err := c.do(ctx, http.MethodGet, repoPath(owner, repo)+"/branches/"+url.PathEscape(branch), nil, &b, nil); err != nil {
+		return "", fmt.Errorf("reading branch %s of %s/%s: %w", branch, owner, repo, err)
+	}
+	return b.Commit.ID, nil
+}
+
+// ResolveCommit returns the full hash of ref in owner/repo: a commit
+// hash (abbreviated or not), a branch, or a tag.
+func (c *Client) ResolveCommit(ctx context.Context, owner, repo, ref string) (string, error) {
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := c.do(ctx, http.MethodGet, repoPath(owner, repo)+"/git/commits/"+url.PathEscape(ref), nil, &commit, nil); err != nil {
+		return "", fmt.Errorf("resolving %q in %s/%s: %w", ref, owner, repo, err)
+	}
+	return commit.SHA, nil
+}
+
 // CreateTag creates an annotated tag on owner/repo at target (a branch
-// or commit).
+// name or a full commit hash).
 func (c *Client) CreateTag(ctx context.Context, owner, repo, tag, target, message string) error {
 	body := map[string]string{"tag_name": tag, "target": target, "message": message}
 	if err := c.do(ctx, http.MethodPost, repoPath(owner, repo)+"/tags", body, nil, nil); err != nil {
@@ -247,7 +281,36 @@ func repoPath(owner, repo string) string {
 
 type basicAuth struct{ username, password string }
 
+// RetryDelay is how long a failed read waits before its first retry; each
+// further retry waits one more RetryDelay.
+var RetryDelay = time.Second
+
+// readAttempts bounds how often a read that Gitea answered with a server
+// error is tried. Gitea panics on some reads of a repo it is still
+// updating - e.g. a branch, right after the first push to an empty repo -
+// and answers correctly a moment later. Writes are never retried.
+const readAttempts = 5
+
+type serverError struct{ err error }
+
+func (e serverError) Error() string { return e.err.Error() }
+
 func (c *Client) do(ctx context.Context, method, path string, body, out any, basic *basicAuth) error {
+	for attempt := 1; ; attempt++ {
+		err := c.doOnce(ctx, method, path, body, out, basic)
+		var se serverError
+		if method != http.MethodGet || attempt == readAttempts || !errors.As(err, &se) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt) * RetryDelay):
+		}
+	}
+}
+
+func (c *Client) doOnce(ctx context.Context, method, path string, body, out any, basic *basicAuth) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -280,8 +343,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, bas
 		return fmt.Errorf("%s %s: %w", method, path, ErrNotFound)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gitea api %s %s returned %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		err := fmt.Errorf("gitea api %s %s returned %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		if resp.StatusCode >= 500 {
+			return serverError{err}
+		}
+		return err
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

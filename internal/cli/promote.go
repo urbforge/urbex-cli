@@ -13,15 +13,15 @@ func newPromoteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "promote",
 		Short: "Promote staging's versions to production",
-		Long: `Sets production to the versions staging is set to, by copying each
-service's version from environments/staging to environments/prod in the
-GitOps repo and pushing. Komodo deploys from there; promote then waits
-until production runs them.
+		Long: `Sets production to the release staging runs: staging normally runs a
+commit of main, so promote looks up the release tagged on that commit
+(release it first with 'urbex release'), writes it into each service's
+version file under environments/prod in the GitOps repo, and pushes.
+Komodo deploys from there; promote then waits until production runs it.
 
 Production gets the very images staging ran: nothing is rebuilt. Both
-environments must already have been applied. See
-docs/decisions/0020-trunk-releases-gitops-environments.md in
-urbforge/urbex.`,
+environments must already have been applied. See docs/reference/cli.md
+in urbforge/urbex.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -37,7 +37,7 @@ urbforge/urbex.`,
 				return err
 			}
 			if !changed {
-				fmt.Fprintln(cmd.OutOrStdout(), "Nothing to promote: production already runs staging's versions.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Nothing to promote: production already runs the release staging runs.")
 			}
 			return nil
 		},

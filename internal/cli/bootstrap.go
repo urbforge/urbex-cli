@@ -27,13 +27,15 @@ If urbex.platform.yaml does not exist yet in that directory, bootstrap
 scaffolds a starter one to be edited before running again.
 
 Then it sets up the platform: generates admin passwords (stored in
-~/.urbex/credentials.yaml, never in the GitOps repo), creates Gitea API
-tokens, the org and its "gitops" repo, a Komodo API key and Komodo's
-Gitea git/registry accounts, and pushes the GitOps repo to Gitea. Safe to
-re-run: existing secrets and tokens are kept. See
-docs/decisions/0006-bootstrap-command.md and
-docs/decisions/0018-image-build-komodo-gitea-registry.md in
-urbforge/urbex.`,
+~/.urbex/credentials.yaml, never in the GitOps repo); creates a Gitea API
+token, the org and its "gitops" repo; a Komodo API key, the onboarding
+key project LXCs join Komodo with, Komodo's Gitea git and registry
+accounts and the variables its scripts use; the Komodo Action that
+builds main and releases, and the Procedure that deploys the GitOps repo
+on every push and every 15 minutes; .sops.yaml; and pushes the GitOps
+repo to Gitea. Safe to re-run: existing secrets and tokens are kept.
+
+See docs/reference/cli.md in urbforge/urbex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {

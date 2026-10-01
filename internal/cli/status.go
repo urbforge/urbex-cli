@@ -35,8 +35,11 @@ declared in urbex.yaml, whether urbex plan/apply has allocated it a
 VMID/IP, whether its LXC currently exists on Proxmox, the version the
 GitOps repo sets for it, and what Komodo reports it is running.
 
-DNS records and TLS certificates are not tracked yet - see
-docs/architecture.md in urbforge/urbex.`,
+A version is a release (1.4.2) or a commit of main (a1b2c3d);
+"(follows-main)" marks an environment that every push to main moves.
+
+DNS records and TLS certificates are not tracked yet. See
+docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -144,6 +147,9 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 			want := d.Want
 			if want == "" {
 				want = "none"
+			}
+			if d.Track {
+				want += "(follows-main)"
 			}
 			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
 			if d.Image != "" {

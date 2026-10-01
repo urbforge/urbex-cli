@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of the urbex CLI: runs the real binary through
-# bootstrap, apply, release, deploy, promote, secrets, rollback, destroy
-# and re-apply, against containers standing in for Proxmox LXCs. See
-# e2e/README.md.
+# bootstrap, apply, continuous deployment of main to staging, release,
+# promote, secrets, pinning, rollback, destroy and re-apply, against
+# containers standing in for Proxmox LXCs. See e2e/README.md.
 #
 # usage: e2e/run.sh [--keep]    (--keep leaves the machines running)
 #
@@ -58,7 +58,7 @@ step() {
     urbex-e2e-runner sh /e2e/inside.sh "$2" >"$logfile" 2>&1; then
     # The lines worth seeing: assertions and urbex's own summaries, not
     # Ansible's per-task "ok: [host]".
-    grep -E '^(ok: [^[]|pushed |Deployed |Released |  [a-z]+ +(http|[0-9])|[a-z]+: .* -> |Nothing|Komodo server|Destroyed|Created |Set |Removed )' "$logfile" || true
+    grep -E '^(ok: [^[]|pushed |merged |Deployed |Released |Releasing |  [a-z]+ +(http|[0-9])|[a-z]+: .* -> |Nothing|Komodo server|Destroyed|Created |Set |Removed |staging )' "$logfile" || true
     if [ "${E2E_STOP_AFTER:-}" = "$STEP" ]; then
       log "Stopped after step $STEP as asked; machines left running (podman ps --filter name=e2e-)"
       exit 0
@@ -156,45 +156,57 @@ step "bootstrap again: idempotent" '
   echo "ok: second bootstrap changed nothing"'
 
 echo hello-api-staging >>"$WORK/pve-containers.txt"
-step "apply staging: infrastructure, project Builds, environment folder - nothing to run yet" '
+step "apply staging: it follows main, and runs main's head right away" '
   urbex apply staging >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply staging failed"; }
   cat /tmp/apply.log
-  grep -q "no version to run yet" /tmp/apply.log || fail "apply should say the new environment has no version"
-  for f in compose.yaml config.env secrets.sops.env; do
+  grep -q "staging follows main" /tmp/apply.log || fail "apply should say staging follows main"
+  expect_http http://$NET.210:8080/ "hello v1 from urbex (staging)" 5
+  for f in compose.yaml config.env secrets.sops.env version.env; do
     test -f /work/gitops/environments/staging/hello/api/$f || fail "missing environments/staging/hello/api/$f"
   done
-  test ! -e /work/gitops/environments/staging/hello/api/version.env || fail "a new environment must have no version"
+  grep -q "^TRACK=main$" /work/gitops/environments/staging/hello/api/version.env || fail "staging does not follow main"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "unexpected builds: $(komodo_names Builds)"
-  [ "$(komodo_names Stacks)" = "hello-api-staging" ] || fail "unexpected stacks: $(komodo_names Stacks)"
-  urbex status staging | grep "version=none stack=down" || fail "status should show an empty environment"
-  echo "ok: staging exists and is empty"'
+  urbex status staging | grep -E "version=[0-9a-f]{7}\(follows-main\) stack=running" || fail "status should show staging following main"
+  echo "ok: staging follows main"'
 
-step "release: a tag on main, built by Komodo; deploy staging: a commit to the GitOps repo" '
-  urbex release
-  expect_image hello-api 0.1.0 5
-  urbex deploy staging
-  expect_http http://$NET.210:8080/ "hello v1 from urbex (staging)" 5
-  grep -q "^VERSION=0.1.0$" /work/gitops/environments/staging/hello/api/version.env || fail "version.env was not written"
-  urbex status staging | grep "version=0.1.0 stack=running image=$NET.200:3000/urbex/hello-api:0.1.0" || fail "status does not show the running version"
-  echo "ok: 0.1.0 released and running on staging"'
-
-step "trunk development: a push to main deploys nothing; a tag pushed by hand is a release" '
+step "a push to main is deployed to staging, with no command" '
   push_main v2
-  unchanged_http http://$NET.210:8080/ "hello v1 from urbex (staging)" 20
-  [ "$(gitea_api GET /packages/urbex/container/hello-api/0.1.1 | grep -c "\"version\"")" = 0 ] || fail "a push to main must not build a release"
+  expect_http http://$NET.210:8080/ "hello v2 from urbex (staging)" 240
+  git -C /work/gitops pull -q "$(gitops_remote)" main 2>/dev/null
+  git -C /work/gitops log -1 --format=%s | grep -q "hello main@" || fail "the deploy is not a commit to the gitops repo"'
+
+step "release: the commit staging runs, tagged - nothing rebuilt" '
+  runs=$(komodo_api read/ListUpdates "{}" | python3 -c "import sys,json;print(sum(1 for u in json.load(sys.stdin)[\"updates\"] if u[\"operation\"]==\"RunBuild\"))")
+  urbex release >/tmp/release.log 2>&1 || { cat /tmp/release.log; fail "release failed"; }
+  cat /tmp/release.log
+  grep -q "from the commit staging runs" /tmp/release.log || fail "release should release what staging runs"
+  expect_image hello-api 0.1.0 5
+  after=$(komodo_api read/ListUpdates "{}" | python3 -c "import sys,json;print(sum(1 for u in json.load(sys.stdin)[\"updates\"] if u[\"operation\"]==\"RunBuild\"))")
+  [ "$runs" = "$after" ] || fail "a release must not rebuild ($runs builds before, $after after)"
+  echo "ok: 0.1.0 is the image staging runs, retagged"'
+
+step "a tag pushed by hand is a release too" '
+  push_main v3
+  expect_http http://$NET.210:8080/ "hello v3 from urbex (staging)" 240
   push_tag v0.2.0
-  expect_image hello-api 0.2.0
-  urbex deploy staging
-  expect_http http://$NET.210:8080/ "hello v2 from urbex (staging)" 5'
+  expect_image hello-api 0.2.0'
 
 echo hello-api-prod >>"$WORK/pve-containers.txt"
-step "apply prod, then promote: prod runs the image staging ran" '
-  urbex apply prod
+step "apply prod: empty until promoted; promote: the release staging runs" '
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
+  grep -q "no version to run yet" /tmp/apply.log || fail "a new prod must start empty"
   urbex promote
-  expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)" 5
-  grep -q "^VERSION=0.2.0$" /work/gitops/environments/prod/hello/api/version.env || fail "prod version.env was not written"
-  [ "$(komodo_names Builds)" = "hello-api" ] || fail "promoting must not create builds: $(komodo_names Builds)"
+  expect_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 5
+  grep -q "^VERSION=0.2.0$" /work/gitops/environments/prod/hello/api/version.env || fail "prod should run release 0.2.0"
+  if grep -q TRACK /work/gitops/environments/prod/hello/api/version.env; then fail "prod must not follow main"; fi
   urbex promote | grep "Nothing to promote" || fail "promote did not notice there is nothing left to promote"'
+
+step "promote refuses what was never released" '
+  push_main v4
+  expect_http http://$NET.210:8080/ "hello v4 from urbex (staging)" 240
+  urbex promote >/tmp/promote.log 2>&1 && fail "promoting an unreleased commit should fail"
+  grep -q "not a release" /tmp/promote.log || { cat /tmp/promote.log; fail "unexpected promote error"; }
+  expect_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 5'
 
 step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
   printf %s "s3cr3t-e2e" | urbex secret set staging api API_TOKEN
@@ -215,21 +227,31 @@ step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
 step "configuration edited by hand in the GitOps repo; an unrelated commit restarts nothing" '
   sleep 6
   cd /work/gitops
+  git pull -q "$(gitops_remote)" main 2>/dev/null
   sed -i "s/^GREETING_ENV=.*/GREETING_ENV=edited-by-hand/" environments/staging/hello/api/config.env
   git commit -qam "Change staging greeting" && git push -q "$(gitops_remote)" HEAD:main 2>/dev/null
-  expect_http http://$NET.210:8080/ "hello v2 from urbex (edited-by-hand)" 90
+  expect_http http://$NET.210:8080/ "hello v4 from urbex (edited-by-hand)" 90
   sleep 6
   echo "# note" >>README.md && git add README.md && git commit -qm "Unrelated" && git push -q "$(gitops_remote)" HEAD:main 2>/dev/null
-  unchanged_http http://$NET.211:8080/ "hello v2 from urbex (prod)" 20'
+  unchanged_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 20'
 step "the unrelated commit did not restart staging either" '
   started() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.210 "docker inspect -f {{.State.StartedAt}} hello-api-staging-app-1"; }
   before=$(started); sleep 20; after=$(started)
   [ -n "$before" ] && [ "$before" = "$after" ] || fail "staging was restarted ($before -> $after)"
   echo "ok: staging untouched since $before"'
 
+step "pin staging to a release: main no longer moves it; --follow-main resumes" '
+  urbex deploy staging --version 0.1.0 | tee /tmp/pin.log
+  grep -q "no longer follows main" /tmp/pin.log || fail "deploy should say staging stopped following main"
+  expect_http http://$NET.210:8080/ "hello v2 from urbex" 5
+  push_main v5
+  unchanged_http http://$NET.210:8080/ "hello v2 from urbex" 45
+  urbex deploy staging --follow-main
+  expect_http http://$NET.210:8080/ "hello v5 from urbex" 5'
+
 step "rollback: deploying an older release" '
   urbex deploy prod --version 0.1.0
-  expect_http http://$NET.211:8080/ "hello v1 from urbex (prod)" 5
+  expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)" 5
   urbex deploy prod --version 9.9.9 >/tmp/bad.log 2>&1 && fail "deploying a release that does not exist should fail"
   grep -q "has no image" /tmp/bad.log || { cat /tmp/bad.log; fail "unexpected error for a missing release"; }
   echo "ok: a missing release is refused"'
@@ -239,7 +261,7 @@ step "destroy staging: prod and the project Builds untouched" '
   [ "$(komodo_names Stacks)" = "hello-api-prod" ] || fail "unexpected stacks left: $(komodo_names Stacks)"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
   test ! -e /work/gitops/environments/staging/hello || fail "the staging folder is still in the gitops repo"
-  expect_http http://$NET.211:8080/ "hello v1 from urbex (prod)"
+  expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)"
   echo "ok: staging is gone from komodo and the gitops repo"'
 
 # What terraform does for real: the destroyed LXC is gone, and the next
@@ -247,10 +269,9 @@ step "destroy staging: prod and the project Builds untouched" '
 # identity Komodo has never seen under that name.
 podman rm -f e2e-hello-api-staging >/dev/null
 machine hello-api-staging 212
-step "apply staging again on a new machine: it rejoins Komodo, then runs a release" '
+step "apply staging again on a new machine: it rejoins Komodo and follows main" '
   urbex apply staging
-  urbex deploy staging
-  expect_http http://$NET.212:8080/ "hello v2 from urbex (staging)" 5'
+  expect_http http://$NET.212:8080/ "hello v5 from urbex (staging)" 5'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

@@ -58,16 +58,40 @@ func CommitAll(ctx context.Context, dir, message string) (bool, error) {
 // environment-provided http.extraHeader, so it never appears in the
 // process list or in the repo's config.
 func Push(ctx context.Context, dir, remoteURL, token string, refspecs ...string) error {
+	args := append([]string{"push", "-q", remoteURL}, refspecs...)
+	_, err := git(ctx, dir, authEnv(token), args...)
+	return err
+}
+
+// authEnv authenticates git's http requests with token through an
+// environment-provided http.extraHeader, so it never appears in the
+// process list or in the repo's config.
+func authEnv(token string) []string {
 	auth := base64.StdEncoding.EncodeToString([]byte("urbex:" + token))
-	env := []string{
+	return []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
 		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
 		"GIT_TERMINAL_PROMPT=0",
 	}
-	args := append([]string{"push", "-q", remoteURL}, refspecs...)
-	_, err := git(ctx, dir, env, args...)
-	return err
+}
+
+// Pull rebases the repo at dir onto branch of remoteURL, so that local
+// commits land on top of what others (people, Komodo) pushed meanwhile.
+// Uncommitted changes are kept. A remote without that branch yet (a
+// brand-new repo) is not an error.
+func Pull(ctx context.Context, dir, remoteURL, token, branch string) error {
+	if _, err := git(ctx, dir, authEnv(token), "fetch", "-q", remoteURL, branch); err != nil {
+		if strings.Contains(err.Error(), "couldn't find remote ref") {
+			return nil
+		}
+		return err
+	}
+	if _, err := git(ctx, dir, nil, "rebase", "-q", "--autostash", "FETCH_HEAD"); err != nil {
+		_, _ = git(ctx, dir, nil, "rebase", "--abort")
+		return fmt.Errorf("%w - resolve it in %s (git pull --rebase), then retry", err, dir)
+	}
+	return nil
 }
 
 // HeadCommit returns the full SHA of HEAD in the repo at dir.

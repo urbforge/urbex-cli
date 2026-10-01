@@ -1,7 +1,7 @@
 package manifest
 
 // Manifest is the typed form of a validated urbex.yaml. See
-// docs/manifest-spec.md in urbforge/urbex and
+// docs/reference/manifest.md in urbforge/urbex and
 // schema/urbex.schema.json for the authoritative shape.
 type Manifest struct {
 	APIVersion    string         `yaml:"apiVersion"`

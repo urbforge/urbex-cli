@@ -4,13 +4,16 @@
 //
 //	environments/<env>/<project>/<service>/
 //	    compose.yaml        generated from urbex.yaml; owned by urbex
-//	    version.env         VERSION=1.4.2 - the release to deploy
+//	    version.env         VERSION=1.4.2 (a release) or VERSION=a1b2c3d (a
+//	                        commit of main); TRACK=main if it follows main
 //	    config.env          non-secret configuration
 //	    secrets.sops.env    secrets, SOPS-encrypted once there are any
 //
-// Komodo deploys each of these folders as a Stack. See
-// docs/decisions/0020-trunk-releases-gitops-environments.md in
-// urbforge/urbex.
+// Komodo deploys each of these folders as a Stack. An environment that
+// follows main (staging, by default) gets its VERSION rewritten by Komodo
+// after every build of main. See
+// docs/decisions/0020-trunk-releases-gitops-environments.md and
+// docs/decisions/0021-staging-follows-main.md in urbforge/urbex.
 package envrepo
 
 import (
@@ -77,10 +80,11 @@ func (r Repo) Exists(env, project string) bool {
 
 // WriteService writes what urbex owns in a service's folder: it always
 // regenerates compose.yaml from the manifest, and creates config.env
-// (from the manifest's env block) and an empty secrets file only if they
-// don't exist yet - afterwards the GitOps repo is where an environment's
-// configuration and secrets are changed.
-func (r Repo) WriteService(env, project string, svc manifest.Service, image string) error {
+// (from the manifest's env block), an empty secrets file, and - if
+// followMain - a version file that follows main, only if they don't
+// exist yet. Afterwards the GitOps repo is where an environment's
+// configuration, secrets, and version are changed.
+func (r Repo) WriteService(env, project string, svc manifest.Service, image string, followMain bool) error {
 	dir := filepath.Join(r.Path, filepath.FromSlash(ServiceDir(env, project, svc.Name)))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -94,38 +98,75 @@ func (r Repo) WriteService(env, project string, svc manifest.Service, image stri
 			return err
 		}
 	}
-	return secrets.EnsureFile(filepath.Join(dir, SecretsFile))
+	if err := secrets.EnsureFile(filepath.Join(dir, SecretsFile)); err != nil {
+		return err
+	}
+	versionPath := filepath.Join(dir, VersionFile)
+	if _, err := os.Stat(versionPath); os.IsNotExist(err) && followMain {
+		return writeVersionFile(versionPath, VersionFileState{Track: true})
+	}
+	return nil
 }
 
-// Version returns the version a service is set to run in env, or "" if
-// none has been set yet.
-func (r Repo) Version(env, project, service string) (string, error) {
+// VersionFileState is what a service's version.env says.
+type VersionFileState struct {
+	// Version is what to run: a release ("1.4.2") or the short hash of a
+	// commit of main ("a1b2c3d"); "" if nothing is set yet.
+	Version string
+	// Track is whether the environment follows main: Komodo then sets
+	// Version to every new build of main.
+	Track bool
+}
+
+// Version returns what a service's version.env says in env; the zero
+// value if it has none.
+func (r Repo) Version(env, project, service string) (VersionFileState, error) {
 	data, err := os.ReadFile(r.file(env, project, service, VersionFile))
 	if os.IsNotExist(err) {
-		return "", nil
+		return VersionFileState{}, nil
 	}
 	if err != nil {
-		return "", err
+		return VersionFileState{}, err
 	}
+	var st VersionFileState
 	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "VERSION="); ok {
-			return v, nil
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "VERSION="); ok {
+			st.Version = v
+		}
+		if line == "TRACK=main" {
+			st.Track = true
 		}
 	}
-	return "", nil
+	return st, nil
 }
 
-// SetVersion sets the version a service runs in env. The service's
-// folder must already exist (urbex apply creates it).
-func (r Repo) SetVersion(env, project, service, version string) error {
+// SetVersion sets what a service runs in env. The service's folder must
+// already exist (urbex apply creates it).
+func (r Repo) SetVersion(env, project, service string, st VersionFileState) error {
 	p := r.file(env, project, service, VersionFile)
 	if _, err := os.Stat(filepath.Dir(p)); err != nil {
 		return fmt.Errorf("%s/%s has no folder in environment %s - run 'urbex apply %s' first", project, service, env, env)
 	}
-	content := "# The release of this service to run here. Change it (urbex deploy,\n" +
-		"# urbex promote, or by hand) and push: Komodo deploys it.\n" +
-		"VERSION=" + version + "\n"
-	return os.WriteFile(p, []byte(content), 0o644)
+	return writeVersionFile(p, st)
+}
+
+func writeVersionFile(path string, st VersionFileState) error {
+	var b strings.Builder
+	b.WriteString("# What this service runs here: a release (VERSION=1.4.2) or a commit of\n")
+	b.WriteString("# main (VERSION=a1b2c3d). Change it - urbex deploy, urbex promote, or by\n")
+	b.WriteString("# hand - and push: Komodo deploys it.\n")
+	if st.Track {
+		b.WriteString("#\n# TRACK=main: Komodo sets VERSION to every new build of main. Remove the\n")
+		b.WriteString("# line (urbex deploy --version does) to stay on a version.\n")
+	}
+	if st.Version != "" {
+		b.WriteString("VERSION=" + st.Version + "\n")
+	}
+	if st.Track {
+		b.WriteString("TRACK=main\n")
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 // RemoveProject deletes a project's folder in env.

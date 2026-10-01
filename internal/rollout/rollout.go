@@ -2,17 +2,19 @@
 // build its releases and an environment run the versions the GitOps repo
 // says:
 //
-//   - per service, a Komodo Build from the project's repo, run for every
-//     release tag (vX.Y.Z) by the platform's release Action, which a
-//     webhook on the project repo triggers;
+//   - per service, a Komodo Build from the project's repo, run by the
+//     platform's release Action - which a webhook on the project repo
+//     triggers - for every push to main (an image per commit, which the
+//     environments that follow main, staging by default, then run), and
+//     tagged for every release (vX.Y.Z);
 //   - per service and environment, a Komodo Stack on the service's LXC,
 //     whose source is the service's folder under environments/ in the
 //     GitOps repo - redeployed, when that folder changes, by the
 //     platform's GitOps Procedure.
 //
 // See docs/decisions/0018-image-build-komodo-gitea-registry.md and
-// docs/decisions/0020-trunk-releases-gitops-environments.md in
-// urbforge/urbex.
+// docs/decisions/0020-trunk-releases-gitops-environments.md and
+// docs/decisions/0021-staging-follows-main.md in urbforge/urbex.
 package rollout
 
 import (
@@ -25,6 +27,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/gitsync"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
@@ -53,7 +56,9 @@ type Gitea interface {
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branchFilter string) error
 	DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error
-	ListTags(ctx context.Context, owner, repo string) ([]string, error)
+	ListTags(ctx context.Context, owner, repo string) ([]gitea.Tag, error)
+	BranchCommit(ctx context.Context, owner, repo, branch string) (string, error)
+	ResolveCommit(ctx context.Context, owner, repo, ref string) (string, error)
 	CreateTag(ctx context.Context, owner, repo, tag, target, message string) error
 	ContainerImageExists(ctx context.Context, owner, name, tag string) (bool, error)
 }
@@ -67,6 +72,7 @@ type Komodo interface {
 	DeployStack(ctx context.Context, name string) (*komodo.Update, error)
 	ExplainFailure(ctx context.Context, u *komodo.Update) string
 	RunProcedure(ctx context.Context, name string) error
+	RunAction(ctx context.Context, name string, args map[string]any) (*komodo.Update, error)
 	DestroyStack(ctx context.Context, name string) error
 	DeleteResource(ctx context.Context, kind, name string) error
 }
@@ -112,11 +118,19 @@ type Target struct {
 	Services []manifest.Service
 }
 
+// FollowsMainByDefault reports whether a new environment follows main:
+// staging does - every push to main is deployed there - production
+// doesn't. See docs/decisions/0021-staging-follows-main.md.
+func FollowsMainByDefault(env string) bool { return env == "staging" }
+
 // Deployed is the state of one service in an environment.
 type Deployed struct {
 	Service string
-	// Want is the version the GitOps repo asks for ("" if none is set).
+	// Want is the version the GitOps repo asks for: a release ("1.4.2"),
+	// a commit of main ("a1b2c3d"), or "" if none is set.
 	Want string
+	// Track is whether the environment follows main.
+	Track bool
 	// Image is what Komodo reports running ("" if nothing is).
 	Image string
 	State string
@@ -207,7 +221,7 @@ func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
 // GitOps repo - see envrepo.Repo.WriteService.
 func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 	for _, svc := range t.Services {
-		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc.Name)); err != nil {
+		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc.Name), FollowsMainByDefault(t.Env)); err != nil {
 			return fmt.Errorf("writing %s: %w", envrepo.ServiceDir(t.Env, t.Project, svc.Name), err)
 		}
 	}
@@ -241,19 +255,68 @@ func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) err
 	return nil
 }
 
-// Tags returns the project's release history as its tags on Gitea.
-func (r *Rollout) Tags(ctx context.Context, project string) ([]string, error) {
-	return r.Gitea.ListTags(ctx, r.Org, project)
+// Releases returns the project's releases: its vX.Y.Z tags on Gitea.
+func (r *Rollout) Releases(ctx context.Context, project string) ([]gitea.Tag, error) {
+	tags, err := r.Gitea.ListTags(ctx, r.Org, project)
+	if err != nil {
+		return nil, err
+	}
+	var releases []gitea.Tag
+	for _, t := range tags {
+		if _, ok := semver.Parse(t.Name); ok && strings.HasPrefix(t.Name, "v") {
+			releases = append(releases, t)
+		}
+	}
+	return releases, nil
 }
 
-// Release tags version on the project's main branch - which makes Komodo
-// build it - and waits until every service's image is in the registry.
-func (r *Rollout) Release(ctx context.Context, project string, services []manifest.Service, version semver.Version) error {
-	message := "Release " + version.String()
-	if err := r.Gitea.CreateTag(ctx, r.Org, project, version.Tag(), bootstrap.TrunkBranch, message); err != nil {
+// ResolveCommit returns the full hash of ref - a commit (abbreviated or
+// not), branch, or tag - in the project's repo.
+func (r *Rollout) ResolveCommit(ctx context.Context, project, ref string) (string, error) {
+	return r.Gitea.ResolveCommit(ctx, r.Org, project, ref)
+}
+
+// MainCommit returns the full hash of the project's main branch head.
+func (r *Rollout) MainCommit(ctx context.Context, project string) (string, error) {
+	return r.Gitea.BranchCommit(ctx, r.Org, project, bootstrap.TrunkBranch)
+}
+
+// BuildMain has Komodo build the head of the project's main branch now
+// and set the environments that follow main to it - what a push to main
+// does - and waits for the build and the commit to the GitOps repo; the
+// deploy then follows from there.
+func (r *Rollout) BuildMain(ctx context.Context, project string) error {
+	commit, err := r.MainCommit(ctx, project)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(r.Out, "Tagged %s on %s; Komodo is building it...\n", version.Tag(), bootstrap.TrunkBranch)
+	fmt.Fprintf(r.Out, "Building %s main@%s on Komodo...\n", project, shortRef(commit))
+	args := map[string]any{
+		"WEBHOOK_BRANCH": bootstrap.TrunkBranch,
+		"WEBHOOK_BODY": map[string]any{
+			"repository": map[string]any{"full_name": r.Org + "/" + project},
+			"after":      commit,
+		},
+	}
+	done, err := r.Komodo.RunAction(ctx, bootstrap.ReleaseAction, args)
+	if err != nil {
+		return err
+	}
+	if !done.Success {
+		return fmt.Errorf("building %s main@%s failed - %s", project, shortRef(commit), r.Komodo.ExplainFailure(ctx, done))
+	}
+	return nil
+}
+
+// Release tags version on target (a full commit hash, or main) - which
+// makes Komodo give that commit's images the version as tag, building
+// them if main never did - and waits until every service has it.
+func (r *Rollout) Release(ctx context.Context, project string, services []manifest.Service, version semver.Version, target string) error {
+	message := "Release " + version.String()
+	if err := r.Gitea.CreateTag(ctx, r.Org, project, version.Tag(), target, message); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.Out, "Tagged %s on %s; Komodo is publishing its images...\n", version.Tag(), shortRef(target))
 
 	deadline := time.Now().Add(r.timeout())
 	for {
@@ -276,8 +339,15 @@ func (r *Rollout) Release(ctx context.Context, project string, services []manife
 	}
 }
 
-// MissingImages returns the services that have no image for version in
-// the registry.
+func shortRef(ref string) string {
+	if len(ref) == 40 {
+		return ref[:7]
+	}
+	return ref
+}
+
+// MissingImages returns the services that have no image tagged version
+// (a release, or a commit's short hash) in the registry.
 func (r *Rollout) MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error) {
 	var missing []string
 	for _, svc := range services {
@@ -383,11 +453,11 @@ func (r *Rollout) Status(ctx context.Context, t Target, repo envrepo.Repo) ([]De
 	}
 	deployed := make([]Deployed, 0, len(t.Services))
 	for _, svc := range t.Services {
-		want, err := repo.Version(t.Env, t.Project, svc.Name)
+		st, err := repo.Version(t.Env, t.Project, svc.Name)
 		if err != nil {
 			return nil, err
 		}
-		d := Deployed{Service: svc.Name, Want: want, State: "not_declared"}
+		d := Deployed{Service: svc.Name, Want: st.Version, Track: st.Track, State: "not_declared"}
 		if st, ok := stacks[ResourceName(t.Project, svc.Name, t.Env)]; ok {
 			d.State = st.State
 			if len(st.Images) > 0 {
@@ -445,8 +515,9 @@ func (r *Rollout) RemoveProject(ctx context.Context, project string, services []
 // buildConfig is the Komodo Build of one service: clone the project's
 // repo from Gitea, build with the service's own Dockerfile (runtime
 // docker) or Urbex's per-runtime one, and push to Gitea's registry as
-// <project>-<service>:<version>. Which commit and version is set by the
-// release Action for each tag; the Build never runs on its own.
+// <project>-<service>:<short commit hash>. The release Action sets the
+// commit for each push to main and never rebuilds for a release: it
+// adds the version tag to the commit's image.
 func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.BuildConfig, error) {
 	cfg := komodo.BuildConfig{
 		BuilderID:          bootstrap.KomodoServerName,
@@ -457,7 +528,7 @@ func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.Buil
 		Branch:             bootstrap.TrunkBranch,
 		ImageName:          BuildName(project, svc.Name),
 		AutoIncrement:      false,
-		IncludeVersionTags: true,
+		IncludeVersionTags: false,
 		IncludeCommitTag:   true,
 		ImageRegistry: []komodo.ImageRegistry{{
 			Domain:       r.Endpoints.Registry,

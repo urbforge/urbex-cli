@@ -58,3 +58,57 @@ func TestCommitAllThenPush(t *testing.T) {
 		t.Errorf("remote main = %s, want %s", pushed, head)
 	}
 }
+
+func TestPull_RebasesLocalCommitsOntoOthersPushes(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if _, err := git(ctx, remote, nil, "init", "-q", "--bare", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A remote that doesn't have the branch yet is fine.
+	mine := t.TempDir()
+	os.WriteFile(filepath.Join(mine, "a"), []byte("1"), 0o644)
+	if _, err := CommitAll(ctx, mine, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Pull(ctx, mine, remote, "token", "main"); err != nil {
+		t.Fatalf("Pull from an empty remote: %v", err)
+	}
+	if err := Push(ctx, mine, remote, "token", "HEAD:refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Someone else - Komodo, say - pushes...
+	theirs := t.TempDir()
+	if _, err := git(ctx, theirs, nil, "clone", "-q", remote, "."); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(theirs, "b"), []byte("2"), 0o644)
+	if _, err := CommitAll(ctx, theirs, "theirs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Push(ctx, theirs, remote, "token", "HEAD:refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// ...while we commit locally, with an uncommitted change on top.
+	os.WriteFile(filepath.Join(mine, "c"), []byte("3"), 0o644)
+	if _, err := CommitAll(ctx, mine, "mine"); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(mine, "a"), []byte("uncommitted"), 0o644)
+
+	if err := Pull(ctx, mine, remote, "token", "main"); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if err := Push(ctx, mine, remote, "token", "HEAD:refs/heads/main"); err != nil {
+		t.Fatalf("Push after Pull must fast-forward: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(mine, "b")); string(data) != "2" {
+		t.Error("expected their commit to be pulled")
+	}
+	if data, _ := os.ReadFile(filepath.Join(mine, "a")); string(data) != "uncommitted" {
+		t.Error("uncommitted changes must survive a pull")
+	}
+}

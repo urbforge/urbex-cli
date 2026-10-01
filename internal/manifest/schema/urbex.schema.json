@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://urbforge.github.io/urbex/schemas/urbex.schema.json",
   "title": "Urbex app manifest",
-  "description": "Schema for urbex.yaml, the per-app manifest declaring an app's infrastructure needs. See docs/manifest-spec.md.",
+  "description": "Schema for urbex.yaml, the per-app manifest declaring an app's infrastructure needs. See docs/reference/manifest.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "project"],
@@ -106,8 +106,7 @@
         },
         "healthcheck": {
           "type": "string",
-          "description": "HTTP path used for health checks.",
-          "default": "/healthz"
+          "description": "HTTP path probed (GET, inside the container) to tell whether the service is healthy. No healthcheck when omitted."
         },
         "resources": {
           "type": "object",

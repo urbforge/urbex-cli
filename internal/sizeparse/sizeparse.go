@@ -1,5 +1,5 @@
 // Package sizeparse parses the Kubernetes-style quantity strings used in
-// urbex.yaml's resources section (see docs/manifest-spec.md in
+// urbex.yaml's resources section (see docs/reference/manifest.md in
 // urbforge/urbex), e.g. "512Mi" or "2Gi", into plain integers Terraform
 // variables expect.
 package sizeparse

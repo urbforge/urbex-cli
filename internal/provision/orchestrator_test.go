@@ -13,6 +13,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/rollout"
@@ -81,6 +82,12 @@ type fakeRollout struct {
 	removedEnvs                  []rollout.Target
 	serversRemoved               int
 	projectsRemoved              []string
+	mainBuilds                   int
+	// mainVersion is what a build of main sets following environments to.
+	mainVersion string
+	releases    []gitea.Tag
+	repo        *envrepo.Repo
+	services    []manifest.Service
 }
 
 func (f *fakeRollout) SetupProject(ctx context.Context, project string, services []manifest.Service) error {
@@ -90,7 +97,7 @@ func (f *fakeRollout) SetupProject(ctx context.Context, project string, services
 
 func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
 	for _, svc := range t.Services {
-		if err := repo.WriteService(t.Env, t.Project, svc, "192.168.1.200:3000/urbex/"+t.Project+"-"+svc.Name); err != nil {
+		if err := repo.WriteService(t.Env, t.Project, svc, "192.168.1.200:3000/urbex/"+t.Project+"-"+svc.Name, rollout.FollowsMainByDefault(t.Env)); err != nil {
 			return err
 		}
 	}
@@ -99,6 +106,7 @@ func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
 
 func (f *fakeRollout) SetupEnv(ctx context.Context, t rollout.Target, repo envrepo.Repo) error {
 	f.envSetups++
+	f.repo, f.services = &repo, t.Services
 	return f.WriteEnv(t, repo)
 }
 
@@ -109,6 +117,28 @@ func (f *fakeRollout) MissingImages(ctx context.Context, project string, service
 func (f *fakeRollout) Deploy(ctx context.Context, t rollout.Target) error {
 	f.deploys++
 	return nil
+}
+
+// BuildMain stands in for the release Action: it sets every following
+// environment of the last target seen to mainVersion.
+func (f *fakeRollout) BuildMain(ctx context.Context, project string) error {
+	f.mainBuilds++
+	if f.repo == nil {
+		return nil
+	}
+	for _, env := range []string{"staging", "prod"} {
+		for _, svc := range f.services {
+			st, _ := f.repo.Version(env, project, svc.Name)
+			if st.Track {
+				f.repo.SetVersion(env, project, svc.Name, envrepo.VersionFileState{Version: f.mainVersion, Track: true})
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeRollout) Releases(ctx context.Context, project string) ([]gitea.Tag, error) {
+	return f.releases, nil
 }
 
 func (f *fakeRollout) Reconcile(ctx context.Context) error {
@@ -122,13 +152,15 @@ func (f *fakeRollout) WaitDeployed(ctx context.Context, t rollout.Target, repo e
 	}
 	var deployed []rollout.Deployed
 	for _, svc := range t.Services {
-		want, err := repo.Version(t.Env, t.Project, svc.Name)
+		st, err := repo.Version(t.Env, t.Project, svc.Name)
 		if err != nil {
 			return nil, err
 		}
+		want := st.Version
 		deployed = append(deployed, rollout.Deployed{
 			Service: svc.Name,
 			Want:    want,
+			Track:   st.Track,
 			State:   "running",
 			Image:   "192.168.1.200:3000/urbex/" + t.Project + "-" + svc.Name + ":" + want,
 		})
@@ -386,6 +418,13 @@ func TestDeploy_SetsTheVersionInTheGitOpsRepoAndWaits(t *testing.T) {
 	if !strings.Contains(out.String(), "http://192.168.1.210:8080  1.4.2 (192.168.1.200:3000/urbex/my-app-api:1.4.2)") {
 		t.Errorf("expected the deployed service in the output:\n%s", out)
 	}
+	// Staging followed main; deploying a version pins it, and says so.
+	if st, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api"); st.Track {
+		t.Errorf("deploying a version must stop following main, got %+v", st)
+	}
+	if !strings.Contains(out.String(), "no longer follows main") {
+		t.Errorf("expected a note that staging stopped following main:\n%s", out)
+	}
 }
 
 func TestDeploy_RefusesAVersionThatWasNotBuilt(t *testing.T) {
@@ -398,47 +437,56 @@ func TestDeploy_RefusesAVersionThatWasNotBuilt(t *testing.T) {
 	ro.missing = []string{"api"}
 
 	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: "9.9.9"})
-	if err == nil || !strings.Contains(err.Error(), "release 9.9.9 has no image for [api]") {
+	if err == nil || !strings.Contains(err.Error(), "9.9.9 has no image for [api]") {
 		t.Fatalf("expected a missing image error, got %v", err)
 	}
 	if len(*synced) != 0 {
 		t.Errorf("nothing must be pushed for a version that doesn't exist, got %v", *synced)
 	}
-	for _, bad := range []string{"", "v1.4.2", "1.4", "latest"} {
+	for _, bad := range []string{"", "v1.4.2", "1.4", "latest", "abc12", "ABC1234", "g123456"} {
 		if err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: bad}); err == nil || !strings.Contains(err.Error(), "invalid version") {
 			t.Errorf("Deploy(%q): expected an invalid version error, got %v", bad, err)
 		}
 	}
 }
 
-func TestPromote_CopiesStagingVersionsToProd(t *testing.T) {
+func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 	dir := t.TempDir()
-	o, _, _, out, synced := newOrchestrator(validManifest())
+	o, _, ro, out, synced := newOrchestrator(validManifest())
 	ctx := context.Background()
 
 	if _, err := o.Promote(ctx, dir); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
 		t.Fatalf("expected promote before any apply to say so, got %v", err)
 	}
+	ro.mainVersion = "a1b2c3d"
 	for _, env := range []string{"staging", "prod"} {
 		if err := o.Apply(ctx, Options{Env: env, GitOpsRepoPath: dir}); err != nil {
 			t.Fatalf("Apply %s: %v", env, err)
 		}
 	}
-	if _, err := o.Promote(ctx, dir); err == nil || !strings.Contains(err.Error(), "staging has no version") {
-		t.Fatalf("expected promote with nothing in staging to say so, got %v", err)
+
+	// Staging runs a commit of main that was never released.
+	_, err := o.Promote(ctx, dir)
+	if err == nil || !strings.Contains(err.Error(), "commit a1b2c3d, which is not a release") {
+		t.Fatalf("expected promote of an unreleased commit to point at urbex release, got %v", err)
 	}
-	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"}); err != nil {
-		t.Fatalf("Deploy: %v", err)
+
+	// Once released, promote finds the release by its commit.
+	ro.releases = []gitea.Tag{
+		{Name: "v1.4.1", Commit: "0000000000000000000000000000000000000000"},
+		{Name: "v1.4.2", Commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
 	}
 	*synced = nil
-
 	changed, err := o.Promote(ctx, dir)
 	if err != nil || !changed {
 		t.Fatalf("Promote = %v, %v; want a change", changed, err)
 	}
-	prod, _ := os.ReadFile(filepath.Join(dir, "environments", "prod", "my-app", "api", "version.env"))
-	if !strings.Contains(string(prod), "VERSION=1.4.2\n") {
-		t.Errorf("expected prod set to staging's version:\n%s", prod)
+	prod, _ := (envrepo.Repo{Path: dir}).Version("prod", "my-app", "api")
+	if prod != (envrepo.VersionFileState{Version: "1.4.2"}) {
+		t.Errorf("expected prod pinned to release 1.4.2, got %+v", prod)
+	}
+	if staging, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api"); !staging.Track {
+		t.Error("promoting must leave staging following main")
 	}
 	if len(*synced) != 1 || (*synced)[0] != "urbex promote staging to my-app prod" {
 		t.Errorf("unexpected gitops syncs %v", *synced)
@@ -451,6 +499,45 @@ func TestPromote_CopiesStagingVersionsToProd(t *testing.T) {
 	changed, err = o.Promote(ctx, dir)
 	if err != nil || changed || len(*synced) != 0 {
 		t.Errorf("a second promote must change and push nothing, got changed=%v err=%v synced=%v", changed, err, *synced)
+	}
+}
+
+func TestDeploy_FollowMainResumesTracking(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ctx := context.Background()
+	ro.mainVersion = "a1b2c3d"
+	if err := o.Apply(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	ro.mainVersion, ro.mainBuilds = "f00ba47", 0
+	out.Reset()
+
+	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, FollowMain: true}); err != nil {
+		t.Fatalf("Deploy --follow-main: %v", err)
+	}
+	st, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api")
+	if st != (envrepo.VersionFileState{Version: "f00ba47", Track: true}) || ro.mainBuilds != 1 {
+		t.Errorf("expected staging to follow main again and run main's head, got %+v after %d builds", st, ro.mainBuilds)
+	}
+	if !strings.Contains(out.String(), "staging follows main") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+}
+
+func TestValidVersion(t *testing.T) {
+	for _, ok := range []string{"1.4.2", "0.1.0", "a1b2c3d", "a1b2c3d4e5f6"} {
+		if !ValidVersion(ok) {
+			t.Errorf("ValidVersion(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"", "v1.4.2", "1.4", "a1b2c3", "a1b2c3d4e5f60", "main"} {
+		if ValidVersion(bad) {
+			t.Errorf("ValidVersion(%q) = true", bad)
+		}
 	}
 }
 
@@ -602,18 +689,18 @@ func TestPlan_MissingCredentials(t *testing.T) {
 	}
 }
 
-func TestApply_SetsUpProjectAndEmptyEnvironment(t *testing.T) {
+func TestApply_SetsUpProjectAndAnEmptyProdEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	o, r, ro, out, synced := newOrchestrator(validManifest())
 
-	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+	if err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
 	if ro.projects != 1 || ro.envSetups != 1 {
 		t.Errorf("expected the project and the environment to be set up once, got %d/%d", ro.projects, ro.envSetups)
 	}
-	inventory, err := os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "staging", "inventory.yml"))
+	inventory, err := os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "prod", "inventory.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,11 +724,11 @@ func TestApply_SetsUpProjectAndEmptyEnvironment(t *testing.T) {
 		t.Errorf("expected ansible last, with only the onboarding and age keys in its env, got %s %d vars", ansible.Name, len(ansible.Env))
 	}
 	for _, f := range []string{"compose.yaml", "config.env", "secrets.sops.env"} {
-		if _, err := os.Stat(filepath.Join(dir, "environments", "staging", "my-app", "api", f)); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "environments", "prod", "my-app", "api", f)); err != nil {
 			t.Errorf("expected %s in the environment's folder: %v", f, err)
 		}
 	}
-	if len(*synced) != 1 || (*synced)[0] != "urbex apply my-app staging" {
+	if len(*synced) != 1 || (*synced)[0] != "urbex apply my-app prod" {
 		t.Errorf("unexpected gitops syncs %v", *synced)
 	}
 	// A new environment has no version: nothing to deploy, and apply says
@@ -649,7 +736,25 @@ func TestApply_SetsUpProjectAndEmptyEnvironment(t *testing.T) {
 	if ro.deploys != 0 {
 		t.Errorf("an environment without a version must not be deployed, got %d deploys", ro.deploys)
 	}
-	for _, want := range []string{"no version to run yet", "http://192.168.1.210:8080", "urbex release", "urbex deploy staging"} {
+	for _, want := range []string{"no version to run yet", "http://192.168.1.210:8080", "urbex release", "urbex promote"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestApply_StagingFollowsMainAndRunsItsHead(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ro.mainVersion = "a1b2c3d"
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if ro.mainBuilds != 1 {
+		t.Errorf("expected apply to build main once for a new staging, got %d", ro.mainBuilds)
+	}
+	for _, want := range []string{"http://192.168.1.210:8080  a1b2c3d", "staging follows main"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}

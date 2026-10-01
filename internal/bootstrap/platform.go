@@ -98,6 +98,7 @@ type KomodoAPI interface {
 	EnsureGitProviderAccount(ctx context.Context, domain string, https bool, username, token string) error
 	EnsureDockerRegistryAccount(ctx context.Context, domain, username, token string) error
 	EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error
+	EnsureVariable(ctx context.Context, name, value string, secret bool) error
 	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
 }
 
@@ -224,8 +225,22 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	}
 
 	// The two pieces of Komodo that every project shares: the Action that
-	// builds release tags, and the Procedure that redeploys the Stacks
-	// whose folder of the GitOps repo changed.
+	// builds main and releases and moves the environments that follow
+	// main, and the Procedure that redeploys the Stacks whose folder of
+	// the GitOps repo changed. The Action reaches Gitea with these.
+	for _, v := range []struct {
+		name, value string
+		secret      bool
+	}{
+		{"URBEX_GITEA_URL", ep.GiteaURL, false},
+		{"URBEX_GITEA_USER", GiteaAdminUser, false},
+		{"URBEX_GITEA_TOKEN", creds.GiteaToken, true},
+		{"URBEX_ORG", o.Config.Git.Org, false},
+	} {
+		if err := k.EnsureVariable(ctx, v.name, v.value, v.secret); err != nil {
+			return err
+		}
+	}
 	script, err := platformassets.Komodo.ReadFile("komodo/release.ts")
 	if err != nil {
 		return err
@@ -273,11 +288,22 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 }
 
 // SyncRepo commits every change in the repo working directory at dir
-// (initializing it if needed) and pushes it to the main branch of
-// remoteURL. Used to keep the GitOps repo on Gitea the source of truth.
+// (initializing it if needed), rebases it onto the main branch of
+// remoteURL - others push there too: people, and Komodo for environments
+// that follow main - and pushes it. Used to keep the GitOps repo on
+// Gitea the source of truth.
 func SyncRepo(ctx context.Context, dir, remoteURL, token, message string) error {
 	if _, err := gitsync.CommitAll(ctx, dir, message); err != nil {
 		return err
 	}
-	return gitsync.Push(ctx, dir, remoteURL, token, "HEAD:refs/heads/main")
+	if err := gitsync.Pull(ctx, dir, remoteURL, token, TrunkBranch); err != nil {
+		return err
+	}
+	return gitsync.Push(ctx, dir, remoteURL, token, "HEAD:refs/heads/"+TrunkBranch)
+}
+
+// PullRepo brings the repo working directory at dir up to date with the
+// main branch of remoteURL.
+func PullRepo(ctx context.Context, dir, remoteURL, token string) error {
+	return gitsync.Pull(ctx, dir, remoteURL, token, TrunkBranch)
 }

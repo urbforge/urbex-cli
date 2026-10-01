@@ -110,6 +110,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 		SyncGitOps: func(ctx context.Context, path, message string) error {
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
 		},
+		RefreshGitOps: func(ctx context.Context, path string) error {
+			return bootstrap.PullRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken)
+		},
 	}
 	ro := newRollout(cfg, creds, ep, repoDir, out)
 	o.Rollout = ro

@@ -19,11 +19,13 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
@@ -45,6 +47,8 @@ type Rollouter interface {
 	WriteEnv(t rollout.Target, repo envrepo.Repo) error
 	Deploy(ctx context.Context, t rollout.Target) error
 	Reconcile(ctx context.Context) error
+	BuildMain(ctx context.Context, project string) error
+	Releases(ctx context.Context, project string) ([]gitea.Tag, error)
 	MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error)
 	WaitDeployed(ctx context.Context, t rollout.Target, repo envrepo.Repo) ([]rollout.Deployed, error)
 	RemoveEnv(ctx context.Context, t rollout.Target) error
@@ -64,13 +68,20 @@ type Orchestrator struct {
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
 	// change - which is also what makes Komodo deploy; nil skips it.
 	SyncGitOps func(ctx context.Context, gitopsRepoPath, message string) error
+	// RefreshGitOps brings the local GitOps repo up to date with Gitea,
+	// where Komodo also commits (an environment following main); nil
+	// skips it.
+	RefreshGitOps func(ctx context.Context, gitopsRepoPath string) error
 }
 
 // Options controls a single run.
 type Options struct {
 	Env string
-	// Version is the release Deploy sets the environment to ("1.4.2").
+	// Version is what Deploy sets the environment to: a release
+	// ("1.4.2") or a commit of main ("a1b2c3d").
 	Version string
+	// FollowMain makes Deploy set the environment to follow main instead.
+	FollowMain bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).
 	GitOpsRepoPath string
@@ -137,6 +148,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.Rollout.SetupProject(ctx, o.Manifest.Project, o.Manifest.Services); err != nil {
 		return err
 	}
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
 	target, repo := o.target(opts.Env), envrepo.Repo{Path: opts.GitOpsRepoPath}
 	if err := o.Rollout.SetupEnv(ctx, target, repo); err != nil {
 		return err
@@ -149,13 +163,39 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if len(versions) < len(o.Manifest.Services) {
+	set, tracking := 0, 0
+	for _, v := range versions {
+		if v.Version != "" {
+			set++
+		}
+		if v.Track {
+			tracking++
+		}
+	}
+	if set < len(o.Manifest.Services) && tracking == len(o.Manifest.Services) {
+		// A new environment that follows main: build main now, as a
+		// push would, rather than wait for the next one.
+		if err := o.Rollout.BuildMain(ctx, o.Manifest.Project); err != nil {
+			return err
+		}
+		if err := o.refresh(ctx, opts); err != nil {
+			return err
+		}
+		if err := o.waitAndReport(ctx, opts, allocations); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
+	} else if set < len(o.Manifest.Services) {
 		fmt.Fprintf(o.Out, "%s (%s) is ready, with no version to run yet:\n", o.Manifest.Project, opts.Env)
 		for _, svc := range o.Manifest.Services {
 			entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
 			fmt.Fprintf(o.Out, "  %-16s http://%s:%d\n", svc.Name, entry.IP, svc.Port)
 		}
-		fmt.Fprintf(o.Out, "Release one with 'urbex release', then run 'urbex deploy %s'.\n", opts.Env)
+		if opts.Env == "prod" {
+			fmt.Fprintln(o.Out, "Give it staging's release with 'urbex release' (if staging runs an unreleased commit), then 'urbex promote'.")
+		} else {
+			fmt.Fprintf(o.Out, "Set one with 'urbex deploy %s --version <release>' or '--follow-main'.\n", opts.Env)
+		}
 	} else {
 		// Nothing may have changed in the repo - e.g. re-applying onto a
 		// recreated LXC - so tell Komodo to deploy rather than wait for it
@@ -172,39 +212,117 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// Deploy sets the environment to opts.Version: it writes the version
-// into each service's folder of the GitOps repo (re-generating the
-// compose files from urbex.yaml on the way) and pushes. That push is
-// what deploys - Komodo notices the changed folders - so Deploy then
-// only waits for the environment to run the version.
+// Deploy sets what the environment runs: opts.Version - a release, or a
+// commit of main - which also stops it following main; or, with
+// opts.FollowMain, main's latest build, from now on. It writes each
+// service's version file in the GitOps repo (re-generating the compose
+// files from urbex.yaml on the way) and pushes. That push is what
+// deploys - Komodo notices the changed folders - so Deploy then only
+// waits for the environment to run it.
 func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	allocations, repo, err := o.applied(opts)
 	if err != nil {
 		return err
 	}
-	if _, ok := semver.Parse(opts.Version); !ok || opts.Version[0] == 'v' {
-		return fmt.Errorf("invalid version %q: expected X.Y.Z", opts.Version)
+	if opts.FollowMain {
+		return o.followMain(ctx, opts, repo, allocations)
+	}
+	if !ValidVersion(opts.Version) {
+		return fmt.Errorf("invalid version %q: expected a release (X.Y.Z) or a commit of main (its short hash)", opts.Version)
 	}
 	missing, err := o.Rollout.MissingImages(ctx, o.Manifest.Project, o.Manifest.Services, opts.Version)
 	if err != nil {
 		return err
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("release %s has no image for %v - was it released ('urbex release'), and did its build succeed?", opts.Version, missing)
+		return fmt.Errorf("%s has no image for %v - a release must be released ('urbex release'), a commit built by a push to main", opts.Version, missing)
 	}
 
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
 	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
 		return err
 	}
+	before, err := o.versions(repo, opts.Env)
+	if err != nil {
+		return err
+	}
+	wasTracking := false
 	for _, svc := range o.Manifest.Services {
-		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, opts.Version); err != nil {
+		wasTracking = wasTracking || before[svc.Name].Track
+		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: opts.Version}); err != nil {
 			return err
 		}
 	}
 	if err := o.sync(ctx, opts, "deploy "+opts.Version+" to"); err != nil {
 		return err
 	}
-	return o.waitAndReport(ctx, opts, allocations)
+	if err := o.waitAndReport(ctx, opts, allocations); err != nil {
+		return err
+	}
+	if wasTracking {
+		fmt.Fprintf(o.Out, "%s stays on %s and no longer follows main - 'urbex deploy %s --follow-main' resumes.\n", opts.Env, opts.Version, opts.Env)
+	}
+	return nil
+}
+
+// followMain sets the environment to follow main, and runs main's
+// current head.
+func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrepo.Repo, allocations map[string]allocation.Entry) error {
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
+	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
+		return err
+	}
+	current, err := o.versions(repo, opts.Env)
+	if err != nil {
+		return err
+	}
+	for _, svc := range o.Manifest.Services {
+		st := envrepo.VersionFileState{Version: current[svc.Name].Version, Track: true}
+		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, st); err != nil {
+			return err
+		}
+	}
+	if err := o.sync(ctx, opts, "follow main in"); err != nil {
+		return err
+	}
+	// Bring it to main's head now rather than at the next push.
+	if err := o.Rollout.BuildMain(ctx, o.Manifest.Project); err != nil {
+		return err
+	}
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
+	if err := o.waitAndReport(ctx, opts, allocations); err != nil {
+		return err
+	}
+	fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
+	return nil
+}
+
+// ValidVersion reports whether v can be deployed: a release (X.Y.Z) or
+// the short hash of a commit (7 to 12 hex characters, as images of main
+// are tagged).
+func ValidVersion(v string) bool {
+	if _, ok := semver.Parse(v); ok && !strings.HasPrefix(v, "v") {
+		return true
+	}
+	return isCommit(v)
+}
+
+func isCommit(v string) bool {
+	if len(v) < 7 || len(v) > 12 {
+		return false
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Publish pushes a change made to the environment's folder outside of a
@@ -212,6 +330,9 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 // services concerned are redeployed.
 func (o *Orchestrator) Publish(ctx context.Context, opts Options, verb string) error {
 	if _, _, err := o.applied(opts); err != nil {
+		return err
+	}
+	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
 	if err := o.sync(ctx, opts, verb); err != nil {
@@ -226,9 +347,10 @@ func (o *Orchestrator) Publish(ctx context.Context, opts Options, verb string) e
 	return nil
 }
 
-// Promote sets prod to the versions staging is set to, the same way
-// Deploy does. It reports false, and changes nothing, if prod already
-// is.
+// Promote sets prod to the release staging runs, the same way Deploy
+// does. Staging usually runs a commit of main; prod only runs releases,
+// so that commit must have been released ('urbex release' releases it).
+// It reports false, and changes nothing, if prod already runs it.
 func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool, error) {
 	from := Options{Env: "staging", GitOpsRepoPath: gitopsRepoPath}
 	to := Options{Env: "prod", GitOpsRepoPath: gitopsRepoPath}
@@ -239,6 +361,9 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 	if err != nil {
 		return false, err
 	}
+	if err := o.refresh(ctx, to); err != nil {
+		return false, err
+	}
 	staging, err := o.versions(repo, from.Env)
 	if err != nil {
 		return false, err
@@ -247,19 +372,28 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 	if err != nil {
 		return false, err
 	}
+	releases, err := o.Rollout.Releases(ctx, o.Manifest.Project)
+	if err != nil {
+		return false, err
+	}
+
 	changed := false
 	for _, svc := range o.Manifest.Services {
-		version, ok := staging[svc.Name]
-		if !ok {
+		version := staging[svc.Name].Version
+		if version == "" {
 			return false, fmt.Errorf("staging has no version set for %s - nothing to promote", svc.Name)
 		}
-		if prod[svc.Name] == version {
-			continue
-		}
-		if err := repo.SetVersion(to.Env, o.Manifest.Project, svc.Name, version); err != nil {
+		release, err := releaseOf(version, releases)
+		if err != nil {
 			return false, err
 		}
-		fmt.Fprintf(o.Out, "%s: %s -> %s\n", svc.Name, orNone(prod[svc.Name]), version)
+		if prod[svc.Name].Version == release && !prod[svc.Name].Track {
+			continue
+		}
+		if err := repo.SetVersion(to.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: release}); err != nil {
+			return false, err
+		}
+		fmt.Fprintf(o.Out, "%s: %s -> %s\n", svc.Name, orNone(prod[svc.Name].Version), release)
 		changed = true
 	}
 	if !changed {
@@ -269,6 +403,32 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 		return false, err
 	}
 	return true, o.waitAndReport(ctx, to, allocations)
+}
+
+// releaseOf returns the release a version is: itself if it is one, the
+// release tagged on that commit if it is a commit.
+func releaseOf(version string, releases []gitea.Tag) (string, error) {
+	if v, ok := semver.Parse(version); ok {
+		return v.String(), nil
+	}
+	var found []semver.Version
+	for _, t := range releases {
+		if strings.HasPrefix(t.Commit, version) {
+			if v, ok := semver.Parse(t.Name); ok {
+				found = append(found, v)
+			}
+		}
+	}
+	if len(found) == 0 {
+		return "", fmt.Errorf("staging runs commit %s, which is not a release - release it first ('urbex release' releases what staging runs), then promote", version)
+	}
+	latest := found[0]
+	for _, v := range found[1:] {
+		if v.After(latest) {
+			latest = v
+		}
+	}
+	return latest.String(), nil
 }
 
 func orNone(version string) string {
@@ -303,20 +463,27 @@ func (o *Orchestrator) applied(opts Options) (map[string]allocation.Entry, envre
 	return allocations, repo, nil
 }
 
-// versions returns the version each service is set to in env; services
-// with none are absent.
-func (o *Orchestrator) versions(repo envrepo.Repo, env string) (map[string]string, error) {
-	versions := map[string]string{}
+// versions returns what each service's version file says in env.
+func (o *Orchestrator) versions(repo envrepo.Repo, env string) (map[string]envrepo.VersionFileState, error) {
+	versions := map[string]envrepo.VersionFileState{}
 	for _, svc := range o.Manifest.Services {
 		v, err := repo.Version(env, o.Manifest.Project, svc.Name)
 		if err != nil {
 			return nil, err
 		}
-		if v != "" {
-			versions[svc.Name] = v
-		}
+		versions[svc.Name] = v
 	}
 	return versions, nil
+}
+
+func (o *Orchestrator) refresh(ctx context.Context, opts Options) error {
+	if o.RefreshGitOps == nil {
+		return nil
+	}
+	if err := o.RefreshGitOps(ctx, opts.GitOpsRepoPath); err != nil {
+		return fmt.Errorf("updating the gitops repo from gitea: %w", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) sync(ctx context.Context, opts Options, verb string) error {

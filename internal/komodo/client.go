@@ -230,6 +230,41 @@ func (c *Client) EnsureStack(ctx context.Context, name string, cfg StackConfig) 
 	return c.ensureResource(ctx, "Stack", name, cfg)
 }
 
+// RunAction runs the named Action with args (merged over its defaults)
+// and waits for it.
+func (c *Client) RunAction(ctx context.Context, name string, args map[string]any) (*Update, error) {
+	var u Update
+	if err := c.call(ctx, "execute", "RunAction", map[string]any{"action": name, "args": args}, &u); err != nil {
+		return nil, fmt.Errorf("running komodo action %s: %w", name, err)
+	}
+	return c.WaitUpdate(ctx, u.ID.OID, c.pollInterval)
+}
+
+// EnsureVariable creates the named Komodo variable or updates its value.
+// Secret variables are hidden in Komodo's UI and logs; resources use
+// either kind as [[NAME]].
+func (c *Client) EnsureVariable(ctx context.Context, name, value string, secret bool) error {
+	var vars []struct {
+		Name string `json:"name"`
+	}
+	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
+		return fmt.Errorf("listing komodo variables: %w", err)
+	}
+	for _, v := range vars {
+		if v.Name == name {
+			if err := c.call(ctx, "write", "UpdateVariableValue", map[string]any{"name": name, "value": value}, nil); err != nil {
+				return fmt.Errorf("updating komodo variable %s: %w", name, err)
+			}
+			return c.call(ctx, "write", "UpdateVariableIsSecret", map[string]any{"name": name, "is_secret": secret}, nil)
+		}
+	}
+	params := map[string]any{"name": name, "value": value, "is_secret": secret, "description": "Managed by urbex bootstrap"}
+	if err := c.call(ctx, "write", "CreateVariable", params, nil); err != nil {
+		return fmt.Errorf("creating komodo variable %s: %w", name, err)
+	}
+	return nil
+}
+
 // ActionConfig is the subset of Komodo's ActionConfig urbex sets.
 type ActionConfig struct {
 	// FileContents is the TypeScript the Action runs.

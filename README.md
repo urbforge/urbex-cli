@@ -1,19 +1,23 @@
 # urbex-cli
 
 The `urbex` CLI — implementation repo. For architecture, ADRs, and the
-manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex).
-For a real-world, step-by-step walkthrough (bootstrap → deploy → test →
-promote → iterate → fleet status), see
-[`docs/guide.md`](https://github.com/urbforge/urbex/blob/main/docs/guide.md)
-there.
+manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex):
+[getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md),
+the [cookbook](https://github.com/urbforge/urbex/blob/main/docs/cookbook.md),
+and the [reference](https://github.com/urbforge/urbex/blob/main/docs/reference/)
+(every command and flag in
+[CLI reference](https://github.com/urbforge/urbex/blob/main/docs/reference/cli.md)).
 
 ## Status
 
 The model ([ADR-0020](https://github.com/urbforge/urbex/blob/main/docs/decisions/0020-trunk-releases-gitops-environments.md)):
-projects are developed trunk-based on Gitea and released by tagging
-(`vX.Y.Z`), which has Komodo build their images once; what each
-environment runs - version, configuration, SOPS-encrypted secrets - is a
-folder of the GitOps repo, which Komodo deploys whenever it changes.
+projects are developed trunk-based on Gitea; every push to `main` is
+built by Komodo and deployed to staging, which follows `main`
+([ADR-0021](https://github.com/urbforge/urbex/blob/main/docs/decisions/0021-staging-follows-main.md));
+a release is a tag (`vX.Y.Z`) that gives a commit's images the version,
+and production runs releases. What each environment runs - version,
+configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
+which Komodo deploys whenever it changes.
 
 Commands:
 
@@ -29,9 +33,10 @@ Commands:
   platform**: generates admin passwords and secrets into
   `~/.urbex/credentials.yaml`; creates a Gitea token, the org and its
   `gitops` repo; a Komodo API key, the onboarding key project LXCs join
-  Komodo with, and Komodo's Gitea git/registry accounts; the Komodo
-  Action that builds release tags and the Procedure (webhook + every 15
-  minutes) that deploys the GitOps repo; `.sops.yaml`; and pushes the
+  Komodo with, Komodo's Gitea git/registry accounts and `URBEX_*`
+  variables; the Komodo Action that builds `main` and publishes release
+  tags, and the Procedure (webhook + every 15 minutes) that deploys the
+  GitOps repo; `.sops.yaml`; and pushes the
   GitOps repo to Gitea. Re-runs keep existing secrets and tokens.
 - `urbex plan <env>` — reads `urbex.yaml`, allocates a VMID/IP for each
   declared service's LXC (one per service per environment, from a ledger
@@ -40,17 +45,21 @@ Commands:
   and runs `terraform plan`.
 - `urbex apply <env>` — like `plan`, then `terraform apply`, then
   Docker, the Komodo Periphery agent and sops on each LXC (Ansible), the
-  project's repo on Gitea with a Komodo Build per service and the
-  release webhook, and the environment's folder in the GitOps repo
+  project's repo on Gitea with a Komodo Build per service and its
+  webhook, and the environment's folder in the GitOps repo
   (`environments/<env>/<project>/<service>/`) with the Komodo Stack that
-  deploys it. A new environment runs nothing until a version is set.
-- `urbex release` — tags the next release on the project's `main`
-  (`vX.Y.Z`, or `--version`) and waits for Komodo to build its images.
-  Pushing such a tag by hand does the same.
-- `urbex deploy <env>` — sets the environment to a release (the latest,
-  or `--version` - which is also how to roll back) in the GitOps repo,
-  pushes, and waits for Komodo to run it. No Terraform, no SSH.
-- `urbex promote` — sets prod's versions to staging's: prod runs the
+  deploys it. A new staging follows `main` and runs its head; a new prod
+  runs nothing until promoted.
+- `urbex release` — tags the next release (`vX.Y.Z`, or `--version`) on
+  the commit staging runs (or `main`, or `--ref`) and waits for Komodo to
+  publish its images - the ones `main` built, retagged. Pushing such a
+  tag by hand does the same.
+- `urbex deploy <env>` — sets what the environment runs in the GitOps
+  repo: the latest release, `--version` (a release or a commit; also how
+  to roll back, and it stops the environment following `main`), or
+  `--follow-main`; pushes, and waits for Komodo to run it. No Terraform,
+  no SSH.
+- `urbex promote` — sets prod to the release staging runs: prod runs the
   very images staging ran.
 - `urbex secret set|unset|list <env> <service> [KEY]` — manages a
   service's secrets in the GitOps repo, encrypted with SOPS for the
@@ -67,16 +76,16 @@ Commands:
 
 **Not implemented yet:** DNS registration, Keycloak realm/client
 provisioning, Cloudflare Tunnel ingress (services are reachable on their
-LAN IPs), continuous deployment to staging. See
+LAN IPs), promotion by pull request. See
 [`docs/status.md`](https://github.com/urbforge/urbex/blob/main/docs/status.md)
 in the docs repo.
 
 ### What has been validated
 
 [`e2e/run.sh`](e2e/README.md) runs the real binary through all of the
-above - bootstrap, apply, release, deploy, promote, secrets, a
-hand-edited configuration, rollback, destroy, re-apply onto a new
-machine - against Debian 13 systemd machines reachable over SSH, with
+above - bootstrap, apply, continuous deployment to staging, release,
+promote, secrets, a hand-edited configuration, pinning, rollback,
+destroy, re-apply onto a new machine - against Debian 13 systemd machines reachable over SSH, with
 only `terraform` and the Proxmox API stubbed. `terraform validate`
 passes with the real `bpg/proxmox` provider. **Not yet run against a
 real Proxmox server** (`terraform apply` creating the LXCs).
@@ -105,16 +114,17 @@ go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo   # provisions +
 # from an app repo containing urbex.yaml:
 export URBEX_GITOPS_REPO=/path/to/gitops-repo
 go run ./cmd/urbex plan staging
-go run ./cmd/urbex apply staging     # LXCs, the project's builds, the environment's folder and stacks
-go run ./cmd/urbex release           # tag main as the next release; Komodo builds it
-go run ./cmd/urbex deploy staging    # set staging to the latest release, in the GitOps repo
+go run ./cmd/urbex apply staging     # LXCs, builds, folder and stacks; staging runs main's head
+git push gitea main                  # ...and every push to main is deployed to staging
+go run ./cmd/urbex release           # tag what staging runs as the next release
 go run ./cmd/urbex status            # base-service status
 go run ./cmd/urbex status staging    # per service: wanted version against what Komodo runs
 printf %s "$TOKEN" | go run ./cmd/urbex secret set staging api API_TOKEN
 
 go run ./cmd/urbex apply prod                 # apply prod first
-go run ./cmd/urbex promote                    # prod runs staging's versions
+go run ./cmd/urbex promote                    # prod runs the release staging runs
 go run ./cmd/urbex deploy prod --version 0.1.0 # roll back
+go run ./cmd/urbex deploy staging --version 0.1.0  # pin staging; --follow-main resumes
 go run ./cmd/urbex destroy staging            # tears down staging's LXCs
 ```
 
@@ -147,7 +157,7 @@ internal/status/             urbex status: Proxmox presence + allocation-ledger 
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
 platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes
-platform/komodo/             the Komodo Action that builds release tags
+platform/komodo/             the Komodo Action that builds main, moves staging, and publishes release tags
 e2e/                         end-to-end test of the real binary (podman)
 ```
 

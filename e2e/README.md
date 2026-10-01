@@ -40,21 +40,26 @@ runner and fails the test on the first assertion that doesn't hold:
    provisions the five base services and sets up Gitea and Komodo; a
    third changes nothing.
 2. `urbex apply staging` for the sample app (`e2e/app`): the environment
-   exists - folder in the GitOps repo, Build, Stack - and runs nothing.
-3. `urbex release` and `urbex deploy staging`: a tag, built by Komodo,
-   deployed from the GitOps repo.
-4. A push to `main` deploys nothing; a tag pushed with plain git is a
-   release.
-5. `urbex apply prod`, then `urbex promote`: prod runs staging's image.
+   exists - folder in the GitOps repo, Build, Stack - follows `main`, and
+   runs `main`'s head.
+3. A push to `main` reaches staging with no command, through a commit
+   to the GitOps repo.
+4. `urbex release` tags the commit staging runs and publishes its image
+   without a new build; a tag pushed with plain git is a release too.
+5. `urbex apply prod` starts empty; `urbex promote` gives it the release
+   staging runs; an unreleased commit on staging is refused.
 6. `urbex secret set`: the secret reaches the service, is nowhere in
    plaintext in the GitOps repo, and goes away with `unset`.
 7. `config.env` edited by hand and pushed with plain git is deployed; an
    unrelated commit restarts nothing.
-8. Rollback with `urbex deploy prod --version`; a version that was
-   never built is refused.
-9. `urbex destroy staging` leaves production and the project's Builds
-   alone.
-10. `urbex apply staging` on a brand-new machine: it rejoins Komodo.
+8. `urbex deploy staging --version` pins staging (a push to `main` no
+   longer moves it); `--follow-main` resumes.
+9. Rollback with `urbex deploy prod --version`; a release that doesn't
+   exist is refused.
+10. `urbex destroy staging` leaves production and the project's Builds
+    alone.
+11. `urbex apply staging` on a brand-new machine: it rejoins Komodo and
+    follows `main` again.
 
 ## When a step fails
 

@@ -24,7 +24,7 @@ decrypted only on the service's LXC, at deploy time.
 
 These commands need the sops binary. With URBEX_AGE_KEY exported as
 SOPS_AGE_KEY, plain 'sops <file>' edits the same files. See
-docs/decisions/0011-secrets-sops-age.md in urbforge/urbex.`,
+docs/reference/gitops-repo.md in urbforge/urbex.`,
 	}
 	cmd.AddCommand(newSecretSetCmd(), newSecretUnsetCmd(), newSecretListCmd())
 	return cmd
@@ -112,7 +112,10 @@ func newSecretUnsetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unset <env> <service> <KEY>",
 		Short: "Remove a secret",
-		Args:  cobra.ExactArgs(3),
+		Long: `Removes KEY from the service's secrets in the environment. The file is
+committed and pushed to the GitOps repo; Komodo then redeploys the
+service without it.`,
+		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env, service, key := args[0], args[1], args[2]
 			p, repoPath, repo, err := secretTarget(cmd, manifestPath, gitopsRepoPath, env, service)
@@ -148,7 +151,10 @@ func newSecretListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <env> <service>",
 		Short: "List the names of a service's secrets (never their values)",
-		Args:  cobra.ExactArgs(2),
+		Long: `Lists the names of the service's secrets in the environment, one per
+line. Names are not encrypted, so this needs neither sops nor the age
+key, and never prints a value.`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env, service := args[0], args[1]
 			p, _, repo, err := secretTarget(cmd, manifestPath, gitopsRepoPath, env, service)

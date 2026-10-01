@@ -76,6 +76,7 @@ type fakePlatform struct {
 	synced         []string // remote URLs
 	hooks          []string
 	actions        map[string]komodo.ActionConfig
+	variables      map[string]string
 	procedures     map[string]komodo.ProcedureConfig
 }
 
@@ -126,6 +127,16 @@ func (k *fakeKomodo) CreateAPIKey(ctx context.Context, jwt, name string) (string
 func (k *fakeKomodo) CreateOnboardingKey(ctx context.Context, name string) (string, error) {
 	k.f.onboardingKeys++
 	return "O_onboarding_O", nil
+}
+func (k *fakeKomodo) EnsureVariable(ctx context.Context, name, value string, secret bool) error {
+	if k.f.variables == nil {
+		k.f.variables = map[string]string{}
+	}
+	if secret {
+		value = "secret:" + value
+	}
+	k.f.variables[name] = value
+	return nil
 }
 func (k *fakeKomodo) EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error {
 	if k.f.actions == nil {
@@ -385,6 +396,10 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	action := fp.actions["urbex-release"]
 	if !action.WebhookEnabled || !strings.Contains(action.FileContents, "refs") || !strings.Contains(action.FileContents, "RunBuild") {
 		t.Errorf("expected the release action with its script, got %+v", action)
+	}
+	if fp.variables["URBEX_GITEA_URL"] != "http://192.168.1.200:3000" || fp.variables["URBEX_GITEA_TOKEN"] != "secret:token-urbex-cli" ||
+		fp.variables["URBEX_ORG"] != "urbex" || fp.variables["URBEX_GITEA_USER"] != "urbex-admin" {
+		t.Errorf("unexpected komodo variables for the release action: %v", fp.variables)
 	}
 	proc := fp.procedures["urbex-gitops"]
 	if !proc.WebhookEnabled || !proc.ScheduleEnabled || proc.Schedule == "" || len(proc.Stages) != 1 {

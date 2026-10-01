@@ -185,7 +185,7 @@ func TestListAndCreateTags(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/v1/repos/urbex/hello/tags":
-			w.Write([]byte(`[{"name":"v0.1.0"},{"name":"v0.1.1"}]`))
+			w.Write([]byte(`[{"name":"v0.1.0","commit":{"sha":"aaa"}},{"name":"v0.1.1","commit":{"sha":"bbb"}}]`))
 		case "POST /api/v1/repos/urbex/hello/tags":
 			json.NewDecoder(r.Body).Decode(&created)
 			w.WriteHeader(http.StatusCreated)
@@ -198,7 +198,7 @@ func TestListAndCreateTags(t *testing.T) {
 
 	c := New(server.URL, "tok")
 	tags, err := c.ListTags(context.Background(), "urbex", "hello")
-	if err != nil || len(tags) != 2 || tags[1] != "v0.1.1" {
+	if err != nil || len(tags) != 2 || tags[1] != (Tag{Name: "v0.1.1", Commit: "bbb"}) {
 		t.Fatalf("ListTags = %v, %v", tags, err)
 	}
 	if err := c.CreateTag(context.Background(), "urbex", "hello", "v0.1.2", "main", "Release 0.1.2"); err != nil {
@@ -231,5 +231,65 @@ func TestContainerImageExists(t *testing.T) {
 	}
 	if _, err := c.ContainerImageExists(context.Background(), "urbex", "other", "x"); err == nil {
 		t.Error("expected an error on a 500 response")
+	}
+}
+
+func TestBranchAndResolveCommit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/urbex/hello/branches/main":
+			w.Write([]byte(`{"name":"main","commit":{"id":"1111111111111111111111111111111111111111"}}`))
+		case "/api/v1/repos/urbex/hello/git/commits/abc1234":
+			w.Write([]byte(`{"sha":"abc1234000000000000000000000000000000000"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	if sha, err := c.BranchCommit(context.Background(), "urbex", "hello", "main"); err != nil || sha != "1111111111111111111111111111111111111111" {
+		t.Errorf("BranchCommit = %q, %v", sha, err)
+	}
+	if sha, err := c.ResolveCommit(context.Background(), "urbex", "hello", "abc1234"); err != nil || sha != "abc1234000000000000000000000000000000000" {
+		t.Errorf("ResolveCommit = %q, %v", sha, err)
+	}
+	if _, err := c.ResolveCommit(context.Background(), "urbex", "hello", "nope"); err == nil {
+		t.Error("expected an error for an unknown ref")
+	}
+}
+
+// Gitea panics (500) on some reads of a repo it is still updating, and
+// answers a moment later: reads are retried, writes are not.
+func TestServerErrors_ReadsAreRetriedWritesAreNot(t *testing.T) {
+	RetryDelay = 0
+	reads, writes := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes++
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		reads++
+		if reads < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"name":"main","commit":{"id":"1111111111111111111111111111111111111111"}}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok")
+	if sha, err := c.BranchCommit(context.Background(), "urbex", "hello", "main"); err != nil || sha == "" {
+		t.Fatalf("BranchCommit = %q, %v", sha, err)
+	}
+	if reads != 3 {
+		t.Errorf("expected 3 attempts, got %d", reads)
+	}
+	if err := c.CreateTag(context.Background(), "urbex", "hello", "v1.0.0", "main", "Release"); err == nil {
+		t.Fatal("expected the failed write to be reported")
+	}
+	if writes != 1 {
+		t.Errorf("a write must not be retried, got %d attempts", writes)
 	}
 }

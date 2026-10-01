@@ -12,6 +12,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/semver"
@@ -21,7 +22,7 @@ type fakeGitea struct {
 	repos    []string
 	branches map[string]bool
 	hooks    map[string]string // url -> "secret|filter"
-	tags     []string
+	tags     []gitea.Tag
 	images   map[string]bool // "name:tag"
 	// imagesAfter makes images appear after that many lookups, as a
 	// build finishing would.
@@ -47,12 +48,18 @@ func (f *fakeGitea) DeleteWebhook(ctx context.Context, owner, repo, targetURL st
 	delete(f.hooks, targetURL)
 	return nil
 }
-func (f *fakeGitea) ListTags(ctx context.Context, owner, repo string) ([]string, error) {
+func (f *fakeGitea) ListTags(ctx context.Context, owner, repo string) ([]gitea.Tag, error) {
 	return f.tags, nil
 }
 func (f *fakeGitea) CreateTag(ctx context.Context, owner, repo, tag, target, message string) error {
-	f.tags = append(f.tags, tag+"@"+target)
+	f.tags = append(f.tags, gitea.Tag{Name: tag, Commit: target})
 	return nil
+}
+func (f *fakeGitea) BranchCommit(ctx context.Context, owner, repo, branch string) (string, error) {
+	return "1234567890abcdef1234567890abcdef12345678", nil
+}
+func (f *fakeGitea) ResolveCommit(ctx context.Context, owner, repo, ref string) (string, error) {
+	return ref + strings.Repeat("0", 40-len(ref)), nil
 }
 func (f *fakeGitea) ContainerImageExists(ctx context.Context, owner, name, tag string) (bool, error) {
 	f.lookups++
@@ -73,6 +80,8 @@ type fakeKomodo struct {
 	destroyed  []string
 	deleted    []string
 	reconciles int
+	actions    []map[string]any
+	actionFail bool
 	// onReconcile lets a test change status when Komodo is nudged.
 	onReconcile func()
 }
@@ -111,6 +120,13 @@ func (f *fakeKomodo) RunProcedure(ctx context.Context, name string) error {
 		f.onReconcile()
 	}
 	return nil
+}
+func (f *fakeKomodo) RunAction(ctx context.Context, name string, args map[string]any) (*komodo.Update, error) {
+	if name != "urbex-release" {
+		return nil, errors.New("unexpected action " + name)
+	}
+	f.actions = append(f.actions, args)
+	return &komodo.Update{Status: "Complete", Success: !f.actionFail}, nil
 }
 func (f *fakeKomodo) DestroyStack(ctx context.Context, name string) error {
 	f.destroyed = append(f.destroyed, name)
@@ -180,9 +196,10 @@ func TestSetupProject_DeclaresBuildsAndReleaseWebhook(t *testing.T) {
 	if api.Branch != "main" || api.Repo != "urbex/my-app" || api.ImageName != "my-app-api" {
 		t.Errorf("unexpected api build %+v", api)
 	}
-	// The release Action sets version and commit for each tag: the Build
-	// itself must neither invent versions nor react to pushes.
-	if api.AutoIncrement || !api.IncludeVersionTags || !api.IncludeCommitTag || api.IncludeLatestTag || api.WebhookEnabled {
+	// The release Action sets the commit for each push to main, and
+	// releases by tagging the commit's image: the Build itself only ever
+	// pushes commit tags and never reacts to pushes on its own.
+	if api.AutoIncrement || api.IncludeVersionTags || !api.IncludeCommitTag || api.IncludeLatestTag || api.WebhookEnabled {
 		t.Errorf("unexpected api build tagging/webhook flags %+v", api)
 	}
 	if api.DockerfilePath != GeneratedDockerfile || !strings.Contains(api.PreBuild.Command, "golang") {
@@ -262,11 +279,12 @@ func TestSetupEnv_FailsWhenServersNeverConnect(t *testing.T) {
 func TestRelease_TagsMainAndWaitsForEveryImage(t *testing.T) {
 	g := &fakeGitea{imagesAfter: 3}
 	r := newRollout(g, &fakeKomodo{}, &fakeGit{})
-	if err := r.Release(context.Background(), "my-app", services(), semver.Version{Major: 1, Minor: 4, Patch: 2}); err != nil {
+	const commit = "abc1234def5678abc1234def5678abc1234def56"
+	if err := r.Release(context.Background(), "my-app", services(), semver.Version{Major: 1, Minor: 4, Patch: 2}, commit); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	if strings.Join(g.tags, ",") != "v1.4.2@main" {
-		t.Errorf("expected v1.4.2 tagged on main, got %v", g.tags)
+	if len(g.tags) != 1 || g.tags[0] != (gitea.Tag{Name: "v1.4.2", Commit: commit}) {
+		t.Errorf("expected v1.4.2 tagged on the commit, got %v", g.tags)
 	}
 	if g.lookups <= 3 {
 		t.Errorf("expected Release to poll until the images exist, got %d lookups", g.lookups)
@@ -275,7 +293,7 @@ func TestRelease_TagsMainAndWaitsForEveryImage(t *testing.T) {
 
 func TestRelease_TimesOutNamingTheMissingImages(t *testing.T) {
 	g := &fakeGitea{images: map[string]bool{"my-app-api:1.4.2": true}}
-	err := newRollout(g, &fakeKomodo{}, &fakeGit{}).Release(context.Background(), "my-app", services(), semver.Version{Major: 1, Minor: 4, Patch: 2})
+	err := newRollout(g, &fakeKomodo{}, &fakeGit{}).Release(context.Background(), "my-app", services(), semver.Version{Major: 1, Minor: 4, Patch: 2}, "main")
 	if err == nil || !strings.Contains(err.Error(), "[worker]") || !strings.Contains(err.Error(), "urbex-release") {
 		t.Errorf("expected a timeout naming the worker image and the release action, got %v", err)
 	}
@@ -285,11 +303,11 @@ func repoWithVersions(t *testing.T, version string) envrepo.Repo {
 	t.Helper()
 	repo := envrepo.Repo{Path: t.TempDir()}
 	for _, svc := range services() {
-		if err := repo.WriteService("staging", "my-app", svc, "img"); err != nil {
+		if err := repo.WriteService("staging", "my-app", svc, "img", false); err != nil {
 			t.Fatal(err)
 		}
 		if version != "" {
-			if err := repo.SetVersion("staging", "my-app", svc.Name, version); err != nil {
+			if err := repo.SetVersion("staging", "my-app", svc.Name, envrepo.VersionFileState{Version: version}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -423,5 +441,67 @@ func TestReconcile_RunsTheGitOpsProcedure(t *testing.T) {
 	}
 	if k.reconciles != 1 {
 		t.Errorf("expected one run of the gitops procedure, got %d", k.reconciles)
+	}
+}
+
+func TestSetupEnv_StagingFollowsMainProdDoesNot(t *testing.T) {
+	repo := envrepo.Repo{Path: t.TempDir()}
+	r := newRollout(&fakeGitea{}, &fakeKomodo{}, &fakeGit{})
+	for _, env := range []string{"staging", "prod"} {
+		target := stagingTarget()
+		target.Env = env
+		if err := r.SetupEnv(context.Background(), target, repo); err != nil {
+			t.Fatalf("SetupEnv %s: %v", env, err)
+		}
+	}
+	if st, _ := repo.Version("staging", "my-app", "api"); !st.Track || st.Version != "" {
+		t.Errorf("staging must follow main from the start, got %+v", st)
+	}
+	if st, _ := repo.Version("prod", "my-app", "api"); st.Track {
+		t.Errorf("prod must not follow main, got %+v", st)
+	}
+}
+
+func TestBuildMain_RunsTheReleaseActionAsAPushToMainWould(t *testing.T) {
+	k := &fakeKomodo{}
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	if err := r.BuildMain(context.Background(), "my-app"); err != nil {
+		t.Fatalf("BuildMain: %v", err)
+	}
+	if len(k.actions) != 1 {
+		t.Fatalf("expected one action run, got %v", k.actions)
+	}
+	args := k.actions[0]
+	body, _ := args["WEBHOOK_BODY"].(map[string]any)
+	repoInfo, _ := body["repository"].(map[string]any)
+	if args["WEBHOOK_BRANCH"] != "main" || body["after"] != "1234567890abcdef1234567890abcdef12345678" || repoInfo["full_name"] != "urbex/my-app" {
+		t.Errorf("unexpected action args %v", args)
+	}
+	k.actionFail = true
+	if err := r.BuildMain(context.Background(), "my-app"); err == nil || !strings.Contains(err.Error(), "main@1234567 failed") {
+		t.Errorf("expected the failed build reported, got %v", err)
+	}
+}
+
+func TestReleases_OnlyVersionTags(t *testing.T) {
+	g := &fakeGitea{tags: []gitea.Tag{{Name: "v1.0.0", Commit: "a"}, {Name: "nightly", Commit: "b"}, {Name: "1.1.0", Commit: "c"}, {Name: "v1.2.0-rc.1", Commit: "d"}}}
+	releases, err := newRollout(g, &fakeKomodo{}, &fakeGit{}).Releases(context.Background(), "my-app")
+	if err != nil || len(releases) != 1 || releases[0].Name != "v1.0.0" {
+		t.Errorf("Releases = %v, %v; want only v1.0.0", releases, err)
+	}
+}
+
+func TestStatus_ReportsFollowingMain(t *testing.T) {
+	repo := envrepo.Repo{Path: t.TempDir()}
+	for _, svc := range services() {
+		if err := repo.WriteService("staging", "my-app", svc, "img", true); err != nil {
+			t.Fatal(err)
+		}
+		repo.SetVersion("staging", "my-app", svc.Name, envrepo.VersionFileState{Version: "a1b2c3d", Track: true})
+	}
+	k := &fakeKomodo{status: running("a1b2c3d")}
+	deployed, err := newRollout(&fakeGitea{}, k, &fakeGit{}).Status(context.Background(), stagingTarget(), repo)
+	if err != nil || !deployed[0].Track || deployed[0].Want != "a1b2c3d" {
+		t.Errorf("Status = %+v, %v", deployed, err)
 	}
 }

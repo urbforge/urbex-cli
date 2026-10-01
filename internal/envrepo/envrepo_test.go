@@ -31,7 +31,7 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
 	const image = "10.0.0.200:3000/urbex/my-app-api"
 
-	if err := repo.WriteService("staging", "my-app", service(), image); err != nil {
+	if err := repo.WriteService("staging", "my-app", service(), image, false); err != nil {
 		t.Fatalf("WriteService: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 	changed := service()
 	changed.Port = 9090
 	changed.Healthcheck = ""
-	if err := repo.WriteService("staging", "my-app", changed, image); err != nil {
+	if err := repo.WriteService("staging", "my-app", changed, image, false); err != nil {
 		t.Fatalf("WriteService: %v", err)
 	}
 	compose = read(t, filepath.Join(dir, ComposeFile))
@@ -83,23 +83,54 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 
 func TestVersion(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
-	if err := repo.SetVersion("staging", "my-app", "api", "1.4.2"); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
+	pinned := VersionFileState{Version: "1.4.2"}
+	if err := repo.SetVersion("prod", "my-app", "api", pinned); err == nil || !strings.Contains(err.Error(), "urbex apply prod") {
 		t.Errorf("expected setting a version before apply to fail with a hint, got %v", err)
 	}
-	if err := repo.WriteService("staging", "my-app", service(), "img"); err != nil {
+	if err := repo.WriteService("prod", "my-app", service(), "img", false); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := repo.Version("staging", "my-app", "api"); err != nil || v != "" {
-		t.Errorf("Version before any deploy = %q, %v; want none", v, err)
+	if st, err := repo.Version("prod", "my-app", "api"); err != nil || st != (VersionFileState{}) {
+		t.Errorf("Version before any deploy = %+v, %v; want nothing", st, err)
 	}
-	if err := repo.SetVersion("staging", "my-app", "api", "1.4.2"); err != nil {
+	if err := repo.SetVersion("prod", "my-app", "api", pinned); err != nil {
 		t.Fatalf("SetVersion: %v", err)
 	}
-	if v, err := repo.Version("staging", "my-app", "api"); err != nil || v != "1.4.2" {
-		t.Errorf("Version = %q, %v; want 1.4.2", v, err)
+	if st, err := repo.Version("prod", "my-app", "api"); err != nil || st != pinned {
+		t.Errorf("Version = %+v, %v; want %+v", st, err, pinned)
 	}
-	if got := read(t, filepath.Join(repo.Path, "environments/staging/my-app/api/version.env")); !strings.HasSuffix(got, "\nVERSION=1.4.2\n") {
-		t.Errorf("version.env must be a dotenv compose can load, got:\n%s", got)
+	got := read(t, filepath.Join(repo.Path, "environments/prod/my-app/api/version.env"))
+	if !strings.HasSuffix(got, "\nVERSION=1.4.2\n") || strings.Contains(got, "TRACK") {
+		t.Errorf("version.env must be a dotenv compose can load, without TRACK, got:\n%s", got)
+	}
+}
+
+func TestVersion_FollowingMain(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	if err := repo.WriteService("staging", "my-app", service(), "img", true); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := repo.Version("staging", "my-app", "api"); st != (VersionFileState{Track: true}) {
+		t.Errorf("a new environment that follows main must have TRACK and no version yet, got %+v", st)
+	}
+	// What the release Action does after a build of main...
+	following := VersionFileState{Version: "a1b2c3d", Track: true}
+	if err := repo.SetVersion("staging", "my-app", "api", following); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, filepath.Join(repo.Path, "environments/staging/my-app/api/version.env"))
+	if !strings.Contains(got, "\nVERSION=a1b2c3d\n") || !strings.HasSuffix(got, "\nTRACK=main\n") {
+		t.Errorf("unexpected version.env:\n%s", got)
+	}
+	if st, _ := repo.Version("staging", "my-app", "api"); st != following {
+		t.Errorf("Version = %+v, want %+v", st, following)
+	}
+	// ...and an existing version file is never reset by a re-apply.
+	if err := repo.WriteService("staging", "my-app", service(), "img", true); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := repo.Version("staging", "my-app", "api"); st != following {
+		t.Errorf("re-applying must keep the version file, got %+v", st)
 	}
 }
 
@@ -109,11 +140,11 @@ func TestEnvironmentsAndRemoveProject(t *testing.T) {
 		t.Errorf("Environments on an empty repo = %v, %v", envs, err)
 	}
 	for _, env := range []string{"staging", "prod"} {
-		if err := repo.WriteService(env, "my-app", service(), "img"); err != nil {
+		if err := repo.WriteService(env, "my-app", service(), "img", false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := repo.WriteService("staging", "other", service(), "img"); err != nil {
+	if err := repo.WriteService("staging", "other", service(), "img", false); err != nil {
 		t.Fatal(err)
 	}
 	if envs, _ := repo.Environments("my-app"); strings.Join(envs, ",") != "prod,staging" {
