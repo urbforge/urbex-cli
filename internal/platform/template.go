@@ -29,6 +29,7 @@ proxmox:
     gateway: 192.168.1.1
     baseHostOffset: 200 # base services get .200-.204
     bridge: vmbr0
+    # dnsServers: [192.168.1.1] # nameservers of the LXCs; default: the Proxmox host's
 
 dns:
   technitiumUrl: http://urbex-technitium.example.internal:5380

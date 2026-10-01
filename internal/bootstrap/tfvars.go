@@ -25,6 +25,7 @@ type tfVars struct {
 	PoolID          string            `json:"pool_id"`
 	Keyctl          bool              `json:"keyctl"`
 	NetworkBridge   string            `json:"network_bridge"`
+	DNSServers      []string          `json:"dns_servers"`
 }
 
 // writeTFVars renders terraform.auto.tfvars.json into the base Terraform
@@ -43,6 +44,7 @@ func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]s
 		PoolID:          cfg.Proxmox.Pool,
 		Keyctl:          cfg.Proxmox.KeyctlEnabled(),
 		NetworkBridge:   cfg.Proxmox.Network.Bridge,
+		DNSServers:      append([]string{}, cfg.Proxmox.Network.DNSServers...),
 		BaseServiceIPs:  serviceIPs,
 	}
 

@@ -24,4 +24,5 @@ module "service" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }

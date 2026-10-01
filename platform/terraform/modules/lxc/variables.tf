@@ -73,3 +73,10 @@ variable "keyctl" {
   default     = true
   description = "Enable the keyctl feature (needed by Docker on most hosts; root@pam only)."
 }
+
+variable "dns_servers" {
+  type        = list(string)
+  default     = []
+  nullable    = false
+  description = "Nameservers of the LXCs; empty copies the Proxmox host's."
+}

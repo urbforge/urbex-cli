@@ -64,6 +64,10 @@ type NetworkConfig struct {
 	BaseHostOffset int    `yaml:"baseHostOffset"`
 	// Bridge is the Proxmox bridge LXCs attach to (default vmbr0).
 	Bridge string `yaml:"bridge,omitempty"`
+	// DNSServers are the LXCs' nameservers. Empty: they copy the Proxmox
+	// host's resolv.conf, which fails when the host resolves through
+	// something the LXCs can't reach (e.g. Tailscale's MagicDNS).
+	DNSServers []string `yaml:"dnsServers,omitempty"`
 }
 
 type DNSConfig struct {

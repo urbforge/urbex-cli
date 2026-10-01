@@ -20,6 +20,7 @@ module "gitea" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }
 
 module "komodo" {
@@ -40,6 +41,7 @@ module "komodo" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }
 
 module "technitium" {
@@ -60,6 +62,7 @@ module "technitium" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }
 
 module "keycloak" {
@@ -80,6 +83,7 @@ module "keycloak" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }
 
 module "observability" {
@@ -100,4 +104,5 @@ module "observability" {
   pool_id          = var.pool_id
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
 }

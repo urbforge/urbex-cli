@@ -29,6 +29,16 @@ resource "proxmox_virtual_environment_container" "this" {
     user_account {
       keys = [var.ssh_public_key]
     }
+
+    # Without servers, the LXC copies the Proxmox host's resolv.conf - which
+    # is wrong when the host resolves through something the LXCs can't
+    # reach (Tailscale's 100.100.100.100, a local stub resolver).
+    dynamic "dns" {
+      for_each = length(var.dns_servers) > 0 ? [1] : []
+      content {
+        servers = var.dns_servers
+      }
+    }
   }
 
   disk {
