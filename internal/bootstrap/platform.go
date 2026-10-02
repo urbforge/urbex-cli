@@ -110,6 +110,8 @@ type Clients struct {
 	// PullRepo updates a working copy from Gitea (used by Teardown); nil
 	// means the real one.
 	PullRepo func(ctx context.Context, dir, remoteURL, token string) error
+	// Cloudflare builds the Cloudflare client; nil means the real one.
+	Cloudflare func(token, accountID, zoneID string) CloudflareAPI
 }
 
 // DefaultClients returns Clients backed by the real HTTP clients and git.

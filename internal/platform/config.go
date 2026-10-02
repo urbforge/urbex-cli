@@ -7,6 +7,7 @@ package platform
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,11 +27,54 @@ type GitConfig struct {
 	Org      string `yaml:"org"`
 }
 
+// CloudflareConfig is where the platform's public endpoints live: the
+// account and zone (of Config.Domain) Urbex creates its tunnel, DNS
+// records, Access applications and Workers in. See
+// docs/decisions/0022-cloudflare-tunnel-access-workers.md in urbforge/urbex.
 type CloudflareConfig struct {
-	AccountID  string `yaml:"accountId"`
-	ZoneID     string `yaml:"zoneId"`
+	AccountID string `yaml:"accountId"`
+	ZoneID    string `yaml:"zoneId"`
+	// TunnelName is the tunnel Urbex creates and routes through (default
+	// "<name>-platform").
 	TunnelName string `yaml:"tunnelName"`
+	// Name is the last label of every hostname Urbex publishes, telling
+	// them apart from anything else in the zone (default "urbex").
+	Name string `yaml:"name,omitempty"`
+	// Hostnames is how labels are joined: "flat" (auth-urbex.example.com,
+	// covered by Cloudflare's free certificate) or "nested"
+	// (auth.urbex.example.com, which needs Advanced Certificate Manager).
+	Hostnames string `yaml:"hostnames,omitempty"`
+	// Access lists who may reach the protected platform services.
+	Access AccessConfig `yaml:"access,omitempty"`
 }
+
+// AccessConfig is who Cloudflare Access lets through to Gitea and Komodo.
+type AccessConfig struct {
+	Emails []string `yaml:"emails,omitempty"`
+}
+
+// Enabled reports whether the platform publishes endpoints on Cloudflare.
+func (c CloudflareConfig) Enabled() bool {
+	return c.AccountID != "" && c.ZoneID != ""
+}
+
+// Hostname builds a public hostname from labels, most specific first -
+// ("auth") for Keycloak, ("api", "staging", "hello") for a service - then
+// the platform's name, under domain.
+func (c CloudflareConfig) Hostname(domain string, labels ...string) string {
+	labels = append(append([]string{}, labels...), c.Name)
+	sep := "-"
+	if c.Hostnames == HostnamesNested {
+		sep = "."
+	}
+	return strings.Join(labels, sep) + "." + domain
+}
+
+// Hostname schemes (CloudflareConfig.Hostnames).
+const (
+	HostnamesFlat   = "flat"
+	HostnamesNested = "nested"
+)
 
 type ProxmoxConfig struct {
 	APIURL       string        `yaml:"apiUrl"`
@@ -112,6 +156,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Proxmox.Network.Bridge == "" {
 		cfg.Proxmox.Network.Bridge = "vmbr0"
 	}
+	if cfg.Cloudflare.Name == "" {
+		cfg.Cloudflare.Name = "urbex"
+	}
+	if cfg.Cloudflare.Hostnames == "" {
+		cfg.Cloudflare.Hostnames = HostnamesFlat
+	}
+	if cfg.Cloudflare.TunnelName == "" {
+		cfg.Cloudflare.TunnelName = cfg.Cloudflare.Name + "-platform"
+	}
 	if cfg.Keycloak.PlatformRealm == "" {
 		cfg.Keycloak.PlatformRealm = "platform"
 	}
@@ -136,6 +189,17 @@ func (c *Config) Validate() []string {
 	require(c.Proxmox.Network.CIDR, "proxmox.network.cidr")
 	require(c.Proxmox.Network.Gateway, "proxmox.network.gateway")
 	require(c.Git.GiteaURL, "git.giteaUrl")
+
+	cf := c.Cloudflare
+	if (cf.AccountID == "") != (cf.ZoneID == "") {
+		errs = append(errs, "cloudflare.accountId and cloudflare.zoneId go together: set both, or neither")
+	}
+	if cf.Hostnames != "" && cf.Hostnames != HostnamesFlat && cf.Hostnames != HostnamesNested {
+		errs = append(errs, "cloudflare.hostnames must be flat or nested")
+	}
+	if cf.Enabled() && len(cf.Access.Emails) == 0 {
+		errs = append(errs, "cloudflare.access.emails is required: who may reach Gitea and Komodo through Cloudflare Access")
+	}
 
 	return errs
 }

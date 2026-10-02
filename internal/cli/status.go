@@ -81,7 +81,7 @@ docs/reference/cli.md in urbforge/urbex.`,
 }
 
 func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config) error {
-	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node)
+	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node, bootstrap.BaseServicesFor(cfg))
 	if err != nil {
 		return fmt.Errorf("checking Proxmox: %w", err)
 	}

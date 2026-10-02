@@ -28,15 +28,15 @@ type BaseServiceStatus struct {
 
 // Base reports the presence of every base-service LXC (see
 // internal/bootstrap.BaseServices) on the given Proxmox node.
-func Base(ctx context.Context, proxmox ProxmoxLister, node string) ([]BaseServiceStatus, error) {
+func Base(ctx context.Context, proxmox ProxmoxLister, node string, services []bootstrap.Service) ([]BaseServiceStatus, error) {
 	existing, err := proxmox.ListContainerHostnames(ctx, node)
 	if err != nil {
 		return nil, err
 	}
 	present := toSet(existing)
 
-	statuses := make([]BaseServiceStatus, 0, len(bootstrap.BaseServices))
-	for _, svc := range bootstrap.BaseServices {
+	statuses := make([]BaseServiceStatus, 0, len(services))
+	for _, svc := range services {
 		hostname := bootstrap.Hostname(svc.Name)
 		statuses = append(statuses, BaseServiceStatus{
 			Service:  svc.Name,

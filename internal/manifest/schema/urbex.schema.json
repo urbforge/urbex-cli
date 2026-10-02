@@ -108,6 +108,11 @@
           "type": "string",
           "description": "HTTP path probed (GET, inside the container) to tell whether the service is healthy. No healthcheck when omitted."
         },
+        "public": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish the service on the internet, at its environment's hostname, through the platform's Cloudflare Tunnel. Needs Cloudflare configured in urbex.platform.yaml."
+        },
         "resources": {
           "type": "object",
           "additionalProperties": false,

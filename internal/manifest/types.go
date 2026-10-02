@@ -21,14 +21,17 @@ type Frontend struct {
 }
 
 type Service struct {
-	Name        string                       `yaml:"name"`
-	Runtime     string                       `yaml:"runtime"`
-	Dockerfile  string                       `yaml:"dockerfile,omitempty"`
-	Port        int                          `yaml:"port"`
-	Healthcheck string                       `yaml:"healthcheck,omitempty"`
-	Resources   *Resources                   `yaml:"resources,omitempty"`
-	Env         map[string]map[string]string `yaml:"env,omitempty"`
-	Auth        *Auth                        `yaml:"auth,omitempty"`
+	Name        string `yaml:"name"`
+	Runtime     string `yaml:"runtime"`
+	Dockerfile  string `yaml:"dockerfile,omitempty"`
+	Port        int    `yaml:"port"`
+	Healthcheck string `yaml:"healthcheck,omitempty"`
+	// Public publishes the service on the internet, through the
+	// platform's Cloudflare Tunnel (ADR-0022).
+	Public    bool                         `yaml:"public,omitempty"`
+	Resources *Resources                   `yaml:"resources,omitempty"`
+	Env       map[string]map[string]string `yaml:"env,omitempty"`
+	Auth      *Auth                        `yaml:"auth,omitempty"`
 }
 
 // Default resource sizing applied when a service omits (or partially

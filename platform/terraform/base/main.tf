@@ -106,3 +106,27 @@ module "observability" {
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
 }
+
+# The Cloudflare Tunnel connector: only on a platform that publishes
+# endpoints on Cloudflare (urbex puts its address in base_service_ips).
+module "tunnel" {
+  source = "../modules/lxc"
+  count  = contains(keys(var.base_service_ips), "urbex-tunnel") ? 1 : 0
+
+  node_name        = var.node_name
+  hostname         = "urbex-tunnel"
+  vm_id            = var.vm_id_base + 5
+  storage_pool     = var.storage_pool
+  template_file_id = var.template_file_id
+  ssh_public_key   = var.ssh_public_key
+  cores            = 1
+  memory_mb        = 256
+  disk_gb          = 4
+  ip_address       = var.base_service_ips["urbex-tunnel"]
+  ip_prefix_length = var.ip_prefix_length
+  gateway          = var.gateway
+  pool_id          = var.pool_id
+  keyctl           = var.keyctl
+  network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
+}

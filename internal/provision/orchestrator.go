@@ -67,7 +67,10 @@ type Orchestrator struct {
 	// Proxmox, if set, lets plan/apply/destroy drop LXCs deleted outside
 	// Terraform from its state (see forgetVanished).
 	Proxmox ContainerLister
-	Out     io.Writer
+	// Cloudflare publishes public services (manifest public: true) when
+	// the platform has Cloudflare configured; nil disables publishing.
+	Cloudflare CloudflareAPI
+	Out        io.Writer
 	// Rollout drives Komodo; required by everything but Plan.
 	Rollout Rollouter
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
@@ -190,6 +193,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 	if err := o.sync(ctx, opts, "apply"); err != nil {
 		return err
+	}
+	if err := o.publish(ctx, opts.Env, allocations); err != nil {
+		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
 
 	versions, err := o.versions(repo, opts.Env)
@@ -542,6 +548,9 @@ func (o *Orchestrator) waitAndReport(ctx context.Context, opts Options, allocati
 	for i, svc := range o.Manifest.Services {
 		entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
 		fmt.Fprintf(o.Out, "  %-16s http://%s:%d  %s (%s)\n", svc.Name, entry.IP, svc.Port, deployed[i].Want, deployed[i].Image)
+		if host := o.PublicHostname(opts.Env, svc); host != "" && svc.Public {
+			fmt.Fprintf(o.Out, "  %-16s https://%s\n", "", host)
+		}
 	}
 	return nil
 }
@@ -552,6 +561,9 @@ func (o *Orchestrator) checkPlatform() error {
 	}
 	if missing := o.Credentials.MissingForPlatform(); len(missing) > 0 {
 		return fmt.Errorf("missing platform credentials %v - run 'urbex bootstrap' on this machine first", missing)
+	}
+	if o.Config.Cloudflare.Enabled() && o.Credentials.CloudflareToken == "" {
+		return fmt.Errorf("missing required credentials: [URBEX_CLOUDFLARE_TOKEN] (urbex.platform.yaml sets cloudflare.accountId)")
 	}
 	return nil
 }
@@ -640,6 +652,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		if err := o.Rollout.RemoveEnv(ctx, target); err != nil {
 			return fmt.Errorf("removing komodo stacks: %w", err)
 		}
+	}
+	if err := o.unpublish(ctx, opts.Env, toDestroy); err != nil {
+		return fmt.Errorf("removing from cloudflare: %w", err)
 	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {

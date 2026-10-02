@@ -34,3 +34,9 @@
   become: true
   roles:
     - observability
+
+- name: Deploy the Cloudflare Tunnel connector
+  hosts: urbex_tunnel
+  become: true
+  roles:
+    - cloudflared

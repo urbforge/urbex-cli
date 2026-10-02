@@ -76,6 +76,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
 		return fmt.Errorf("missing required credentials: %v", missing)
 	}
+	if o.Config.Cloudflare.Enabled() && o.Credentials.CloudflareToken == "" {
+		return fmt.Errorf("missing required credentials: [URBEX_CLOUDFLARE_TOKEN] (urbex.platform.yaml sets cloudflare.accountId)")
+	}
 	// The age key encrypts every secret in the GitOps repo: better to
 	// learn it is malformed now than after provisioning.
 	if _, err := secrets.Recipient(o.Credentials.AgeKey); err != nil {
@@ -108,7 +111,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible")
-	if err := writeInventory(ansibleDir, o.Config.Domain, ep, ips); err != nil {
+	if err := writeInventory(ansibleDir, o.Config.Domain, ep, PublicEndpointsFor(o.Config), ips); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 
@@ -138,19 +141,34 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("updating known hosts: %w", err)
 	}
 
+	clients := o.Clients
+	if clients.Gitea == nil || clients.Komodo == nil || clients.SyncRepo == nil {
+		clients = DefaultClients()
+	}
+
 	ansibleArgs := []string{"-i", "inventory.yml", "playbook.yml"}
 	ansibleEnv := o.Credentials.Env(ansibleSecretEnv...)
+	if o.Config.Cloudflare.Enabled() {
+		// The tunnel's connector token reaches its LXC through Ansible's
+		// environment only.
+		token, err := o.tunnelToken(ctx, clients)
+		if err != nil {
+			return fmt.Errorf("setting up the cloudflare tunnel: %w", err)
+		}
+		ansibleEnv = append(ansibleEnv, "URBEX_CLOUDFLARE_TUNNEL_TOKEN="+token)
+	}
 	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs, Env: ansibleEnv}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
 	fmt.Fprintln(o.Out, "Base services provisioned.")
 
-	clients := o.Clients
-	if clients.Gitea == nil || clients.Komodo == nil || clients.SyncRepo == nil {
-		clients = DefaultClients()
-	}
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
+	}
+	if o.Config.Cloudflare.Enabled() {
+		if err := o.publishPlatform(ctx, clients, ips); err != nil {
+			return fmt.Errorf("publishing the platform on cloudflare: %w", err)
+		}
 	}
 	path, _ := credentials.DefaultPath()
 	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
@@ -172,7 +190,7 @@ func (o *Orchestrator) checkExisting(ctx context.Context, gitopsRepoPath string)
 		existingSet[h] = true
 	}
 
-	for _, svc := range BaseServices {
+	for _, svc := range BaseServicesFor(o.Config) {
 		h := Hostname(svc.Name)
 		if existingSet[h] {
 			alreadyPresent = append(alreadyPresent, h)
@@ -195,13 +213,14 @@ func (o *Orchestrator) checkExisting(ctx context.Context, gitopsRepoPath string)
 }
 
 func allocateIPs(cfg *platform.Config) (map[string]string, int, error) {
-	addrs, prefixLen, err := netalloc.Allocate(cfg.Proxmox.Network.CIDR, cfg.Proxmox.Network.BaseHostOffset, len(BaseServices))
+	services := BaseServicesFor(cfg)
+	addrs, prefixLen, err := netalloc.Allocate(cfg.Proxmox.Network.CIDR, cfg.Proxmox.Network.BaseHostOffset, len(services))
 	if err != nil {
 		return nil, 0, err
 	}
 
-	ips := make(map[string]string, len(BaseServices))
-	for i, svc := range BaseServices {
+	ips := make(map[string]string, len(services))
+	for i, svc := range services {
 		ips[Hostname(svc.Name)] = addrs[i]
 	}
 	return ips, prefixLen, nil

@@ -12,6 +12,15 @@ services:
     environment:
       - KEYCLOAK_ADMIN=admin
       - KEYCLOAK_ADMIN_PASSWORD={{ keycloak_admin_password }}
+{% if keycloak_public_url | default('') %}
+      # Public through the platform's Cloudflare Tunnel (ADR-0022): the
+      # issuer users and apps see; services on the LAN may still use the
+      # LAN address for back-channel calls.
+      - KC_HOSTNAME={{ keycloak_public_url }}
+      - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
+      - KC_PROXY_HEADERS=xforwarded
+      - KC_HTTP_ENABLED=true
+{% endif %}
     volumes:
       - keycloak-data:/opt/keycloak/data
     ports:

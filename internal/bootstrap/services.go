@@ -1,5 +1,7 @@
 package bootstrap
 
+import "github.com/urbforge/urbex-cli/internal/platform"
+
 // Service describes one of the fixed base-service LXCs urbex bootstrap
 // provisions. See docs/decisions/0009-one-lxc-per-service-per-env.md in
 // urbforge/urbex.
@@ -20,6 +22,22 @@ var BaseServices = []Service{
 	{Name: "technitium", Role: "Internal DNS"},
 	{Name: "keycloak", Role: "Identity provider (SSO + OIDC)"},
 	{Name: "observability", Role: "Prometheus + Grafana + Loki"},
+}
+
+// TunnelService runs the Cloudflare Tunnel connector (cloudflared). It is
+// a base service only on a platform that publishes endpoints on
+// Cloudflare, and comes last: VMID and IP offset 5. See
+// docs/decisions/0022-cloudflare-tunnel-access-workers.md in urbforge/urbex.
+var TunnelService = Service{Name: "tunnel", Role: "Cloudflare Tunnel connector (cloudflared)"}
+
+// BaseServicesFor returns the base services of a platform: BaseServices,
+// plus TunnelService when it publishes endpoints on Cloudflare.
+func BaseServicesFor(cfg *platform.Config) []Service {
+	services := append([]Service{}, BaseServices...)
+	if cfg != nil && cfg.Cloudflare.Enabled() {
+		services = append(services, TunnelService)
+	}
+	return services
 }
 
 // Hostname returns the LXC hostname for a base service, e.g. "gitea" ->

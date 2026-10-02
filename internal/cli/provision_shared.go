@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/cloudflare"
 	"io"
 	"os"
 	"path/filepath"
@@ -118,6 +119,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	}
 	ro := newRollout(cfg, creds, ep, repoDir, out)
 	o.Rollout = ro
+	if cfg.Cloudflare.Enabled() && creds.CloudflareToken != "" {
+		o.Cloudflare = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)
+	}
 	return &project{Orchestrator: o, rollout: ro, creds: creds}, nil
 }
 

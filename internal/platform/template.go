@@ -8,10 +8,17 @@ git:
   giteaUrl: https://git.example.com
   org: urbex
 
+# Public endpoints on Cloudflare (optional: leave accountId and zoneId
+# empty to keep everything on the LAN). See
+# docs/reference/platform-config.md in urbforge/urbex.
 cloudflare:
   accountId: ""
-  zoneId: ""
-  tunnelName: urbex
+  zoneId: ""             # the zone of "domain" above
+  # name: urbex          # last label of every hostname
+  # hostnames: flat      # flat: auth-urbex.example.com (any plan)
+  #                      # nested: auth.urbex.example.com (needs Advanced Certificate Manager)
+  # access:
+  #   emails: [you@example.com]   # who may open Gitea and Komodo
 
 proxmox:
   apiUrl: https://proxmox.example.internal:8006/api2/json

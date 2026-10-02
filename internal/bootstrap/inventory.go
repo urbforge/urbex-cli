@@ -27,6 +27,9 @@ type inventoryVars struct {
 	KomodoAdminUsername  string `yaml:"komodo_admin_username"`
 	KomodoServerName     string `yaml:"komodo_server_name"`
 	KomodoVersion        string `yaml:"komodo_version"`
+	// KeycloakPublicURL is Keycloak's public address, when it has one:
+	// the issuer the apps' users see.
+	KeycloakPublicURL string `yaml:"keycloak_public_url,omitempty"`
 }
 
 type inventoryAll struct {
@@ -42,7 +45,7 @@ type inventoryRoot struct {
 // under "urbex_<name>" (matching the hosts: fields in
 // platform/ansible/playbook.yml), pointing at its statically allocated IP.
 // Secrets are not inventory vars: roles read them from the environment.
-func writeInventory(ansibleDir, domain string, ep Endpoints, serviceIPs map[string]string) error {
+func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints, serviceIPs map[string]string) error {
 	repoPath := filepath.Dir(ansibleDir)
 	if err := knownhosts.Ensure(repoPath); err != nil {
 		return err
@@ -64,12 +67,16 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, serviceIPs map[stri
 				KomodoAdminUsername:  KomodoAdminUser,
 				KomodoServerName:     KomodoServerName,
 				KomodoVersion:        KomodoVersion,
+				KeycloakPublicURL:    httpsURL(pub.Keycloak),
 			},
 			Children: map[string]inventoryGroup{},
 		},
 	}
 
-	for _, svc := range BaseServices {
+	for _, svc := range append(append([]Service{}, BaseServices...), TunnelService) {
+		if serviceIPs[Hostname(svc.Name)] == "" {
+			continue
+		}
 		hostname := Hostname(svc.Name)
 		groupName := "urbex_" + svc.Name
 		root.All.Children[groupName] = inventoryGroup{
@@ -85,4 +92,11 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, serviceIPs map[stri
 	}
 
 	return os.WriteFile(filepath.Join(ansibleDir, "inventory.yml"), data, 0o644)
+}
+
+func httpsURL(host string) string {
+	if host == "" {
+		return ""
+	}
+	return "https://" + host
 }

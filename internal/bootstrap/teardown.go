@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
+	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/runner"
 	"os"
 	"path/filepath"
@@ -44,6 +45,9 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
 		return fmt.Errorf("missing required credentials: %v", missing)
 	}
+	if o.Config.Cloudflare.Enabled() && o.Credentials.CloudflareToken == "" {
+		return fmt.Errorf("missing required credentials: [URBEX_CLOUDFLARE_TOKEN] (urbex.platform.yaml sets cloudflare.accountId)")
+	}
 	ep, err := EndpointsFor(o.Config)
 	if err != nil {
 		return err
@@ -76,19 +80,27 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 		repos, _ = g.ListOrgRepos(ctx, o.Config.Git.Org) // best effort: Gitea may already be gone
 	}
 	fmt.Fprintln(o.Out, "This destroys the Urbex platform on Proxmox:")
-	fmt.Fprintf(o.Out, "  - the base-service LXCs and their disks: %s\n", strings.Join(baseHostnames(), ", "))
+	fmt.Fprintf(o.Out, "  - the base-service LXCs and their disks: %s\n", strings.Join(baseHostnames(o.Config), ", "))
 	if len(repos) > 0 {
 		fmt.Fprintf(o.Out, "  - everything on Gitea: %s, and their images - make sure the project repos live elsewhere too\n", strings.Join(repos, ", "))
 	} else {
 		fmt.Fprintln(o.Out, "  - everything on Gitea: every repository and image - make sure the project repos live elsewhere too")
 	}
 	fmt.Fprintln(o.Out, "  - Komodo's, Keycloak's and Grafana's configuration and data")
+	if o.Config.Cloudflare.Enabled() {
+		fmt.Fprintf(o.Out, "  - on Cloudflare: the tunnel %s, the platform's DNS records and Access applications\n", o.Config.Cloudflare.TunnelName)
+	}
 	fmt.Fprintln(o.Out, "  - the credentials bootstrap generated (passwords, tokens, keys)")
 	fmt.Fprintf(o.Out, "The GitOps repo is kept, in %s: from then on its only copy.\n", opts.GitOpsRepoPath)
 	if !opts.Yes {
 		return fmt.Errorf("nothing destroyed: run 'urbex teardown --yes' to confirm")
 	}
 
+	if o.Config.Cloudflare.Enabled() {
+		if err := o.unpublishPlatform(ctx, clients); err != nil {
+			return fmt.Errorf("removing the platform from cloudflare: %w", err)
+		}
+	}
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
 	}
@@ -167,9 +179,10 @@ func remainingProjects(gitopsRepoPath string) ([]string, error) {
 	return out, nil
 }
 
-func baseHostnames() []string {
-	names := make([]string, 0, len(BaseServices))
-	for _, svc := range BaseServices {
+func baseHostnames(cfg *platform.Config) []string {
+	services := BaseServicesFor(cfg)
+	names := make([]string, 0, len(services))
+	for _, svc := range services {
 		names = append(names, Hostname(svc.Name))
 	}
 	return names
