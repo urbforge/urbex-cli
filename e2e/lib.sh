@@ -106,3 +106,16 @@ komodo_api() { # komodo_api <read|write|execute>/<Type> <json>
   curl -s -X POST "$KOMODO/$1" -H "x-api-key: $(cred komodoApiKey)" \
     -H "x-api-secret: $(cred komodoApiSecret)" -H 'content-type: application/json' -d "$2"
 }
+
+# loki_lines <logql> [text]: how many log lines Loki has for the query
+# (in the last hour), containing text if given.
+loki_lines() {
+  curl -s -G "http://$NET.204:3100/loki/api/v1/query_range" \
+    --data-urlencode "query=$1" --data-urlencode "limit=1000" |
+    python3 -c '
+import json, sys
+text = sys.argv[1]
+result = json.load(sys.stdin)["data"]["result"]
+print(sum(1 for s in result for _, line in s["values"] if text in line))
+' "${2:-}"
+}

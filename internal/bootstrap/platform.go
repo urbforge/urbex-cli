@@ -47,6 +47,9 @@ type Endpoints struct {
 	GiteaURL  string // e.g. http://192.168.1.200:3000
 	Registry  string // e.g. 192.168.1.200:3000 (Gitea's container registry)
 	KomodoURL string // e.g. http://192.168.1.201:9120
+	// LokiPushURL is where the LXCs' log agents send logs, e.g.
+	// http://192.168.1.204:3100/loki/api/v1/push.
+	LokiPushURL string
 }
 
 // EndpointsFor computes the base services' endpoints for cfg.
@@ -57,9 +60,10 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 	}
 	giteaIP := ips[Hostname("gitea")]
 	return Endpoints{
-		GiteaURL:  "http://" + giteaIP + ":3000",
-		Registry:  giteaIP + ":3000",
-		KomodoURL: "http://" + ips[Hostname("komodo")] + ":9120",
+		GiteaURL:    "http://" + giteaIP + ":3000",
+		Registry:    giteaIP + ":3000",
+		KomodoURL:   "http://" + ips[Hostname("komodo")] + ":9120",
+		LokiPushURL: "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
 	}, nil
 }
 

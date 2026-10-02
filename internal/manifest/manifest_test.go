@@ -98,3 +98,20 @@ func writeTemp(t *testing.T, content string) string {
 	}
 	return path
 }
+
+func TestShipsLogs_UnlessSetToFalse(t *testing.T) {
+	no, yes := false, true
+	for _, tc := range []struct {
+		obs  *Observability
+		want bool
+	}{
+		{nil, true},
+		{&Observability{Metrics: true}, true},
+		{&Observability{Logs: &yes}, true},
+		{&Observability{Logs: &no}, false},
+	} {
+		if got := (&Manifest{Observability: tc.obs}).ShipsLogs(); got != tc.want {
+			t.Errorf("ShipsLogs(%+v) = %v, want %v", tc.obs, got, tc.want)
+		}
+	}
+}

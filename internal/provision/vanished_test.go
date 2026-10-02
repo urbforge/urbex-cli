@@ -3,9 +3,11 @@ package provision
 import (
 	"bytes"
 	"context"
+	"github.com/urbforge/urbex-cli/internal/manifest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -103,5 +105,36 @@ func TestApply_ForgetsHostKeysOfNewLXCsOnly(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(known); string(got) != "9.9.9.9 ssh-ed25519 AAAAother\n" {
 		t.Errorf("the recreated LXC's old host key should be gone, known_hosts:\n%s", got)
+	}
+}
+
+// Every project LXC's log agent labels the logs with the project, the
+// service and the environment, and sends them to the platform's Loki -
+// unless the manifest turns logs off.
+func TestApply_InventoryShipsLogsToLoki(t *testing.T) {
+	dir := t.TempDir()
+	o := &Orchestrator{Manifest: validManifest(), Config: validPlatformConfig(), Credentials: validCredentials(),
+		Runner: &fakeRunner{}, Out: &bytes.Buffer{}, Rollout: &fakeRollout{}}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "staging", "inventory.yml"))
+	for _, want := range []string{
+		`urbex_logs: "true"`, "loki_push_url: http://192.168.1.204:3100/loki/api/v1/push",
+		"urbex_project: my-app", "urbex_service: api", "urbex_env: staging",
+	} {
+		if !strings.Contains(string(inventory), want) {
+			t.Errorf("inventory lacks %q:\n%s", want, inventory)
+		}
+	}
+
+	off := false
+	o.Manifest.Observability = &manifest.Observability{Logs: &off}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	inventory, _ = os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "staging", "inventory.yml"))
+	if !strings.Contains(string(inventory), `urbex_logs: "false"`) {
+		t.Errorf("observability.logs: false must turn the agent off:\n%s", inventory)
 	}
 }

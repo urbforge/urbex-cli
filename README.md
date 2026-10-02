@@ -91,7 +91,8 @@ The main ones - the full list, with workarounds, is
 in the docs repo:
 
 - Not implemented: Keycloak realms and clients, internal DNS
-  (Technitium), log and metric shipping to the observability stack,
+  (Technitium), metrics and base-service logs to the observability stack
+  (the services' logs do reach Loki - ADR-0023),
   mobile frontend deploys, several frontends per project, per-project
   Proxmox isolation, promotion by pull request, image pruning.
 - One Proxmox node; static IPs are neither checked nor reserved; LXCs

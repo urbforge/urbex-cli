@@ -4,6 +4,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -14,6 +15,10 @@ import (
 
 type hostVars struct {
 	AnsibleHost string `yaml:"ansible_host"`
+	// What the host's log agent labels its logs with.
+	Project string `yaml:"urbex_project"`
+	Service string `yaml:"urbex_service"`
+	Env     string `yaml:"urbex_env"`
 }
 
 type inventoryAll struct {
@@ -31,7 +36,7 @@ type inventoryRoot struct {
 // trust and the Komodo Core to connect to. Nothing about the app itself -
 // Komodo deploys that. The onboarding key is not an inventory var: the
 // role reads it from the environment.
-func writeInventory(repoPath, ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, ep bootstrap.Endpoints) error {
+func writeInventory(repoPath, ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, ep bootstrap.Endpoints, shipLogs bool) error {
 	if err := knownhosts.Ensure(repoPath); err != nil {
 		return err
 	}
@@ -49,6 +54,10 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 				"gitea_registry":          ep.Registry,
 				"komodo_core_address":     ep.KomodoURL,
 				"komodo_version":          bootstrap.KomodoVersion,
+				// The services' logs go to the platform's Loki, unless the
+				// manifest says observability.logs: false.
+				"urbex_logs":    strconv.FormatBool(shipLogs && ep.LokiPushURL != ""),
+				"loki_push_url": ep.LokiPushURL,
 			},
 			Hosts: map[string]hostVars{},
 		},
@@ -56,7 +65,7 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
-		root.All.Hosts[hostname] = hostVars{AnsibleHost: allocations[hostname].IP}
+		root.All.Hosts[hostname] = hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: svc.Name, Env: env}
 	}
 
 	data, err := yaml.Marshal(root)

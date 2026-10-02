@@ -17,3 +17,9 @@
   become: true
   roles:
     - periphery
+
+- name: Ship their logs to the platform's observability stack
+  hosts: all
+  become: true
+  roles:
+    - logs

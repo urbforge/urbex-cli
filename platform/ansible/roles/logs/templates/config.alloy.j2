@@ -1,0 +1,43 @@
+// Managed by urbex apply (role logs). Sends the logs of this LXC's
+// service - the containers of its Komodo Stack, whose compose project is
+// named like the LXC - to the platform's Loki.
+
+discovery.docker "local" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "service" {
+  targets = discovery.docker.local.targets
+
+  // Only the Stack's containers: not Periphery's, not this agent's.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "{{ inventory_hostname }}"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+// The targets are the relabelled ones: filtering them here, rather than
+// with relabel_rules on the entries, is what drops the other containers.
+loki.source.docker "service" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.service.output
+  forward_to = [loki.write.platform.receiver]
+}
+
+loki.write "platform" {
+  endpoint {
+    url = "{{ loki_push_url }}"
+  }
+  external_labels = {
+    project = "{{ urbex_project }}",
+    service = "{{ urbex_service }}",
+    env     = "{{ urbex_env }}",
+    host    = "{{ inventory_hostname }}",
+  }
+}

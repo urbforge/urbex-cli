@@ -1,0 +1,13 @@
+# Managed by urbex apply (role logs): the log agent of this LXC.
+services:
+  alloy:
+    image: docker.io/grafana/alloy:v1.20.1
+    restart: unless-stopped
+    command: run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+
+volumes:
+  alloy-data:

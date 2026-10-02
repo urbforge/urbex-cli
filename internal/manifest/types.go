@@ -91,7 +91,15 @@ type Domain struct {
 
 type Observability struct {
 	Metrics bool `yaml:"metrics"`
-	Logs    bool `yaml:"logs"`
+	// Logs is nil when omitted: logs are shipped unless set to false.
+	Logs *bool `yaml:"logs"`
+}
+
+// ShipsLogs reports whether the project's services send their logs to
+// the platform's observability stack: yes, unless observability.logs is
+// false.
+func (m *Manifest) ShipsLogs() bool {
+	return m.Observability == nil || m.Observability.Logs == nil || *m.Observability.Logs
 }
 
 type Email struct {

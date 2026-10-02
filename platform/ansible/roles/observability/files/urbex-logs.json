@@ -1,0 +1,155 @@
+{
+  "uid": "urbex-logs",
+  "title": "Urbex logs",
+  "tags": [
+    "urbex"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "Project",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "project",
+          "stream": "",
+          "refId": "var"
+        },
+        "definition": "label_values(project)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "env",
+        "label": "Env",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "env",
+          "stream": "{project=~\"$project\"}",
+          "refId": "var"
+        },
+        "definition": "label_values({project=~\"$project\"}, env)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "service",
+          "stream": "{project=~\"$project\", env=~\"$env\"}",
+          "refId": "var"
+        },
+        "definition": "label_values({project=~\"$project\", env=~\"$env\"}, service)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log lines per service",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "urbex-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (project, service, env) (count_over_time({project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\" [$__auto]))",
+          "legendFormat": "{{project}} {{service}} {{env}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Logs",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 20
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "urbex-loki"
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\""
+        }
+      ]
+    }
+  ]
+}

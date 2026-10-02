@@ -174,7 +174,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep); err != nil {
+	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep, o.Manifest.ShipsLogs()); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 	if err := o.runAnsible(ctx, opts); err != nil {
