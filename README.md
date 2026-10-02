@@ -17,7 +17,11 @@ built by Komodo and deployed to staging, which follows `main`
 a release is a tag (`vX.Y.Z`) that gives a commit's images the version,
 and production runs releases. What each environment runs - version,
 configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
-which Komodo deploys whenever it changes.
+which Komodo deploys whenever it changes. With Cloudflare configured
+([ADR-0022](https://github.com/urbforge/urbex/blob/main/docs/decisions/0022-cloudflare-tunnel-access-workers.md)),
+the platform and the services marked `public: true` are published
+through a Cloudflare Tunnel - Gitea and Komodo behind Cloudflare Access -
+and web frontends are deployed to Cloudflare Workers.
 
 Commands:
 
@@ -70,15 +74,39 @@ Commands:
   allocation, whether its LXC exists, the version the GitOps repo asks
   for, and what Komodo reports running.
 - `urbex destroy <env>` — takes the environment's Stacks down, removes
-  its folder from the GitOps repo, runs `terraform destroy`, clears the
-  ledger entries. The project's Builds go with its last environment.
-  Base services are out of scope.
+  its routes, DNS records and web Worker from Cloudflare, runs
+  `terraform destroy`, then removes its folder, Terraform files and
+  ledger entries from the GitOps repo. The project's Builds go with its
+  last environment. Resumable after a failure.
+- `urbex teardown [--yes]` — destroys the platform bootstrap created:
+  the base-service LXCs (with everything on Gitea), the platform's
+  Cloudflare tunnel, records and Access objects, and the generated
+  credentials. Refuses while project environments exist; the GitOps repo
+  is kept as a local commit.
 
-**Not implemented yet:** DNS registration, Keycloak realm/client
-provisioning, Cloudflare Tunnel ingress (services are reachable on their
-LAN IPs), promotion by pull request. See
-[`docs/status.md`](https://github.com/urbforge/urbex/blob/main/docs/status.md)
-in the docs repo.
+### Known limitations
+
+The main ones - the full list, with workarounds, is
+[`docs/known-limitations.md`](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md)
+in the docs repo:
+
+- Not implemented: Keycloak realms and clients, internal DNS
+  (Technitium), log and metric shipping to the observability stack,
+  mobile frontend deploys, several frontends per project, per-project
+  Proxmox isolation, promotion by pull request, image pruning.
+- One Proxmox node; static IPs are neither checked nor reserved; LXCs
+  need `proxmox.network.dnsServers` if the host resolves through
+  Tailscale.
+- Keycloak answers ~4 minutes after bootstrap reports the platform ready
+  (development mode).
+- `nested` public hostnames need Advanced Certificate Manager, enabled
+  and ordered by hand.
+- Gitea and Komodo behind Access are for browsers: git and this CLI use
+  the LAN.
+- `urbex teardown` destroys Gitea and every repo on it.
+
+Planned next: see
+[`docs/roadmap.md`](https://github.com/urbforge/urbex/blob/main/docs/roadmap.md).
 
 ### What has been validated
 
@@ -87,8 +115,12 @@ above - bootstrap, apply, continuous deployment to staging, release,
 promote, secrets, a hand-edited configuration, pinning, rollback,
 destroy, re-apply onto a new machine - against Debian 13 systemd machines reachable over SSH, with
 only `terraform` and the Proxmox API stubbed. `terraform validate`
-passes with the real `bpg/proxmox` provider, and the whole flow has been
-run on a real Proxmox VE 9.2 node with a pool-scoped, non-root token.
+passes with the real `bpg/proxmox` provider, and the whole flow -
+Cloudflare included, then `destroy` and `teardown` down to nothing - has
+been run on a real Proxmox VE 9.2 node with a pool-scoped, non-root
+token and a real Cloudflare account. The Cloudflare parts are covered by
+unit tests against a fake API (`internal/cloudflare/cloudflaretest`), not
+by the e2e.
 
 ## Build & test
 
@@ -125,7 +157,8 @@ go run ./cmd/urbex apply prod                 # apply prod first
 go run ./cmd/urbex promote                    # prod runs the release staging runs
 go run ./cmd/urbex deploy prod --version 0.1.0 # roll back
 go run ./cmd/urbex deploy staging --version 0.1.0  # pin staging; --follow-main resumes
-go run ./cmd/urbex destroy staging            # tears down staging's LXCs
+go run ./cmd/urbex destroy staging            # tears down staging (LXCs, Stacks, Cloudflare routes)
+go run ./cmd/urbex teardown --yes             # then the whole platform, once no environment is left
 ```
 
 ## Layout
@@ -141,7 +174,10 @@ internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.
 internal/netalloc/           static IP block allocation (base-service LXCs)
 internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
 internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
-internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight check only)
+internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs)
+internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
+internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
+internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox
 internal/gitea/              minimal Gitea API client (tokens, org, repos, webhooks, tags, registry lookups)
 internal/komodo/             minimal Komodo v2 API client (keys, accounts, servers, builds, stacks, actions, procedures)
 internal/gitsync/            git commit/push helpers (GitOps repo, a project's main branch)
@@ -156,7 +192,7 @@ internal/provision/          urbex plan/apply/deploy/destroy orchestration (proj
 internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
-platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes
+platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends
 platform/komodo/             the Komodo Action that builds main, moves staging, and publishes release tags
 e2e/                         end-to-end test of the real binary (podman)
 ```
