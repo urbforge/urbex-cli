@@ -53,16 +53,25 @@ func New(baseURL, token, accountID, zoneID string) *Client {
 // APIError is an error Cloudflare reported.
 type APIError struct {
 	Status int
-	Errors []struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
+	Errors []apiErrorItem
+}
+
+// apiErrorItem is one error Cloudflare reported; some APIs (Access) put
+// the reason in "error" rather than "message".
+type apiErrorItem struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Err     string `json:"error"`
 }
 
 func (e *APIError) Error() string {
 	var msgs []string
 	for _, er := range e.Errors {
-		msgs = append(msgs, fmt.Sprintf("%s (%d)", er.Message, er.Code))
+		msg := er.Message
+		if msg == "" {
+			msg = er.Err
+		}
+		msgs = append(msgs, fmt.Sprintf("%s (%d)", msg, er.Code))
 	}
 	if len(msgs) == 0 {
 		msgs = append(msgs, http.StatusText(e.Status))
@@ -81,7 +90,7 @@ func Forbidden(err error) bool {
 		return true
 	}
 	for _, e := range apiErr.Errors {
-		if e.Code == 10000 || e.Code == 9109 {
+		if e.Code == 10000 || e.Code == 9109 || e.Code == 1010 || e.Err == "auth.forbidden" {
 			return true
 		}
 	}
@@ -113,10 +122,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	var envelope struct {
 		Success bool            `json:"success"`
 		Result  json.RawMessage `json:"result"`
-		Errors  []struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"errors"`
+		Errors  []apiErrorItem  `json:"errors"`
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

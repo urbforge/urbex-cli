@@ -150,3 +150,11 @@ func TestForbidden(t *testing.T) {
 		t.Errorf("expected a permission error, got %v", err)
 	}
 }
+
+// Access answers a missing permission with {"code":1010,"error":"auth.forbidden"}.
+func TestAPIError_AccessStyle(t *testing.T) {
+	err := &APIError{Status: 403, Errors: []apiErrorItem{{Code: 1010, Err: "auth.forbidden"}}}
+	if !strings.Contains(err.Error(), "auth.forbidden (1010)") || !Forbidden(err) {
+		t.Errorf("got %q, forbidden=%v", err.Error(), Forbidden(err))
+	}
+}

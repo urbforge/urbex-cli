@@ -89,11 +89,11 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients, ips
 	}
 	policy, err := cf.EnsureEmailPolicy(ctx, accessPolicyName(o.Config), o.Config.Cloudflare.Access.Emails)
 	if err != nil {
-		return err
+		return accessPermission(err)
 	}
 	for service, host := range map[string]string{"git": pub.Gitea, "komodo": pub.Komodo} {
 		if err := cf.EnsureAccessApp(ctx, accessAppName(o.Config, service), host, policy); err != nil {
-			return err
+			return accessPermission(err)
 		}
 	}
 
@@ -167,4 +167,12 @@ func (o *Orchestrator) unpublishPlatform(ctx context.Context, clients Clients) e
 		return err
 	}
 	return cf.DeleteTunnel(ctx, tunnel.ID)
+}
+
+// accessPermission explains an Access call refused for lack of permission.
+func accessPermission(err error) error {
+	if cloudflare.Forbidden(err) {
+		return fmt.Errorf("%w - the Cloudflare token needs the permission Access: Apps and Policies (Edit); nothing was published", err)
+	}
+	return err
 }
