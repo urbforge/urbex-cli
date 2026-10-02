@@ -2,6 +2,8 @@ package cloudflare
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -156,5 +158,13 @@ func TestAPIError_AccessStyle(t *testing.T) {
 	err := &APIError{Status: 403, Errors: []apiErrorItem{{Code: 1010, Err: "auth.forbidden"}}}
 	if !strings.Contains(err.Error(), "auth.forbidden (1010)") || !Forbidden(err) {
 		t.Errorf("got %q, forbidden=%v", err.Error(), Forbidden(err))
+	}
+}
+
+func TestEmptySuccessfulResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer srv.Close()
+	if err := New(srv.URL, "t", "a", "z").do(context.Background(), http.MethodDelete, "/x", nil, nil); err != nil {
+		t.Errorf("a 200 with no body is a success, got %v", err)
 	}
 }

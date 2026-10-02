@@ -515,3 +515,52 @@ func TestStatus_ReportsFollowingMain(t *testing.T) {
 		t.Errorf("Status = %+v, %v", deployed, err)
 	}
 }
+
+// A web frontend runs on the builder, not on an LXC of its own: SetupEnv
+// waits for no server for it, and its Stack deploys to the environment's
+// Worker with the Cloudflare credentials Komodo holds.
+func TestSetupEnv_WebFrontendRunsOnTheBuilder(t *testing.T) {
+	k := &fakeKomodo{}
+	repo := envrepo.Repo{Path: t.TempDir()}
+	web := manifest.Service{Name: "web", Runtime: manifest.WebRuntime, Frontend: &manifest.Frontend{Type: "web", BuildCommand: "npm ci && npm run build", OutputDir: "dist"}}
+	target := stagingTarget()
+	target.Services = append(target.Services, web)
+	target.Hostnames = map[string]string{"web": "staging-my-app-urbex.example.com"}
+
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	if err := r.SetupEnv(context.Background(), target, repo); err != nil {
+		t.Fatalf("SetupEnv: %v", err)
+	}
+	if strings.Contains(strings.Join(k.waited, ","), "web") {
+		t.Errorf("no server to wait for the web frontend, waited for %v", k.waited)
+	}
+	stack := k.stacks["my-app-web-staging"]
+	if stack.ServerID != bootstrap.KomodoServerName || stack.ComposeCmdWrapper != "" {
+		t.Errorf("the web Stack runs on the builder, without the secrets wrapper: %+v", stack)
+	}
+	for _, want := range []string{"WORKER_NAME=urbex-my-app-web-staging", "WORKER_HOSTNAME=staging-my-app-urbex.example.com", "CLOUDFLARE_API_TOKEN=[[URBEX_CLOUDFLARE_TOKEN]]", "CLOUDFLARE_ACCOUNT_ID=[[URBEX_CLOUDFLARE_ACCOUNT_ID]]"} {
+		if !strings.Contains(stack.Environment, want) {
+			t.Errorf("web Stack environment lacks %q:\n%s", want, stack.Environment)
+		}
+	}
+	compose, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/my-app/web/compose.yaml"))
+	for _, want := range []string{"image: 10.0.0.200:3000/urbex/my-app-web:${VERSION}", "CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}", "/tmp/deployed"} {
+		if !strings.Contains(string(compose), want) {
+			t.Errorf("web compose lacks %q:\n%s", want, compose)
+		}
+	}
+	if strings.Contains(string(compose), "ports:") {
+		t.Error("the web frontend publishes no port")
+	}
+
+	cfg, err := r.buildConfig("my-app", web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cfg.BuildArgs, "BUILD_COMMAND=npm ci && npm run build") || !strings.Contains(cfg.BuildArgs, "OUTPUT_DIR=dist") {
+		t.Errorf("the web build needs the build command and output dir: %q", cfg.BuildArgs)
+	}
+	if !strings.Contains(cfg.PreBuild.Command, "wrangler") {
+		t.Error("the web image is built from urbex's web Dockerfile")
+	}
+}

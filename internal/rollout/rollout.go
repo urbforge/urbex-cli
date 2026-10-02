@@ -117,6 +117,9 @@ type Target struct {
 	Project  string
 	Env      string
 	Services []manifest.Service
+	// Hostnames are the public hostnames of the services that have one,
+	// by service name; a web frontend is deployed to its own.
+	Hostnames map[string]string
 }
 
 // FollowsMainByDefault reports whether a new environment follows main:
@@ -234,10 +237,14 @@ func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 // Komodo Stack on the service's LXC. It deploys nothing by itself.
 func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) error {
 	names := make([]string, len(t.Services))
+	var servers []string // a web frontend's Stack runs on the builder, not an LXC
 	for i, svc := range t.Services {
 		names[i] = ResourceName(t.Project, svc.Name, t.Env)
+		if !svc.IsWeb() {
+			servers = append(servers, names[i])
+		}
 	}
-	rekeyed, err := r.Komodo.WaitServers(ctx, names, r.timeout())
+	rekeyed, err := r.Komodo.WaitServers(ctx, servers, r.timeout())
 	for _, name := range rekeyed {
 		fmt.Fprintf(r.Out, "Komodo server %s reconnected with a new key (its LXC was recreated): accepted.\n", name)
 	}
@@ -547,6 +554,9 @@ func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.Buil
 		}},
 		BuildArgs: "SERVICE=" + svc.Name,
 	}
+	if svc.IsWeb() && svc.Frontend != nil {
+		cfg.BuildArgs += "\nBUILD_COMMAND=" + svc.Frontend.BuildCommand + "\nOUTPUT_DIR=" + svc.Frontend.OutputDir
+	}
 	if svc.Runtime == "docker" {
 		dockerfile := path.Clean(strings.TrimPrefix(svc.Dockerfile, "./"))
 		cfg.BuildPath = path.Dir(dockerfile)
@@ -586,6 +596,9 @@ const ComposeWrapper = "/opt/urbex/bin/urbex-compose [[COMPOSE_COMMAND]]"
 // Stack right before pushing would also defeat the deploy - Komodo
 // caches the repo for a few seconds after looking at it.
 func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komodo.StackConfig {
+	if svc.IsWeb() {
+		return r.webStackConfig(t, svc)
+	}
 	return komodo.StackConfig{
 		ServerID:           name, // the LXC's Periphery registers under its hostname
 		GitProvider:        r.Endpoints.Registry,
@@ -610,4 +623,42 @@ type GitCLI struct{}
 
 func (GitCLI) Push(ctx context.Context, dir, remoteURL, token string, refspecs ...string) error {
 	return gitsync.Push(ctx, dir, remoteURL, token, refspecs...)
+}
+
+// WorkerName is the Cloudflare Worker a project's web frontend is
+// deployed to in an environment.
+func WorkerName(project, env string) string {
+	return "urbex-" + project + "-" + manifest.WebService + "-" + env
+}
+
+// Komodo variables the web frontends' Stacks deploy to Cloudflare with
+// (set by urbex bootstrap when the platform has Cloudflare).
+const (
+	CloudflareTokenVariable   = "URBEX_CLOUDFLARE_TOKEN"
+	CloudflareAccountVariable = "URBEX_CLOUDFLARE_ACCOUNT_ID"
+)
+
+// webStackConfig is the Stack of a web frontend in an environment: on the
+// builder, it runs the frontend's image, which uploads its assets to the
+// environment's Worker and stays up - healthy once that worked.
+func (r *Rollout) webStackConfig(t Target, svc manifest.Service) komodo.StackConfig {
+	env := strings.Join([]string{
+		"WORKER_NAME=" + WorkerName(t.Project, t.Env),
+		"WORKER_HOSTNAME=" + t.Hostnames[svc.Name],
+		"CLOUDFLARE_API_TOKEN=[[" + CloudflareTokenVariable + "]]",
+		"CLOUDFLARE_ACCOUNT_ID=[[" + CloudflareAccountVariable + "]]",
+	}, "\n")
+	return komodo.StackConfig{
+		ServerID:           bootstrap.KomodoServerName,
+		GitProvider:        r.Endpoints.Registry,
+		GitHTTPS:           false,
+		GitAccount:         bootstrap.GiteaAdminUser,
+		Repo:               r.Org + "/" + bootstrap.GitOpsRepoName,
+		Branch:             bootstrap.TrunkBranch,
+		RunDirectory:       envrepo.ServiceDir(t.Env, t.Project, svc.Name),
+		AdditionalEnvFiles: []komodo.EnvFile{{Path: envrepo.VersionFile, Track: true}},
+		RegistryProvider:   r.Endpoints.Registry,
+		RegistryAccount:    bootstrap.GiteaAdminUser,
+		Environment:        env,
+	}
 }

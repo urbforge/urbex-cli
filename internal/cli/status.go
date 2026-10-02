@@ -129,7 +129,7 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		if err != nil {
 			return err
 		}
-		target := rollout.Target{Project: m.Project, Env: env, Services: m.Services}
+		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
 		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
 		if err != nil {
 			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
@@ -155,6 +155,24 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 			if d.Image != "" {
 				fmt.Fprintf(out, " image=%s", d.Image)
 			}
+		}
+		fmt.Fprintln(out)
+	}
+	for _, svc := range m.Deployables() {
+		if !svc.IsWeb() {
+			continue
+		}
+		// No LXC: its Stack runs on the builder and deploys to a Worker.
+		fmt.Fprintf(out, "  %-16s %-32s", svc.Name, rollout.WorkerName(m.Project, env))
+		if d, ok := deployed[svc.Name]; ok {
+			want := d.Want
+			if want == "" {
+				want = "none"
+			}
+			if d.Track {
+				want += "(follows-main)"
+			}
+			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
 		}
 		fmt.Fprintln(out)
 	}

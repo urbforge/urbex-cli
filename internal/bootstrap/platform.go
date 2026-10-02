@@ -234,7 +234,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	// builds main and releases and moves the environments that follow
 	// main, and the Procedure that redeploys the Stacks whose folder of
 	// the GitOps repo changed. The Action reaches Gitea with these.
-	for _, v := range []struct {
+	variables := []struct {
 		name, value string
 		secret      bool
 	}{
@@ -242,7 +242,21 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		{"URBEX_GITEA_USER", GiteaAdminUser, false},
 		{"URBEX_GITEA_TOKEN", creds.GiteaToken, true},
 		{"URBEX_ORG", o.Config.Git.Org, false},
-	} {
+	}
+	if o.Config.Cloudflare.Enabled() {
+		// What the web frontends' Stacks deploy to Cloudflare Workers with.
+		variables = append(variables,
+			struct {
+				name, value string
+				secret      bool
+			}{"URBEX_CLOUDFLARE_TOKEN", creds.CloudflareToken, true},
+			struct {
+				name, value string
+				secret      bool
+			}{"URBEX_CLOUDFLARE_ACCOUNT_ID", o.Config.Cloudflare.AccountID, false},
+		)
+	}
+	for _, v := range variables {
 		if err := k.EnsureVariable(ctx, v.name, v.value, v.secret); err != nil {
 			return err
 		}

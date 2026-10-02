@@ -33,7 +33,7 @@ func withCloudflare(t *testing.T, o *Orchestrator) *cloudflaretest.Server {
 
 func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	dir := t.TempDir()
-	o, runner, _ := newRunOrchestrator(t, &fakeProxmox{})
+	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
 	fake := withCloudflare(t, o)
 	fake.IdPs = nil // a new Zero Trust organization: no login method yet
 
@@ -75,6 +75,9 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	sort.Strings(protected)
 	if strings.Join(protected, ",") != "git-urbex.cubotto.net,komodo-urbex.cubotto.net" {
 		t.Errorf("Access protects %v, want Gitea and Komodo only", protected)
+	}
+	if fp.variables["URBEX_CLOUDFLARE_TOKEN"] != "secret:cf-token" || fp.variables["URBEX_CLOUDFLARE_ACCOUNT_ID"] != "acc" {
+		t.Errorf("Komodo needs the Cloudflare token and account for the web frontends, variables = %v", fp.variables)
 	}
 	if len(fake.IdPs) != 1 || fake.IdPs[0] != "onetimepin" {
 		t.Errorf("expected the one-time PIN login to be enabled, got %v", fake.IdPs)

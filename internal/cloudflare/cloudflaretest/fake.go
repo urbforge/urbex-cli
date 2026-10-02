@@ -21,8 +21,9 @@ type Server struct {
 	Records   map[string]*Record // by id
 	Policies  map[string]map[string]any
 	Apps      map[string]map[string]any
-	IdPs      []string        // types
-	Forbidden map[string]bool // path prefixes (after /accounts/<id> or /zones/<id>) answered with 403
+	IdPs      []string          // types
+	Workers   map[string]string // name -> custom domain hostname
+	Forbidden map[string]bool   // path prefixes (after /accounts/<id> or /zones/<id>) answered with 403
 }
 
 // Tunnel is a fake tunnel and its ingress.
@@ -45,6 +46,7 @@ func NewServer() *Server {
 		Records:   map[string]*Record{},
 		Policies:  map[string]map[string]any{},
 		Apps:      map[string]map[string]any{},
+		Workers:   map[string]string{},
 		Forbidden: map[string]bool{},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
@@ -208,6 +210,27 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case key == "access/identity_providers" && r.Method == http.MethodPost:
 		s.IdPs = append(s.IdPs, body["type"].(string))
 		reply(w, 200, body)
+	// Workers
+	case key == "workers/domains" && r.Method == http.MethodGet:
+		var out []map[string]any
+		for name, host := range s.Workers {
+			if host == r.URL.Query().Get("hostname") {
+				out = append(out, map[string]any{"id": "dom-" + name, "hostname": host, "service": name})
+			}
+		}
+		reply(w, 200, out)
+	case rest[0] == "workers" && len(rest) == 3 && rest[1] == "domains" && r.Method == http.MethodDelete:
+		s.Workers[strings.TrimPrefix(rest[2], "dom-")] = ""
+		reply(w, 200, nil)
+	case key == "workers/scripts" && r.Method == http.MethodGet:
+		var out []map[string]any
+		for name := range s.Workers {
+			out = append(out, map[string]any{"id": name})
+		}
+		reply(w, 200, out)
+	case rest[0] == "workers" && len(rest) == 3 && rest[1] == "scripts" && r.Method == http.MethodDelete:
+		delete(s.Workers, rest[2])
+		reply(w, 200, nil)
 	default:
 		reply(w, 404, nil)
 	}

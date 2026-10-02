@@ -72,11 +72,11 @@ docs/reference/cli.md in urbforge/urbex.`,
 				return err
 			}
 			fmt.Fprintf(out, "Releasing %s %s from %s.\n", project, next.Tag(), why)
-			if err := p.rollout.Release(ctx, project, p.Manifest.Services, next, target); err != nil {
+			if err := p.rollout.Release(ctx, project, p.Manifest.Deployables(), next, target); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "Released %s %s:\n", project, next)
-			for _, svc := range p.Manifest.Services {
+			for _, svc := range p.Manifest.Deployables() {
 				fmt.Fprintf(out, "  %-16s %s:%s\n", svc.Name, p.rollout.Image(project, svc.Name), next)
 			}
 			fmt.Fprintln(out, "Put it in production with 'urbex promote' (or 'urbex deploy prod').")

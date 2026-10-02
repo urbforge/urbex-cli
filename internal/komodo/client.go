@@ -209,6 +209,9 @@ type StackConfig struct {
 	// stands for the wrapped command.
 	ComposeCmdWrapper string `json:"compose_cmd_wrapper"`
 	WebhookEnabled    bool   `json:"webhook_enabled"`
+	// Environment is written to .env in the run directory and passed to
+	// compose; [[VARIABLE]]s are interpolated by Komodo.
+	Environment string `json:"environment,omitempty"`
 }
 
 // EnvFile is a compose --env-file, tracked for changes.

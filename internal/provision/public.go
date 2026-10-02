@@ -3,6 +3,7 @@ package provision
 import (
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"strconv"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
@@ -17,17 +18,25 @@ type CloudflareAPI interface {
 	SetRoutes(ctx context.Context, tunnelID string, hostnames []string, routes []cloudflare.Route) error
 	EnsureTunnelRecord(ctx context.Context, hostname, tunnelID string) error
 	DeleteRecord(ctx context.Context, hostname string) error
+	DeleteWorker(ctx context.Context, name, hostname string) error
 }
 
 // PublicHostname is where a service of the project is published in an
 // environment: <service>-<project>-urbex.<domain> in prod,
-// <service>-staging-<project>-urbex.<domain> in staging (flat names; dots
-// with nested ones). Empty when the platform publishes nothing.
+// <service>-staging-<project>-urbex.<domain> in staging, and the web
+// frontend at <project>-urbex.<domain> and staging-<project>-urbex.<domain>
+// (flat names; dots with nested ones). Empty when the platform publishes
+// nothing.
 func (o *Orchestrator) PublicHostname(env string, svc manifest.Service) string {
 	if !o.Config.Cloudflare.Enabled() {
 		return ""
 	}
-	labels := []string{svc.Name}
+	// A web frontend is the project's own name; a service is prefixed
+	// with its name.
+	var labels []string
+	if !svc.IsWeb() {
+		labels = append(labels, svc.Name)
+	}
 	if env != "prod" {
 		labels = append(labels, env)
 	}
@@ -114,4 +123,24 @@ func (o *Orchestrator) tunnel(ctx context.Context) (*cloudflare.Tunnel, error) {
 		return nil, fmt.Errorf("the platform's Cloudflare tunnel %s doesn't exist: run 'urbex bootstrap'", o.Config.Cloudflare.TunnelName)
 	}
 	return tunnel, nil
+}
+
+// unpublishWeb deletes the environment's web frontend Worker and its
+// custom domain.
+func (o *Orchestrator) unpublishWeb(ctx context.Context, env string) error {
+	if !o.Config.Cloudflare.Enabled() {
+		return nil
+	}
+	for _, svc := range o.Manifest.Deployables() {
+		if !svc.IsWeb() {
+			continue
+		}
+		if o.Cloudflare == nil {
+			return fmt.Errorf("urbex.platform.yaml sets cloudflare.accountId but there is no Cloudflare token (URBEX_CLOUDFLARE_TOKEN)")
+		}
+		if err := o.Cloudflare.DeleteWorker(ctx, rollout.WorkerName(o.Manifest.Project, env), o.PublicHostname(env, svc)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

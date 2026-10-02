@@ -32,6 +32,9 @@ type Service struct {
 	Resources *Resources                   `yaml:"resources,omitempty"`
 	Env       map[string]map[string]string `yaml:"env,omitempty"`
 	Auth      *Auth                        `yaml:"auth,omitempty"`
+	// Frontend is set on the service Deployables makes of a web
+	// frontend; never read from urbex.yaml.
+	Frontend *Frontend `yaml:"-"`
 }
 
 // Default resource sizing applied when a service omits (or partially
@@ -95,4 +98,25 @@ type Email struct {
 	Provider    string `yaml:"provider"`
 	FromAddress string `yaml:"fromAddress"`
 	FromName    string `yaml:"fromName,omitempty"`
+}
+
+// WebService is the name, and WebRuntime the runtime, of the service a
+// web frontend is deployed as: built like the others, deployed to a
+// Cloudflare Worker instead of an LXC (ADR-0022).
+const (
+	WebService = "web"
+	WebRuntime = "web"
+)
+
+// IsWeb reports whether s is a web frontend.
+func (s Service) IsWeb() bool { return s.Runtime == WebRuntime }
+
+// Deployables returns what an environment of the project runs: its
+// services and, if it has one, its web frontend.
+func (m *Manifest) Deployables() []Service {
+	out := append([]Service{}, m.Services...)
+	if m.Frontend != nil && m.Frontend.Type == "web" {
+		out = append(out, Service{Name: WebService, Runtime: WebRuntime, Frontend: m.Frontend})
+	}
+	return out
 }

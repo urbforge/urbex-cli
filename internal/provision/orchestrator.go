@@ -181,7 +181,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	if err := o.Rollout.SetupProject(ctx, o.Manifest.Project, o.Manifest.Services); err != nil {
+	if err := o.Rollout.SetupProject(ctx, o.Manifest.Project, o.Manifest.Deployables()); err != nil {
 		return err
 	}
 	if err := o.refresh(ctx, opts); err != nil {
@@ -211,7 +211,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			tracking++
 		}
 	}
-	if set < len(o.Manifest.Services) && tracking == len(o.Manifest.Services) {
+	if set < len(o.Manifest.Deployables()) && tracking == len(o.Manifest.Deployables()) {
 		// A new environment that follows main: build main now, as a
 		// push would, rather than wait for the next one.
 		if err := o.Rollout.BuildMain(ctx, o.Manifest.Project); err != nil {
@@ -224,11 +224,10 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return err
 		}
 		fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
-	} else if set < len(o.Manifest.Services) {
+	} else if set < len(o.Manifest.Deployables()) {
 		fmt.Fprintf(o.Out, "%s (%s) is ready, with no version to run yet:\n", o.Manifest.Project, opts.Env)
-		for _, svc := range o.Manifest.Services {
-			entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
-			fmt.Fprintf(o.Out, "  %-16s http://%s:%d\n", svc.Name, entry.IP, svc.Port)
+		for _, svc := range o.Manifest.Deployables() {
+			fmt.Fprintf(o.Out, "  %-16s %s\n", svc.Name, o.address(opts.Env, svc, allocations))
 		}
 		if opts.Env == "prod" {
 			fmt.Fprintln(o.Out, "Give it staging's release with 'urbex release' (if staging runs an unreleased commit), then 'urbex promote'.")
@@ -269,7 +268,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if !ValidVersion(opts.Version) {
 		return fmt.Errorf("invalid version %q: expected a release (X.Y.Z) or a commit of main (its short hash)", opts.Version)
 	}
-	missing, err := o.Rollout.MissingImages(ctx, o.Manifest.Project, o.Manifest.Services, opts.Version)
+	missing, err := o.Rollout.MissingImages(ctx, o.Manifest.Project, o.Manifest.Deployables(), opts.Version)
 	if err != nil {
 		return err
 	}
@@ -288,7 +287,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 		return err
 	}
 	wasTracking := false
-	for _, svc := range o.Manifest.Services {
+	for _, svc := range o.Manifest.Deployables() {
 		wasTracking = wasTracking || before[svc.Name].Track
 		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: opts.Version}); err != nil {
 			return err
@@ -319,7 +318,7 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 	if err != nil {
 		return err
 	}
-	for _, svc := range o.Manifest.Services {
+	for _, svc := range o.Manifest.Deployables() {
 		st := envrepo.VersionFileState{Version: current[svc.Name].Version, Track: true}
 		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, st); err != nil {
 			return err
@@ -417,7 +416,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 	}
 
 	changed := false
-	for _, svc := range o.Manifest.Services {
+	for _, svc := range o.Manifest.Deployables() {
 		version := staging[svc.Name].Version
 		if version == "" {
 			return false, fmt.Errorf("staging has no version set for %s - nothing to promote", svc.Name)
@@ -505,7 +504,7 @@ func (o *Orchestrator) applied(opts Options) (map[string]allocation.Entry, envre
 // versions returns what each service's version file says in env.
 func (o *Orchestrator) versions(repo envrepo.Repo, env string) (map[string]envrepo.VersionFileState, error) {
 	versions := map[string]envrepo.VersionFileState{}
-	for _, svc := range o.Manifest.Services {
+	for _, svc := range o.Manifest.Deployables() {
 		v, err := repo.Version(env, o.Manifest.Project, svc.Name)
 		if err != nil {
 			return nil, err
@@ -545,9 +544,8 @@ func (o *Orchestrator) waitAndReport(ctx context.Context, opts Options, allocati
 		return err
 	}
 	fmt.Fprintf(o.Out, "Deployed %s (%s):\n", o.Manifest.Project, opts.Env)
-	for i, svc := range o.Manifest.Services {
-		entry := allocations[Hostname(o.Manifest.Project, svc.Name, opts.Env)]
-		fmt.Fprintf(o.Out, "  %-16s http://%s:%d  %s (%s)\n", svc.Name, entry.IP, svc.Port, deployed[i].Want, deployed[i].Image)
+	for i, svc := range o.Manifest.Deployables() {
+		fmt.Fprintf(o.Out, "  %-16s %s  %s (%s)\n", svc.Name, o.address(opts.Env, svc, allocations), deployed[i].Want, deployed[i].Image)
 		if host := o.PublicHostname(opts.Env, svc); host != "" && svc.Public {
 			fmt.Fprintf(o.Out, "  %-16s https://%s\n", "", host)
 		}
@@ -565,11 +563,20 @@ func (o *Orchestrator) checkPlatform() error {
 	if o.Config.Cloudflare.Enabled() && o.Credentials.CloudflareToken == "" {
 		return fmt.Errorf("missing required credentials: [URBEX_CLOUDFLARE_TOKEN] (urbex.platform.yaml sets cloudflare.accountId)")
 	}
+	if o.Manifest.Frontend != nil && o.Manifest.Frontend.Type == "web" && !o.Config.Cloudflare.Enabled() {
+		return fmt.Errorf("urbex.yaml has a web frontend, which is deployed to Cloudflare: set cloudflare.accountId and zoneId in urbex.platform.yaml and run 'urbex bootstrap'")
+	}
 	return nil
 }
 
 func (o *Orchestrator) target(env string) rollout.Target {
-	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: o.Manifest.Services}
+	hostnames := map[string]string{}
+	for _, svc := range o.Manifest.Deployables() {
+		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
+			hostnames[svc.Name] = host
+		}
+	}
+	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: o.Manifest.Deployables(), Hostnames: hostnames}
 }
 
 func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
@@ -647,14 +654,24 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	// down and delete them. Their Servers go after the LXCs, or the
 	// agents would just register again.
 	target := rollout.Target{Project: o.Manifest.Project, Env: opts.Env, Services: toDestroy}
+	// The web frontend has no LXC, but a Stack and a Worker.
+	stacks := target
+	for _, svc := range o.Manifest.Deployables() {
+		if svc.IsWeb() {
+			stacks.Services = append(append([]manifest.Service{}, toDestroy...), svc)
+		}
+	}
 	repo := envrepo.Repo{Path: opts.GitOpsRepoPath}
 	if o.Rollout != nil {
-		if err := o.Rollout.RemoveEnv(ctx, target); err != nil {
+		if err := o.Rollout.RemoveEnv(ctx, stacks); err != nil {
 			return fmt.Errorf("removing komodo stacks: %w", err)
 		}
 	}
 	if err := o.unpublish(ctx, opts.Env, toDestroy); err != nil {
 		return fmt.Errorf("removing from cloudflare: %w", err)
+	}
+	if err := o.unpublishWeb(ctx, opts.Env); err != nil {
+		return fmt.Errorf("removing the web frontend from cloudflare: %w", err)
 	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
@@ -701,7 +718,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 			}
 		}
 		if remaining == 0 {
-			if err := o.Rollout.RemoveProject(ctx, o.Manifest.Project, o.Manifest.Services); err != nil {
+			if err := o.Rollout.RemoveProject(ctx, o.Manifest.Project, o.Manifest.Deployables()); err != nil {
 				return fmt.Errorf("removing komodo builds: %w", err)
 			}
 		}
@@ -846,4 +863,14 @@ func (o *Orchestrator) existingContainers(ctx context.Context) (map[int]bool, er
 		existing[id] = true
 	}
 	return existing, nil
+}
+
+// address is where a service of the environment is reached: its LXC's
+// LAN address, or a web frontend's public URL.
+func (o *Orchestrator) address(env string, svc manifest.Service, allocations map[string]allocation.Entry) string {
+	if svc.IsWeb() {
+		return "https://" + o.PublicHostname(env, svc)
+	}
+	entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
+	return fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
 }

@@ -128,6 +128,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
+	if len(bytes.TrimSpace(data)) == 0 && resp.StatusCode < 300 {
+		return nil // some deletions answer 200 with no body
+	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return fmt.Errorf("cloudflare %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(data)))
 	}
@@ -459,6 +462,43 @@ func (c *Client) EnableOneTimePIN(ctx context.Context) error {
 	body := map[string]any{"name": "One-time PIN", "type": "onetimepin", "config": map[string]any{}}
 	if err := c.do(ctx, http.MethodPost, c.account("/access/identity_providers"), body, nil); err != nil {
 		return fmt.Errorf("enabling the one-time PIN login: %w", err)
+	}
+	return nil
+}
+
+// --- Workers -----------------------------------------------------------
+
+// DeleteWorker deletes a Worker and the custom domain hostname it was
+// served on. A Worker that doesn't exist is not an error.
+func (c *Client) DeleteWorker(ctx context.Context, name, hostname string) error {
+	var domains []struct {
+		ID       string `json:"id"`
+		Hostname string `json:"hostname"`
+		Service  string `json:"service"`
+	}
+	q := url.Values{"hostname": {hostname}}
+	if err := c.do(ctx, http.MethodGet, c.account("/workers/domains?"+q.Encode()), nil, &domains); err != nil {
+		return fmt.Errorf("looking up the custom domain %s: %w", hostname, err)
+	}
+	for _, d := range domains {
+		if d.Hostname == hostname && d.Service == name {
+			if err := c.do(ctx, http.MethodDelete, c.account("/workers/domains/"+d.ID), nil, nil); err != nil {
+				return fmt.Errorf("removing the custom domain %s: %w", hostname, err)
+			}
+		}
+	}
+	var scripts []struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(ctx, http.MethodGet, c.account("/workers/scripts"), nil, &scripts); err != nil {
+		return fmt.Errorf("listing Workers: %w", err)
+	}
+	for _, s := range scripts {
+		if s.ID == name {
+			if err := c.do(ctx, http.MethodDelete, c.account("/workers/scripts/"+name+"?force=true"), nil, nil); err != nil {
+				return fmt.Errorf("deleting Worker %s: %w", name, err)
+			}
+		}
 	}
 	return nil
 }

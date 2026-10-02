@@ -3,6 +3,7 @@ package provision
 import (
 	"bytes"
 	"context"
+	"github.com/urbforge/urbex-cli/internal/manifest"
 	"sort"
 	"strings"
 	"testing"
@@ -99,5 +100,46 @@ func TestApply_CloudflareWithoutTokenIsRefused(t *testing.T) {
 	err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "URBEX_CLOUDFLARE_TOKEN") {
 		t.Errorf("expected a refusal naming the token, got %v", err)
+	}
+}
+
+func TestWebFrontend_HostnamesAndDestroy(t *testing.T) {
+	o, fake, _ := cloudflareOrchestrator(t)
+	o.Manifest.Frontend = &manifest.Frontend{Type: "web", Provider: "cloudflare-pages", BuildCommand: "npm run build", OutputDir: "dist"}
+	web := o.Manifest.Deployables()[len(o.Manifest.Deployables())-1]
+	if got := o.PublicHostname("prod", web); got != "my-app-urbex.cubotto.net" {
+		t.Errorf("prod web hostname = %s", got)
+	}
+	if got := o.PublicHostname("staging", web); got != "staging-my-app-urbex.cubotto.net" {
+		t.Errorf("staging web hostname = %s", got)
+	}
+	if got := o.target("staging").Hostnames["web"]; got != "staging-my-app-urbex.cubotto.net" {
+		t.Errorf("the web Stack needs its hostname, target has %q", got)
+	}
+
+	dir := t.TempDir()
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	fake.Workers["urbex-my-app-web-staging"] = "staging-my-app-urbex.cubotto.net" // deployed by its Stack
+	fake.Workers["portal"] = "portal.cubotto.net"                                 // not urbex's
+	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, ok := fake.Workers["urbex-my-app-web-staging"]; ok {
+		t.Error("the staging web Worker should be deleted")
+	}
+	if fake.Workers["portal"] != "portal.cubotto.net" {
+		t.Error("other Workers must be left alone")
+	}
+}
+
+func TestWebFrontend_NeedsCloudflare(t *testing.T) {
+	o := &Orchestrator{Manifest: validManifest(), Config: validPlatformConfig(), Credentials: validCredentials(),
+		Runner: &fakeRunner{}, Out: &bytes.Buffer{}, Rollout: &fakeRollout{}}
+	o.Manifest.Frontend = &manifest.Frontend{Type: "web", Provider: "cloudflare-pages", BuildCommand: "b", OutputDir: "d"}
+	err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "web frontend") {
+		t.Errorf("expected a refusal: a web frontend needs Cloudflare, got %v", err)
 	}
 }
