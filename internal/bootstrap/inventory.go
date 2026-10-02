@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
 
@@ -18,6 +19,8 @@ type inventoryGroup struct {
 type inventoryVars struct {
 	AnsibleUser          string `yaml:"ansible_user"`
 	AnsibleSSHCommonArgs string `yaml:"ansible_ssh_common_args"`
+	AnsibleTimeout       string `yaml:"ansible_timeout"`
+	AnsibleSSHRetries    string `yaml:"ansible_ssh_retries"`
 	UrbexDomain          string `yaml:"urbex_domain"`
 	GiteaRegistry        string `yaml:"gitea_registry"`
 	GiteaAdminUsername   string `yaml:"gitea_admin_username"`
@@ -40,11 +43,21 @@ type inventoryRoot struct {
 // platform/ansible/playbook.yml), pointing at its statically allocated IP.
 // Secrets are not inventory vars: roles read them from the environment.
 func writeInventory(ansibleDir, domain string, ep Endpoints, serviceIPs map[string]string) error {
+	repoPath := filepath.Dir(ansibleDir)
+	if err := knownhosts.Ensure(repoPath); err != nil {
+		return err
+	}
+	sshArgs, err := knownhosts.SSHArgs(repoPath)
+	if err != nil {
+		return err
+	}
 	root := inventoryRoot{
 		All: inventoryAll{
 			Vars: inventoryVars{
 				AnsibleUser:          "root",
-				AnsibleSSHCommonArgs: "-o StrictHostKeyChecking=accept-new",
+				AnsibleSSHCommonArgs: sshArgs,
+				AnsibleTimeout:       knownhosts.ConnectTimeout,
+				AnsibleSSHRetries:    knownhosts.ConnectRetries,
 				UrbexDomain:          domain,
 				GiteaRegistry:        ep.Registry,
 				GiteaAdminUsername:   GiteaAdminUser,

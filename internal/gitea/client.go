@@ -226,6 +226,27 @@ func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]Tag, error
 	}
 }
 
+// ListOrgRepos returns the full names (org/repo) of the organization's
+// repositories.
+func (c *Client) ListOrgRepos(ctx context.Context, org string) ([]string, error) {
+	var all []string
+	for page := 1; ; page++ {
+		var repos []struct {
+			FullName string `json:"full_name"`
+		}
+		path := fmt.Sprintf("/orgs/%s/repos?page=%d&limit=50", url.PathEscape(org), page)
+		if err := c.do(ctx, http.MethodGet, path, nil, &repos, nil); err != nil {
+			return nil, fmt.Errorf("listing repositories of %s: %w", org, err)
+		}
+		for _, r := range repos {
+			all = append(all, r.FullName)
+		}
+		if len(repos) < 50 {
+			return all, nil
+		}
+	}
+}
+
 // BranchCommit returns the full hash of the head of owner/repo's branch.
 func (c *Client) BranchCommit(ctx context.Context, owner, repo, branch string) (string, error) {
 	var b struct {

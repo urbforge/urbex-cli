@@ -107,6 +107,9 @@ type Clients struct {
 	Gitea    func(baseURL, token string) GiteaAPI
 	Komodo   func(baseURL, apiKey, apiSecret string) KomodoAPI
 	SyncRepo func(ctx context.Context, dir, remoteURL, token, message string) error
+	// PullRepo updates a working copy from Gitea (used by Teardown); nil
+	// means the real one.
+	PullRepo func(ctx context.Context, dir, remoteURL, token string) error
 }
 
 // DefaultClients returns Clients backed by the real HTTP clients and git.
@@ -115,6 +118,7 @@ func DefaultClients() Clients {
 		Gitea:    func(u, t string) GiteaAPI { return gitea.New(u, t) },
 		Komodo:   func(u, k, s string) KomodoAPI { return komodo.New(u, k, s) },
 		SyncRepo: SyncRepo,
+		PullRepo: PullRepo,
 	}
 }
 

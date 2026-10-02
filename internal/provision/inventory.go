@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
 
@@ -30,12 +31,21 @@ type inventoryRoot struct {
 // trust and the Komodo Core to connect to. Nothing about the app itself -
 // Komodo deploys that. The onboarding key is not an inventory var: the
 // role reads it from the environment.
-func writeInventory(ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, ep bootstrap.Endpoints) error {
+func writeInventory(repoPath, ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, ep bootstrap.Endpoints) error {
+	if err := knownhosts.Ensure(repoPath); err != nil {
+		return err
+	}
+	sshArgs, err := knownhosts.SSHArgs(repoPath)
+	if err != nil {
+		return err
+	}
 	root := inventoryRoot{
 		All: inventoryAll{
 			Vars: map[string]string{
 				"ansible_user":            "root",
-				"ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new",
+				"ansible_ssh_common_args": sshArgs,
+				"ansible_timeout":         knownhosts.ConnectTimeout,
+				"ansible_ssh_retries":     knownhosts.ConnectRetries,
 				"gitea_registry":          ep.Registry,
 				"komodo_core_address":     ep.KomodoURL,
 				"komodo_version":          bootstrap.KomodoVersion,

@@ -65,3 +65,43 @@ func TestForgetVanished_NoStateOrNoClientIsANoOp(t *testing.T) {
 		t.Errorf("expected no terraform calls, got %+v", r.calls)
 	}
 }
+
+// An LXC terraform creates has a new host key, possibly at an address an
+// older LXC had: Apply forgets the old key, and keeps those of LXCs that
+// were already there.
+func TestApply_ForgetsHostKeysOfNewLXCsOnly(t *testing.T) {
+	dir := t.TempDir()
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
+		Proxmox:     fakeLister{},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	known := filepath.Join(dir, "state", "known_hosts")
+	stale := "192.168.1.210 ssh-ed25519 AAAAstale\n9.9.9.9 ssh-ed25519 AAAAother\n"
+	os.WriteFile(known, []byte(stale), 0o644)
+
+	// The LXC exists now: re-applying keeps its key.
+	o.Proxmox = fakeLister{9100}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got, _ := os.ReadFile(known); string(got) != stale {
+		t.Errorf("an existing LXC's host key must be kept, known_hosts:\n%s", got)
+	}
+
+	// It was deleted outside urbex: the next apply creates a new one.
+	o.Proxmox = fakeLister{}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got, _ := os.ReadFile(known); string(got) != "9.9.9.9 ssh-ed25519 AAAAother\n" {
+		t.Errorf("the recreated LXC's old host key should be gone, known_hosts:\n%s", got)
+	}
+}

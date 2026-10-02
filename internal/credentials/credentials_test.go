@@ -159,3 +159,30 @@ func TestEnv_ReturnsOnlyRequestedVariables(t *testing.T) {
 		t.Errorf("Env = %v, want %v", got, want)
 	}
 }
+
+func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c := &Credentials{}
+	if err := c.Update(func(c *Credentials) {
+		c.ProxmoxToken, c.AgeKey, c.CloudflareToken = "pve", "age", "cf"
+		c.GiteaToken, c.KomodoAPIKey, c.GrafanaAdminPassword = "g", "k", "p"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ClearGenerated(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := DefaultPath()
+	onDisk, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []*Credentials{c, onDisk} {
+		if got.ProxmoxToken != "pve" || got.AgeKey != "age" || got.CloudflareToken != "cf" {
+			t.Errorf("provided credentials lost: %+v", got)
+		}
+		if got.GiteaToken != "" || got.KomodoAPIKey != "" || got.GrafanaAdminPassword != "" {
+			t.Errorf("generated credentials kept: %+v", got)
+		}
+	}
+}

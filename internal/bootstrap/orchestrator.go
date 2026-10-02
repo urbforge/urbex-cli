@@ -15,6 +15,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"io"
 	"os"
 	"path/filepath"
@@ -124,8 +125,17 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: tfEnv}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
-	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"apply", "-auto-approve"}, Env: tfEnv}); err != nil {
-		return fmt.Errorf("terraform apply: %w", err)
+	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", tfEnv); err != nil {
+		return err
+	}
+	// The LXCs just created have new host keys at addresses that may have
+	// served others before (a teardown, an LXC deleted by hand).
+	var created []string
+	for _, hostname := range toCreate {
+		created = append(created, ips[hostname])
+	}
+	if err := knownhosts.Forget(opts.GitOpsRepoPath, created...); err != nil {
+		return fmt.Errorf("updating known hosts: %w", err)
 	}
 
 	ansibleArgs := []string{"-i", "inventory.yml", "playbook.yml"}

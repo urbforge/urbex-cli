@@ -74,6 +74,7 @@ type fakePlatform struct {
 	gitAccounts    []string
 	regAccounts    []string
 	synced         []string // remote URLs
+	pulled         []string // remote URLs
 	hooks          []string
 	actions        map[string]komodo.ActionConfig
 	variables      map[string]string
@@ -86,6 +87,10 @@ func (f *fakePlatform) clients() Clients {
 		Komodo: func(baseURL, key, secret string) KomodoAPI { return &fakeKomodo{f} },
 		SyncRepo: func(ctx context.Context, dir, remoteURL, token, message string) error {
 			f.synced = append(f.synced, remoteURL)
+			return nil
+		},
+		PullRepo: func(ctx context.Context, dir, remoteURL, token string) error {
+			f.pulled = append(f.pulled, remoteURL)
 			return nil
 		},
 	}

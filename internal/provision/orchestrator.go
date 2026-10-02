@@ -17,6 +17,7 @@ package provision
 import (
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"io"
 	"os"
 	"path/filepath"
@@ -139,8 +140,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
-	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"apply", "-auto-approve"}, Env: env}); err != nil {
-		return fmt.Errorf("terraform apply: %w", err)
+	existed, err := o.existingContainers(ctx)
+	if err != nil {
+		return err
+	}
+	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
+		return err
 	}
 
 	ledger, err := o.loadLedger(opts)
@@ -148,12 +153,25 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	allocations, _ := o.lookupAllocations(ledger, opts.Env)
+	if existed != nil {
+		// LXCs terraform just created have new host keys, possibly at an
+		// address another LXC had before.
+		var created []string
+		for _, entry := range allocations {
+			if !existed[entry.VMID] {
+				created = append(created, entry.IP)
+			}
+		}
+		if err := knownhosts.Forget(opts.GitOpsRepoPath, created...); err != nil {
+			return fmt.Errorf("updating known hosts: %w", err)
+		}
+	}
 	ep, err := bootstrap.EndpointsFor(o.Config)
 	if err != nil {
 		return err
 	}
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep); err != nil {
+	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 	if err := o.runAnsible(ctx, opts); err != nil {
@@ -648,8 +666,8 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
-	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"destroy", "-auto-approve"}, Env: env}); err != nil {
-		return fmt.Errorf("terraform destroy: %w", err)
+	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "destroy", env); err != nil {
+		return err
 	}
 	if o.Rollout != nil {
 		if err := o.Rollout.RemoveServers(ctx, target); err != nil {
@@ -694,6 +712,13 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 			return err
 		}
 		os.Remove(filepath.Dir(dir)) // the project's directory, once it has no environment left
+	}
+	var destroyed []string
+	for _, entry := range allocations {
+		destroyed = append(destroyed, entry.IP)
+	}
+	if err := knownhosts.Forget(opts.GitOpsRepoPath, destroyed...); err != nil {
+		return fmt.Errorf("updating known hosts: %w", err)
 	}
 	for _, hostname := range hostnames {
 		ledger.Remove(hostname)
@@ -789,4 +814,21 @@ func Hostname(project, service, env string) string {
 
 func tfEnv(creds *credentials.Credentials) []string {
 	return []string{"TF_VAR_proxmox_api_token=" + creds.ProxmoxToken}
+}
+
+// existingContainers returns the VMIDs of the LXCs on the Proxmox node, or
+// nil without a Proxmox client.
+func (o *Orchestrator) existingContainers(ctx context.Context) (map[int]bool, error) {
+	if o.Proxmox == nil {
+		return nil, nil
+	}
+	ids, err := o.Proxmox.ListContainerIDs(ctx, o.Config.Proxmox.Node)
+	if err != nil {
+		return nil, fmt.Errorf("listing proxmox containers: %w", err)
+	}
+	existing := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		existing[id] = true
+	}
+	return existing, nil
 }
