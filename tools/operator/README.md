@@ -77,7 +77,7 @@ Each run starts a fresh container that:
 
 - uses `/work/home` as `$HOME` (so `~/.urbex/credentials.yaml` is the
   workspace's) and `/work/gitops` as `URBEX_GITOPS_REPO`;
-- exports `URBEX_AGE_KEY` from `home/age.key`;
+- exports `URBEX_AGE_KEY` from `home/age.key`, if that file exists and the variable isn't set;
 - starts an SSH agent with `home/.ssh/urbex`;
 - passes `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN` and
   `URBEX_AGE_KEY` from your environment, if set - they win over the
