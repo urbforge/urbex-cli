@@ -10,7 +10,7 @@ side. Nothing gets installed on your machine but podman (or docker).
 ```sh
 tools/operator/urbex-op build                      # the image, from this checkout
 tools/operator/urbex-op -w ~/urbex-work init       # the workspace: SSH key, age key
-export URBEX_PROXMOX_TOKEN='urbex@pve!cli=...'      # see docs/reference/credentials.md
+tools/operator/urbex-op -w ~/urbex-work set proxmoxToken   # asks for it; see docs/reference/credentials.md
 tools/operator/urbex-op -w ~/urbex-work 'urbex bootstrap'
 ```
 
@@ -45,6 +45,25 @@ It is mounted at `/work` in the container: a project in
 secrets, and after `urbex teardown` the `gitops/` folder is the GitOps
 repo's only copy.
 
+## Credentials
+
+`urbex` reads every credential from an environment variable first, then
+from `home/.urbex/credentials.yaml` in the workspace. The two you
+provide can go either way:
+
+```sh
+urbex-op set proxmoxToken        # asks without echoing; stored in the workspace, mode 0600
+urbex-op set cloudflareToken
+# or, for this shell only:
+export URBEX_PROXMOX_TOKEN='urbex@pve!cli=...' URBEX_CLOUDFLARE_TOKEN='...'
+```
+
+`set` also takes the value on standard input (`printf %s "$TOKEN" |
+urbex-op set proxmoxToken`), keeps the file's other entries, and works
+for any key of the file (`ageKey` too - otherwise `home/age.key` is
+used). Bootstrap keeps them when it adds its own, and `urbex teardown`
+removes only the generated ones.
+
 ## Running commands
 
 ```sh
@@ -60,8 +79,9 @@ Each run starts a fresh container that:
   workspace's) and `/work/gitops` as `URBEX_GITOPS_REPO`;
 - exports `URBEX_AGE_KEY` from `home/age.key`;
 - starts an SSH agent with `home/.ssh/urbex`;
-- passes `URBEX_PROXMOX_TOKEN` and `URBEX_CLOUDFLARE_TOKEN` from your
-  environment, if set - tokens are never written to the workspace;
+- passes `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN` and
+  `URBEX_AGE_KEY` from your environment, if set - they win over the
+  credentials file;
 - uses the host's network, so it reaches the Proxmox API and the LXCs on
   your LAN.
 
@@ -83,7 +103,7 @@ See *Find every endpoint* in the cookbook
 |---|---|---|
 | `URBEX_WORKSPACE` | `~/urbex-workspace` | The workspace, if `-w` isn't given. |
 | `URBEX_OPERATOR_IMAGE` | `urbex-operator` | The image `build` creates and runs use. |
-| `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN` | - | Passed to the container when set. |
+| `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN`, `URBEX_AGE_KEY` | - | Passed to the container when set; otherwise the credentials file is used. |
 
 Rebuild the image (`urbex-op build`) after updating this checkout: the
 image contains the `urbex` binary built from it.

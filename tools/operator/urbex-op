@@ -4,12 +4,13 @@
 #
 #   urbex-op build                   build the operator image from this checkout
 #   urbex-op [-w DIR] init           create the workspace: keys, folders
+#   urbex-op [-w DIR] set KEY        store a credential in the workspace (asks for it)
 #   urbex-op [-w DIR] shell          a shell in the container, ready to run urbex
 #   urbex-op [-w DIR] 'COMMANDS'     run COMMANDS (bash) in the container
 #
 # DIR defaults to $URBEX_WORKSPACE, then ~/urbex-workspace. Tokens come from
-# the environment: export URBEX_PROXMOX_TOKEN (and URBEX_CLOUDFLARE_TOKEN)
-# before running - they are never written to the workspace.
+# the environment if set (URBEX_PROXMOX_TOKEN, URBEX_CLOUDFLARE_TOKEN), else
+# from the workspace's credentials file - 'set proxmoxToken' puts them there.
 set -euo pipefail
 
 WS=${URBEX_WORKSPACE:-$HOME/urbex-workspace}
@@ -17,6 +18,8 @@ if [ "${1:-}" = "-w" ]; then WS=$2; shift 2; fi
 IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 ENGINE=$(command -v podman || command -v docker || { echo "urbex-op: podman or docker is needed" >&2; exit 1; })
+# Files the container writes stay owned by you: podman maps your user in.
+USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
 
 case "${1:-}" in
   ""|-h|--help)
@@ -24,6 +27,29 @@ case "${1:-}" in
     exit 0 ;;
   build)
     exec "$ENGINE" build -t "$IMAGE" -f "$REPO/tools/operator/Containerfile" "$REPO" ;;
+  set)
+    KEY=${2:?usage: urbex-op set KEY - e.g. proxmoxToken, cloudflareToken, ageKey}
+    [ -d "$WS/home/.urbex" ] || { echo "urbex-op: no workspace at $WS - run init first" >&2; exit 1; }
+    VALUE=
+    if [ -t 0 ]; then read -rsp "$KEY: " VALUE || true; echo; else IFS= read -r VALUE || true; fi
+    [ -n "$VALUE" ] || { echo "urbex-op: empty value, nothing stored" >&2; exit 1; }
+    # Written with the image's Python, so the file stays valid YAML and
+    # keeps every other credential; mode 0600.
+    printf '%s' "$VALUE" | "$ENGINE" run --rm -i "${USERNS[@]}" --user "$(id -u):$(id -g)" \
+      -v "$WS/home/.urbex:/c:z" "$IMAGE" python3 -c '
+import os, sys, yaml
+path = "/c/credentials.yaml"
+data = {}
+if os.path.exists(path):
+    data = yaml.safe_load(open(path)) or {}
+data[sys.argv[1]] = sys.stdin.read()
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    yaml.safe_dump(data, f, default_flow_style=False)
+os.chmod(path, 0o600)
+' "$KEY"
+    echo "Stored $KEY in $WS/home/.urbex/credentials.yaml."
+    exit 0 ;;
   init)
     mkdir -p "$WS/home/.ssh" "$WS/home/.urbex" "$WS/gitops" "$WS/projects"
     chmod 700 "$WS/home/.ssh" "$WS/home/.urbex"
@@ -47,15 +73,15 @@ esac
 CMD=$1
 [ "$CMD" = shell ] && CMD="exec bash"
 TTY=(); [ -t 0 ] && [ -t 1 ] && TTY=(-it)
-# Files the container writes stay owned by you: podman maps your user in.
-USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
 
 exec "$ENGINE" run --rm "${TTY[@]}" --network host "${USERNS[@]}" --user "$(id -u):$(id -g)" \
   -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops \
-  -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN \
+  -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN -e URBEX_AGE_KEY \
   -v "$WS:/work:z" -w /work "$IMAGE" bash -c '
     set -e
-    export URBEX_AGE_KEY="$(grep AGE-SECRET-KEY /work/home/age.key)"
+    if [ -f /work/home/age.key ] && [ -z "${URBEX_AGE_KEY:-}" ]; then
+      export URBEX_AGE_KEY="$(grep AGE-SECRET-KEY /work/home/age.key)"
+    fi
     eval "$(ssh-agent -s)" >/dev/null; ssh-add -q /work/home/.ssh/urbex
     trap "ssh-agent -k >/dev/null" EXIT
     git config --global user.name >/dev/null || git config --global user.name urbex
