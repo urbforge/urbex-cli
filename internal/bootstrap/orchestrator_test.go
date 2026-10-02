@@ -73,8 +73,10 @@ type fakePlatform struct {
 	onboardingKeys int
 	gitAccounts    []string
 	regAccounts    []string
-	synced         []string // remote URLs
-	pulled         []string // remote URLs
+	synced         []string            // remote URLs
+	pulled         []string            // remote URLs
+	tags           map[string][]string // "Kind name" -> tags
+	waitedServers  []string
 	hooks          []string
 	actions        map[string]komodo.ActionConfig
 	variables      map[string]string
@@ -225,8 +227,8 @@ func TestRun_ExecutesTerraformThenAnsible(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected 3 commands (terraform init, terraform apply, ansible-playbook), got %d: %+v", len(runner.calls), runner.calls)
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 commands (terraform init, terraform apply, ansible-playbook twice), got %d: %+v", len(runner.calls), runner.calls)
 	}
 
 	want := [][2]string{
@@ -326,7 +328,7 @@ func TestRun_ExistingTrackedContainerProceeds(t *testing.T) {
 	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(runner.calls) != 3 {
+	if len(runner.calls) != 4 {
 		t.Errorf("expected provisioning to proceed when the existing container is already tracked, got %d calls", len(runner.calls))
 	}
 }
@@ -460,4 +462,16 @@ func TestRun_RejectsAMalformedAgeKeyBeforeProvisioning(t *testing.T) {
 	if len(runner.calls) != 0 {
 		t.Errorf("expected nothing to be provisioned with a malformed age key, got %+v", runner.calls)
 	}
+}
+
+func (k *fakeKomodo) WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error) {
+	k.f.waitedServers = append(k.f.waitedServers, names...)
+	return nil, nil
+}
+func (k *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
+	if k.f.tags == nil {
+		k.f.tags = map[string][]string{}
+	}
+	k.f.tags[kind+" "+name] = tags
+	return nil
 }

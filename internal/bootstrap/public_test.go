@@ -84,7 +84,7 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	}
 
 	// The connector's token reaches Ansible through the environment only.
-	ansible := runner.calls[len(runner.calls)-1]
+	ansible := runner.calls[2] // playbook.yml: the base services
 	found := false
 	for _, e := range ansible.Env {
 		found = found || e == "URBEX_CLOUDFLARE_TUNNEL_TOKEN=token-of-"+tunnelID
@@ -214,5 +214,32 @@ func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
 	playbook, _ := os.ReadFile(filepath.Join(dir, "ansible", "playbook.yml"))
 	if !strings.Contains(string(playbook), "- telemetry") {
 		t.Error("the base playbook should install the telemetry agent")
+	}
+}
+
+// The base services' LXCs become Komodo Servers (Periphery, but on
+// Komodo's own LXC which has it), and the platform's Komodo resources are
+// tagged "platform", as on Grafana.
+func TestRun_ConnectsAndTagsThePlatformInKomodo(t *testing.T) {
+	dir := t.TempDir()
+	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	last := runner.calls[len(runner.calls)-1]
+	if last.Name != "ansible-playbook" || last.Args[len(last.Args)-1] != "platform-periphery.yml" {
+		t.Errorf("expected the platform-periphery playbook last, got %+v", last)
+	}
+	if strings.Join(fp.waitedServers, ",") != "urbex-gitea,urbex-technitium,urbex-keycloak,urbex-observability" {
+		t.Errorf("waited for %v", fp.waitedServers)
+	}
+	for _, r := range []string{"Server urbex-gitea", "Server urbex-komodo", "Server urbex-observability", "Action urbex-release", "Procedure urbex-gitops"} {
+		if strings.Join(fp.tags[r], ",") != "platform" {
+			t.Errorf("%s tags = %v, want platform", r, fp.tags[r])
+		}
+	}
+	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
+	if !strings.Contains(string(inventory), "komodo_core_address: http://192.168.1.201:9120") {
+		t.Errorf("the inventory needs Komodo's address for Periphery:\n%s", inventory)
 	}
 }

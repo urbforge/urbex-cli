@@ -125,3 +125,19 @@ prom_series() {
   curl -s -G "http://$NET.204:9090/api/v1/query" --data-urlencode "query=$1" |
     python3 -c 'import json, sys; print(len(json.load(sys.stdin)["data"]["result"]))'
 }
+
+# komodo_tags <Kind> <name>: the names of a Komodo resource's tags, sorted.
+komodo_tags() {
+  python3 - "$1" "$2" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+import json, sys, urllib.request
+kind, name, url, key, secret = sys.argv[1:]
+def call(op, body):
+    req = urllib.request.Request(f"{url}/read/{op}", json.dumps(body).encode(),
+        {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req))
+tags = {t["_id"]["$oid"]: t["name"] for t in call("ListTags", {})}
+for r in call("List" + kind + "s", {}):
+    if r["name"] == name:
+        print(" ".join(sorted(tags.get(t, t) for t in r.get("tags", []))))
+PY
+}

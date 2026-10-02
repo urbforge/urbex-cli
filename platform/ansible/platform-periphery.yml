@@ -1,0 +1,9 @@
+---
+# Run by urbex bootstrap once Komodo is set up (it needs the onboarding
+# key): connects every base-service LXC but Komodo's own - which already
+# runs Periphery as the builder - to Komodo, for monitoring.
+- name: Connect the base services' LXCs to Komodo
+  hosts: all:!urbex_komodo
+  become: true
+  roles:
+    - platform-periphery

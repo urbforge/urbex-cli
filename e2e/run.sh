@@ -143,7 +143,11 @@ step "bootstrap: base services and platform setup" '
   expect_status http://$NET.204:3100/ready 200 180
   [ "$(stat -c %a /work/home/.urbex/credentials.yaml)" = 600 ] || fail "credentials file is not mode 600"
   [ -n "$(cred komodoOnboardingKey)" ] || fail "no onboarding key was generated"
-  [ "$(komodo_names Servers)" = "urbex-komodo" ] || fail "unexpected komodo servers: $(komodo_names Servers)"
+  servers="urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium"
+  [ "$(komodo_names Servers)" = "$servers" ] || fail "unexpected komodo servers: $(komodo_names Servers)"
+  for name in $servers; do
+    [ "$(komodo_tags Server $name)" = platform ] || fail "komodo server $name should be tagged platform, has: $(komodo_tags Server $name)"
+  done
   git -C /work/gitops log --oneline | grep -q "urbex bootstrap" || fail "gitops repo was not committed"
   echo "ok: platform is up"'
 
@@ -167,6 +171,8 @@ step "apply staging: it follows main, and runs main's head right away" '
   grep -q "^TRACK=main$" /work/gitops/environments/staging/hello/api/version.env || fail "staging does not follow main"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "unexpected builds: $(komodo_names Builds)"
   urbex status staging | grep -E "version=[0-9a-f]{7}\(follows-main\) stack=running" || fail "status should show staging following main"
+  [ "$(komodo_tags Stack hello-api-staging)" = "app hello staging" ] || fail "stack tags: $(komodo_tags Stack hello-api-staging)"
+  [ "$(komodo_tags Build hello-api)" = "app hello" ] || fail "build tags: $(komodo_tags Build hello-api)"
   echo "ok: staging follows main"'
 
 step "a push to main is deployed to staging, with no command" '

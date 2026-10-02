@@ -107,7 +107,17 @@ type KomodoAPI interface {
 	EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error
 	EnsureVariable(ctx context.Context, name, value string, secret bool) error
 	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
+	WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error)
+	TagResource(ctx context.Context, kind, name string, tags ...string) error
 }
+
+// Komodo tags (as on Grafana's labels, kind): the platform's resources
+// are tagged PlatformTag, the projects' AppTag plus the project's name
+// and, for an environment's, the environment.
+const (
+	PlatformTag = "platform"
+	AppTag      = "app"
+)
 
 // Clients builds API clients and syncs repos; replaced by fakes in tests.
 type Clients struct {
@@ -333,4 +343,39 @@ func SyncRepo(ctx context.Context, dir, remoteURL, token, message string) error 
 // main branch of remoteURL.
 func PullRepo(ctx context.Context, dir, remoteURL, token string) error {
 	return gitsync.Pull(ctx, dir, remoteURL, token, TrunkBranch)
+}
+
+// connectPlatformServers connects the base services' LXCs to Komodo as
+// Servers - Periphery on each, but Komodo's own, which already runs it -
+// so Komodo monitors their containers, and tags the platform's Komodo
+// resources "platform".
+func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clients, ansibleDir string) error {
+	env := o.Credentials.Env("URBEX_KOMODO_ONBOARDING_KEY")
+	args := []string{"-i", "inventory.yml", "platform-periphery.yml"}
+	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: args, Env: env}); err != nil {
+		return fmt.Errorf("ansible-playbook platform-periphery.yml: %w", err)
+	}
+	ep, err := EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
+	k := clients.Komodo(ep.KomodoURL, o.Credentials.KomodoAPIKey, o.Credentials.KomodoAPISecret)
+	var servers []string
+	for _, svc := range BaseServicesFor(o.Config) {
+		if svc.Name != "komodo" {
+			servers = append(servers, Hostname(svc.Name))
+		}
+	}
+	if _, err := k.WaitServers(ctx, servers, 5*time.Minute); err != nil {
+		return fmt.Errorf("waiting for the base services' Komodo servers: %w", err)
+	}
+	for _, name := range append(servers, KomodoServerName) {
+		if err := k.TagResource(ctx, "Server", name, PlatformTag); err != nil {
+			return err
+		}
+	}
+	if err := k.TagResource(ctx, "Action", ReleaseAction, PlatformTag); err != nil {
+		return err
+	}
+	return k.TagResource(ctx, "Procedure", GitOpsProcedure, PlatformTag)
 }

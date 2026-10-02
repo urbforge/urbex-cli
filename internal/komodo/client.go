@@ -722,3 +722,32 @@ func (c *Client) busy(ctx context.Context, builds []string, action string) (stri
 	}
 	return "", nil
 }
+
+// TagResource sets the tags of a resource (kind "Server", "Stack",
+// "Build", "Action", "Procedure"), creating the tags that don't exist yet.
+// The resource ends up with exactly these tags.
+func (c *Client) TagResource(ctx context.Context, kind, name string, tags ...string) error {
+	var existing []struct {
+		Name string `json:"name"`
+	}
+	if err := c.call(ctx, "read", "ListTags", map[string]any{}, &existing); err != nil {
+		return fmt.Errorf("listing komodo tags: %w", err)
+	}
+	have := map[string]bool{}
+	for _, t := range existing {
+		have[t.Name] = true
+	}
+	for _, t := range tags {
+		if !have[t] {
+			if err := c.call(ctx, "write", "CreateTag", map[string]string{"name": t}, nil); err != nil {
+				return fmt.Errorf("creating komodo tag %s: %w", t, err)
+			}
+			have[t] = true
+		}
+	}
+	params := map[string]any{"target": map[string]string{"type": kind, "id": name}, "tags": tags}
+	if err := c.call(ctx, "write", "UpdateResourceMeta", params, nil); err != nil {
+		return fmt.Errorf("tagging komodo %s %s: %w", strings.ToLower(kind), name, err)
+	}
+	return nil
+}

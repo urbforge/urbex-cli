@@ -165,6 +165,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
 	}
+	if err := o.connectPlatformServers(ctx, clients, ansibleDir); err != nil {
+		return fmt.Errorf("connecting the base services to komodo: %w", err)
+	}
 	if o.Config.Cloudflare.Enabled() {
 		if err := o.publishPlatform(ctx, clients, ips); err != nil {
 			return fmt.Errorf("publishing the platform on cloudflare: %w", err)

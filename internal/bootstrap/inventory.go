@@ -29,6 +29,7 @@ type inventoryVars struct {
 	KomodoAdminUsername  string `yaml:"komodo_admin_username"`
 	KomodoServerName     string `yaml:"komodo_server_name"`
 	KomodoVersion        string `yaml:"komodo_version"`
+	KomodoCoreAddress    string `yaml:"komodo_core_address"`
 	// KeycloakPublicURL is Keycloak's public address, when it has one:
 	// the issuer the apps' users see.
 	KeycloakPublicURL string `yaml:"keycloak_public_url,omitempty"`
@@ -74,6 +75,7 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 				KomodoAdminUsername:  KomodoAdminUser,
 				KomodoServerName:     KomodoServerName,
 				KomodoVersion:        KomodoVersion,
+				KomodoCoreAddress:    ep.KomodoURL,
 				KeycloakPublicURL:    httpsURL(pub.Keycloak),
 				LokiPushURL:          ep.LokiPushURL,
 				PrometheusWriteURL:   ep.PrometheusWriteURL,

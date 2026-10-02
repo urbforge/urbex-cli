@@ -72,6 +72,7 @@ func (f *fakeGitea) ContainerImageExists(ctx context.Context, owner, name, tag s
 type fakeKomodo struct {
 	waited     []string
 	waitedIdle []string
+	tags       map[string][]string
 	waitErr    error
 	builds     map[string]komodo.BuildConfig
 	stacks     map[string]komodo.StackConfig
@@ -133,6 +134,14 @@ func (f *fakeKomodo) DestroyStack(ctx context.Context, name string) error {
 	f.destroyed = append(f.destroyed, name)
 	return nil
 }
+func (f *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
+	if f.tags == nil {
+		f.tags = map[string][]string{}
+	}
+	f.tags[kind+" "+name] = tags
+	return nil
+}
+
 func (f *fakeKomodo) WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error {
 	f.waitedIdle = append(f.waitedIdle, builds...)
 	return nil
@@ -562,5 +571,27 @@ func TestSetupEnv_WebFrontendRunsOnTheBuilder(t *testing.T) {
 	}
 	if !strings.Contains(cfg.PreBuild.Command, "wrangler") {
 		t.Error("the web image is built from urbex's web Dockerfile")
+	}
+}
+
+// Komodo's resources of a project are tagged as on Grafana: app, the
+// project, and the environment for an environment's.
+func TestSetup_TagsProjectResources(t *testing.T) {
+	k := &fakeKomodo{}
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	if err := r.SetupProject(context.Background(), "my-app", services()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetupEnv(context.Background(), stagingTarget(), envrepo.Repo{Path: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	for res, want := range map[string]string{
+		"Build my-app-api":          "app,my-app",
+		"Server my-app-api-staging": "app,my-app,staging",
+		"Stack my-app-api-staging":  "app,my-app,staging",
+	} {
+		if got := strings.Join(k.tags[res], ","); got != want {
+			t.Errorf("%s tags = %s, want %s", res, got, want)
+		}
 	}
 }

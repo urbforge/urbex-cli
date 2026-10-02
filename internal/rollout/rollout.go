@@ -76,6 +76,7 @@ type Komodo interface {
 	DestroyStack(ctx context.Context, name string) error
 	DeleteResource(ctx context.Context, kind, name string) error
 	WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error
+	TagResource(ctx context.Context, kind, name string, tags ...string) error
 }
 
 // Git is the subset of git operations a rollout uses on the app repo.
@@ -196,6 +197,9 @@ func (r *Rollout) SetupProject(ctx context.Context, project string, services []m
 		if err := r.Komodo.EnsureBuild(ctx, BuildName(project, svc.Name), cfg); err != nil {
 			return err
 		}
+		if err := r.Komodo.TagResource(ctx, "Build", BuildName(project, svc.Name), bootstrap.AppTag, project); err != nil {
+			return err
+		}
 	}
 	// Every push: the Action itself tells release tags from the rest.
 	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
@@ -255,8 +259,18 @@ func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) err
 	if err := r.WriteEnv(t, repo); err != nil {
 		return err
 	}
+	// Tagged as on Grafana: app, the project, the environment.
+	tags := []string{bootstrap.AppTag, t.Project, t.Env}
+	for _, server := range servers {
+		if err := r.Komodo.TagResource(ctx, "Server", server, tags...); err != nil {
+			return err
+		}
+	}
 	for i, svc := range t.Services {
 		if err := r.Komodo.EnsureStack(ctx, names[i], r.stackConfig(names[i], t, svc)); err != nil {
+			return err
+		}
+		if err := r.Komodo.TagResource(ctx, "Stack", names[i], tags...); err != nil {
 			return err
 		}
 	}
