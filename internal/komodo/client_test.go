@@ -346,3 +346,34 @@ func TestWaitIdle_WaitsForTheActionAndTheBuilds(t *testing.T) {
 		t.Errorf("expected to poll the action until idle (3 polls), got %d", polls)
 	}
 }
+
+// A Stack being deployed (e.g. by a push) can't be updated: EnsureStack
+// waits for it instead of failing.
+func TestEnsureStack_WaitsWhileTheStackIsBusy(t *testing.T) {
+	updates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/read/ListStacks":
+			w.Write([]byte(`[{"id":"s1","name":"app-api-staging"}]`))
+		case "/write/UpdateStack":
+			updates++
+			if updates < 3 {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"error":"Stack busy","trace":[]}`))
+				return
+			}
+			w.Write([]byte(`{}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+	c := New(server.URL, "k", "s")
+	c.pollInterval = time.Millisecond
+	if err := c.EnsureStack(context.Background(), "app-api-staging", StackConfig{}); err != nil {
+		t.Fatalf("EnsureStack: %v", err)
+	}
+	if updates != 3 {
+		t.Errorf("expected 3 attempts, got %d", updates)
+	}
+}

@@ -31,9 +31,11 @@ later push to main is deployed there too. Production starts empty until
 'urbex promote' (or 'urbex deploy prod') gives it a release.
 Re-applying an environment that runs something redeploys it.
 
-DNS registration, Keycloak realm/client provisioning, and Cloudflare
-Tunnel ingress are not yet implemented: services are reachable on their
-LAN IPs, printed at the end.
+It also keeps the environment's Keycloak realm (<project>-<env>): the
+roles the services declare, a client per frontend and, in staging, a
+test user per role ('urbex users staging'). With Cloudflare, it
+publishes the services marked public: true. Addresses are printed at the
+end; internal DNS (Technitium) is not implemented yet.
 
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,

@@ -5,6 +5,9 @@ services:
     runtime: go
     port: 8080
     healthcheck: /healthz
+    auth:
+      keycloak: true    # gets KEYCLOAK_ISSUER and KEYCLOAK_JWKS_URL
+      roles: [member]   # a realm role; staging gets a test user per role
     env:
       staging:
         GREETING_ENV: staging

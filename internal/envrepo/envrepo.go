@@ -216,6 +216,14 @@ func renderCompose(svc manifest.Service, image string) string {
 	b.WriteString("        required: false\n")
 	b.WriteString("    environment:\n")
 	fmt.Fprintf(&b, "      PORT: \"%d\"\n", svc.Port)
+	keys := make([]string, 0, len(svc.Extra))
+	for k := range svc.Extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "      %s: %q\n", k, svc.Extra[k])
+	}
 	b.WriteString("    ports:\n")
 	fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
 	if svc.Healthcheck != "" {

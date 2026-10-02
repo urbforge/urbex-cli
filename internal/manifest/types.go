@@ -35,6 +35,9 @@ type Service struct {
 	// Frontend is set on the service Deployables makes of a web
 	// frontend; never read from urbex.yaml.
 	Frontend *Frontend `yaml:"-"`
+	// Extra is environment urbex gives the service in an environment
+	// (e.g. its Keycloak realm's issuer); never read from urbex.yaml.
+	Extra map[string]string `yaml:"-"`
 }
 
 // Default resource sizing applied when a service omits (or partially

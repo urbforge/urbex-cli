@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/urbforge/urbex-cli/internal/cloudflare"
+	"github.com/urbforge/urbex-cli/internal/keycloak"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,6 +120,10 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	}
 	ro := newRollout(cfg, creds, ep, repoDir, out)
 	o.Rollout = ro
+	o.KeycloakURL = ep.KeycloakURL
+	if creds.KeycloakAdminPassword != "" {
+		o.Keycloak = keycloak.New(ep.KeycloakURL, "admin", creds.KeycloakAdminPassword)
+	}
 	if cfg.Cloudflare.Enabled() && creds.CloudflareToken != "" {
 		o.Cloudflare = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)
 	}

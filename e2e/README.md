@@ -49,21 +49,24 @@ runner and fails the test on the first assertion that doesn't hold:
    containers' logs), and the base services', labelled
    `kind="platform"`; Grafana has the data sources and the *Urbex logs*
    and *Urbex resources* dashboards.
-5. `urbex release` tags the commit staging runs and publishes its image
+5. Keycloak: the project has a realm per environment; staging has a test
+   user per role (`urbex users staging`), and the sample app's `/member`
+   lets `test-member` in and refuses no token or a forged one.
+6. `urbex release` tags the commit staging runs and publishes its image
    without a new build; a tag pushed with plain git is a release too.
-6. `urbex apply prod` starts empty; `urbex promote` gives it the release
+7. `urbex apply prod` starts empty; `urbex promote` gives it the release
    staging runs; an unreleased commit on staging is refused.
-7. `urbex secret set`: the secret reaches the service, is nowhere in
+8. `urbex secret set`: the secret reaches the service, is nowhere in
    plaintext in the GitOps repo, and goes away with `unset`.
-8. `config.env` edited by hand and pushed with plain git is deployed; an
+9. `config.env` edited by hand and pushed with plain git is deployed; an
    unrelated commit restarts nothing.
-9. `urbex deploy staging --version` pins staging (a push to `main` no
+10. `urbex deploy staging --version` pins staging (a push to `main` no
    longer moves it); `--follow-main` resumes.
-10. Rollback with `urbex deploy prod --version`; a release that doesn't
+11. Rollback with `urbex deploy prod --version`; a release that doesn't
    exist is refused.
-11. `urbex destroy staging` leaves production and the project's Builds
+12. `urbex destroy staging` leaves production and the project's Builds
     alone.
-12. `urbex apply staging` on a brand-new machine: it rejoins Komodo and
+13. `urbex apply staging` on a brand-new machine: it rejoins Komodo and
     follows `main` again.
 
 ## When a step fails

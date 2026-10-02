@@ -67,6 +67,13 @@ type Orchestrator struct {
 	// Proxmox, if set, lets plan/apply/destroy drop LXCs deleted outside
 	// Terraform from its state (see forgetVanished).
 	Proxmox ContainerLister
+	// Keycloak keeps the project's realm and its frontends' clients; nil
+	// skips it. KeycloakURL is Keycloak's LAN address.
+	Keycloak    KeycloakAPI
+	KeycloakURL string
+	// Secrets encrypts the staging test users' passwords; nil means sops
+	// with the platform's age key.
+	Secrets SecretStore
 	// Cloudflare publishes public services (manifest public: true) when
 	// the platform has Cloudflare configured; nil disables publishing.
 	Cloudflare CloudflareAPI
@@ -197,6 +204,15 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.publish(ctx, opts.Env, allocations); err != nil {
 		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
+	usersChanged, err := o.setupIdentity(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("setting up keycloak: %w", err)
+	}
+	if usersChanged {
+		if err := o.sync(ctx, opts, "keycloak test users of"); err != nil {
+			return err
+		}
+	}
 
 	versions, err := o.versions(repo, opts.Env)
 	if err != nil {
@@ -245,8 +261,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	fmt.Fprintln(o.Out, "Not yet implemented by urbex apply: DNS records in Technitium, the Keycloak")
-	fmt.Fprintln(o.Out, "realm/clients, and Cloudflare Tunnel ingress - services are reachable on their LAN IPs.")
+	if !o.Config.Cloudflare.Enabled() {
+		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
+	}
 	return nil
 }
 
@@ -571,12 +588,16 @@ func (o *Orchestrator) checkPlatform() error {
 
 func (o *Orchestrator) target(env string) rollout.Target {
 	hostnames := map[string]string{}
-	for _, svc := range o.Manifest.Deployables() {
+	services := o.Manifest.Deployables()
+	for i, svc := range services {
 		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
 			hostnames[svc.Name] = host
 		}
+		if svc.Auth != nil && svc.Auth.Keycloak {
+			services[i].Extra = o.keycloakEnv(env)
+		}
 	}
-	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: o.Manifest.Deployables(), Hostnames: hostnames}
+	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: services, Hostnames: hostnames}
 }
 
 func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
@@ -672,6 +693,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	}
 	if err := o.unpublishWeb(ctx, opts.Env); err != nil {
 		return fmt.Errorf("removing the web frontend from cloudflare: %w", err)
+	}
+	if err := o.teardownIdentity(ctx, opts.Env); err != nil {
+		return fmt.Errorf("removing the keycloak realm: %w", err)
 	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {

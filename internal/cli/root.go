@@ -33,6 +33,7 @@ See https://github.com/urbforge/urbex for architecture and design decisions.`,
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newDestroyCmd())
 	root.AddCommand(newTeardownCmd())
+	root.AddCommand(newUsersCmd())
 
 	return root
 }

@@ -141,3 +141,11 @@ for r in call("List" + kind + "s", {}):
         print(" ".join(sorted(tags.get(t, t) for t in r.get("tags", []))))
 PY
 }
+
+# keycloak_realm <realm>: the HTTP status of the realm's admin API (200 if it exists).
+keycloak_realm() {
+  token=$(curl -s -X POST "http://$NET.203:8080/realms/master/protocol/openid-connect/token" \
+    -d grant_type=password -d client_id=admin-cli -d username=admin --data-urlencode "password=$(cred keycloakAdminPassword)" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+  curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$NET.203:8080/admin/realms/$1"
+}

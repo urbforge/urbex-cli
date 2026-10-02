@@ -230,7 +230,28 @@ type ConfigFile struct {
 
 // EnsureStack creates the named Stack with cfg, or updates it in place.
 func (c *Client) EnsureStack(ctx context.Context, name string, cfg StackConfig) error {
-	return c.ensureResource(ctx, "Stack", name, cfg)
+	return c.whenNotBusy(ctx, func() error { return c.ensureResource(ctx, "Stack", name, cfg) })
+}
+
+// BusyTimeout bounds how long a change waits for a resource Komodo reports
+// busy (a deploy or build in progress, e.g. started by a push).
+var BusyTimeout = 10 * time.Minute
+
+// whenNotBusy runs change, and runs it again while Komodo refuses it
+// because the resource is busy, until BusyTimeout.
+func (c *Client) whenNotBusy(ctx context.Context, change func() error) error {
+	deadline := time.Now().Add(BusyTimeout)
+	for {
+		err := change()
+		if err == nil || !strings.Contains(err.Error(), "busy") || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(c.pollInterval):
+		}
+	}
 }
 
 // RunAction runs the named Action with args (merged over its defaults)
@@ -586,11 +607,32 @@ func (c *Client) RunProcedure(ctx context.Context, name string) error {
 // DeployStack deploys the named Stack from its repo as it is now and
 // waits for the result.
 func (c *Client) DeployStack(ctx context.Context, name string) (*Update, error) {
-	var u Update
-	if err := c.call(ctx, "execute", "DeployStack", map[string]string{"stack": name}, &u); err != nil {
-		return nil, fmt.Errorf("deploying komodo stack %s: %w", name, err)
+	var result *Update
+	// A deploy already running (a push, the reconcile schedule) makes
+	// Komodo refuse this one as busy: wait for it, then deploy.
+	err := c.whenNotBusy(ctx, func() error {
+		var u Update
+		if err := c.call(ctx, "execute", "DeployStack", map[string]string{"stack": name}, &u); err != nil {
+			return fmt.Errorf("deploying komodo stack %s: %w", name, err)
+		}
+		done, err := c.WaitUpdate(ctx, u.ID.OID, c.pollInterval)
+		result = done
+		if err == nil && !done.Success && done.mentions("busy") {
+			return fmt.Errorf("komodo stack %s is busy", name)
+		}
+		return err
+	})
+	return result, err
+}
+
+// mentions reports whether any of the update's logs contains text.
+func (u *Update) mentions(text string) bool {
+	for _, l := range u.Logs {
+		if strings.Contains(l.Stdout+l.Stderr, text) {
+			return true
+		}
 	}
-	return c.WaitUpdate(ctx, u.ID.OID, c.pollInterval)
+	return false
 }
 
 // GetUpdate fetches an Update by id.

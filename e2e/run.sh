@@ -173,6 +173,7 @@ step "apply staging: it follows main, and runs main's head right away" '
   urbex status staging | grep -E "version=[0-9a-f]{7}\(follows-main\) stack=running" || fail "status should show staging following main"
   [ "$(komodo_tags Stack hello-api-staging)" = "app hello staging" ] || fail "stack tags: $(komodo_tags Stack hello-api-staging)"
   [ "$(komodo_tags Build hello-api)" = "app hello" ] || fail "build tags: $(komodo_tags Build hello-api)"
+  [ "$(keycloak_realm hello-staging)" = 200 ] || fail "no Keycloak realm for the project in staging"
   echo "ok: staging follows main"'
 
 step "a push to main is deployed to staging, with no command" '
@@ -208,6 +209,22 @@ step "logs and resource metrics reach the observability stack, tagged platform o
   done
   echo "ok: $found app log lines, platform logs and metrics of $platform base LXCs; Grafana has both dashboards"'
 
+step "Keycloak: a realm per environment, a test user per role, an endpoint for members only" '
+  urbex users staging | tee /tmp/users.log
+  pass=$(awk "\$1 == \"test-member\" {print \$2; exit}" /tmp/users.log)
+  [ -n "$pass" ] || fail "no password for test-member"
+  code=$(curl -s -o /dev/null -w "%{http_code}" http://$NET.210:8080/member)
+  [ "$code" = 401 ] || fail "/member without a token: $code, want 401"
+  token=$(curl -s http://$NET.203:8080/realms/hello-staging/protocol/openid-connect/token \
+    -d grant_type=password -d client_id=urbex-test -d username=test-member --data-urlencode "password=$pass" |
+    python3 -c "import json,sys; print(json.load(sys.stdin)[\"access_token\"])")
+  curl -s -H "Authorization: Bearer $token" http://$NET.210:8080/member | tee /tmp/member.txt
+  grep -q "hello member test-member" /tmp/member.txt || fail "test-member was not let in"
+  forged="${token%.*}.AAAA"
+  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $forged" http://$NET.210:8080/member)
+  [ "$code" = 401 ] || fail "/member with a forged token: $code, want 401"
+  echo "ok: 401 without a token or with a forged one, 200 for test-member"'
+
 step "release: the commit staging runs, tagged - nothing rebuilt" '
   runs=$(komodo_api read/ListUpdates "{}" | python3 -c "import sys,json;print(sum(1 for u in json.load(sys.stdin)[\"updates\"] if u[\"operation\"]==\"RunBuild\"))")
   urbex release >/tmp/release.log 2>&1 || { cat /tmp/release.log; fail "release failed"; }
@@ -232,6 +249,8 @@ step "apply prod: empty until promoted; promote: the release staging runs" '
   expect_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 5
   grep -q "^VERSION=0.2.0$" /work/gitops/environments/prod/hello/api/version.env || fail "prod should run release 0.2.0"
   if grep -q TRACK /work/gitops/environments/prod/hello/api/version.env; then fail "prod must not follow main"; fi
+  [ "$(keycloak_realm hello-prod)" = 200 ] || fail "no Keycloak realm for prod"
+  urbex users prod | grep -q "No test users in prod" || fail "prod must have no test users"
   urbex promote | grep "Nothing to promote" || fail "promote did not notice there is nothing left to promote"'
 
 step "promote refuses what was never released" '

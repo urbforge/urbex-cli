@@ -196,3 +196,15 @@ func TestDeploymentsAndPort(t *testing.T) {
 		t.Errorf("a missing service has no port, got %d", p)
 	}
 }
+
+func TestCompose_ExtraEnvironment(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc := manifest.Service{Name: "api", Runtime: "go", Port: 8080, Extra: map[string]string{"KEYCLOAK_ISSUER": "https://auth.example/realms/a-staging", "KEYCLOAK_REALM": "a-staging"}}
+	if err := repo.WriteService("staging", "a", svc, "reg/a-api", true); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/a/api/compose.yaml"))
+	if !strings.Contains(string(data), `KEYCLOAK_ISSUER: "https://auth.example/realms/a-staging"`) || !strings.Contains(string(data), `KEYCLOAK_REALM: "a-staging"`) {
+		t.Errorf("compose lacks the extra environment:\n%s", data)
+	}
+}

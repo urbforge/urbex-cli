@@ -52,6 +52,8 @@ type Endpoints struct {
 	LokiPushURL string
 	// PrometheusWriteURL is where they send metrics (remote write).
 	PrometheusWriteURL string
+	// KeycloakURL is Keycloak on the LAN, e.g. http://192.168.1.203:8080.
+	KeycloakURL string
 }
 
 // EndpointsFor computes the base services' endpoints for cfg.
@@ -67,6 +69,7 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		KomodoURL:          "http://" + ips[Hostname("komodo")] + ":9120",
 		LokiPushURL:        "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
 		PrometheusWriteURL: "http://" + ips[Hostname("observability")] + ":9090/api/v1/write",
+		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
 	}, nil
 }
 
