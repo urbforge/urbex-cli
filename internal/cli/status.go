@@ -27,8 +27,11 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [env]",
 		Short: "Show the current status of the platform or of a project environment",
-		Long: `With no arguments, shows which base-service LXCs (Gitea, Komodo,
-Technitium, Keycloak, observability) currently exist on Proxmox.
+		Long: `With no arguments, shows the platform and everything on it: which
+base-service LXCs exist on Proxmox, every platform endpoint (on the LAN
+and public) and where the logins are, then every project environment of
+the GitOps repo - per service its version, what Komodo runs, and its LAN
+and public addresses.
 
 With an environment argument (staging or prod), shows, for each service
 declared in urbex.yaml, whether urbex plan/apply has allocated it a
@@ -68,7 +71,10 @@ docs/reference/cli.md in urbforge/urbex.`,
 			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 			if len(args) == 0 {
-				return runBaseStatus(cmd, out, client, cfg)
+				if err := runBaseStatus(cmd, out, client, cfg); err != nil {
+					return err
+				}
+				return printProjects(cmd.Context(), out, cfg, creds, repoPath)
 			}
 			return runProjectStatus(cmd, out, client, cfg, creds, repoPath, manifestPath, args[0])
 		},
@@ -113,6 +119,7 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 	if !provision.ValidEnvs[env] {
 		return fmt.Errorf("invalid environment %q: must be one of staging, prod", env)
 	}
+	refreshForStatus(cmd.Context(), out, cfg, creds, repoPath)
 
 	m, result, err := manifest.LoadTyped(manifestPath)
 	if err != nil {

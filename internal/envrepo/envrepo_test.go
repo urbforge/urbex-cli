@@ -166,3 +166,33 @@ func TestServiceDirUsesForwardSlashes(t *testing.T) {
 		t.Errorf("ServiceDir = %q", got)
 	}
 }
+
+func TestDeploymentsAndPort(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	api := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
+	for _, env := range []string{"staging", "prod"} {
+		if err := repo.WriteService(env, "hello", api, "reg/urbex/hello-api", env == "staging"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.WriteService("staging", "other", manifest.Service{Name: "worker", Runtime: "go", Port: 9000}, "reg/urbex/other-worker", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Deployments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, d := range got {
+		names = append(names, d.Env+"/"+d.Project+"/"+strings.Join(d.Services, ","))
+	}
+	if strings.Join(names, " ") != "prod/hello/api staging/hello/api staging/other/worker" {
+		t.Errorf("deployments = %v", names)
+	}
+	if p := repo.Port("staging", "hello", "api"); p != 8080 {
+		t.Errorf("port = %d", p)
+	}
+	if p := repo.Port("staging", "nope", "api"); p != 0 {
+		t.Errorf("a missing service has no port, got %d", p)
+	}
+}

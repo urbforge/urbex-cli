@@ -21,7 +21,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/urbforge/urbex-cli/internal/manifest"
@@ -266,3 +268,65 @@ func renderWebCompose(image string) string {
 	b.WriteString("      retries: 3\n")
 	return b.String()
 }
+
+// Deployment is a project's environment in the GitOps repo, with the
+// services that have a folder there.
+type Deployment struct {
+	Env, Project string
+	Services     []string
+}
+
+// Deployments lists every project environment in the repo, sorted by
+// environment, then project.
+func (r Repo) Deployments() ([]Deployment, error) {
+	var out []Deployment
+	envs, err := os.ReadDir(filepath.Join(r.Path, "environments"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, env := range envs {
+		if !env.IsDir() {
+			continue
+		}
+		projects, err := os.ReadDir(filepath.Join(r.Path, "environments", env.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range projects {
+			if !p.IsDir() {
+				continue
+			}
+			services, err := os.ReadDir(filepath.Join(r.Path, "environments", env.Name(), p.Name()))
+			if err != nil {
+				return nil, err
+			}
+			d := Deployment{Env: env.Name(), Project: p.Name()}
+			for _, s := range services {
+				if s.IsDir() {
+					d.Services = append(d.Services, s.Name())
+				}
+			}
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+// Port returns the port a service's compose file publishes, or 0.
+func (r Repo) Port(env, project, service string) int {
+	data, err := os.ReadFile(r.file(env, project, service, ComposeFile))
+	if err != nil {
+		return 0
+	}
+	m := publishedPort.FindSubmatch(data)
+	if m == nil {
+		return 0
+	}
+	port, _ := strconv.Atoi(string(m[1]))
+	return port
+}
+
+var publishedPort = regexp.MustCompile(`(?m)^\s+- "(\d+):\d+"`)
