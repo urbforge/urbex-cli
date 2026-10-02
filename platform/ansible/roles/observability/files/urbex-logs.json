@@ -5,11 +5,11 @@
     "urbex"
   ],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": false,
   "description": "Logs of every Urbex LXC: kind=platform (Gitea, Komodo, Keycloak, ...) or kind=app (projects' services).",
   "time": {
-    "from": "now-1h",
+    "from": "now-6h",
     "to": "now"
   },
   "refresh": "30s",
@@ -129,12 +129,27 @@
   },
   "panels": [
     {
+      "id": 3,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Logs of every Urbex LXC: **kind=platform** (Gitea, Komodo, Keycloak, Technitium, observability, tunnel) or **kind=app** (projects' services, with project and env). A service logs what it writes to stdout/stderr - an API that gets no requests shows nothing new. **Not here:** web frontends (Cloudflare Workers: their logs are on Cloudflare). Keycloak logs every HTTP request and user event (logins)."
+      }
+    },
+    {
       "id": 1,
       "type": "timeseries",
       "title": "Log lines",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 3,
         "w": 24,
         "h": 6
       },
@@ -160,7 +175,7 @@
       "title": "Logs",
       "gridPos": {
         "x": 0,
-        "y": 6,
+        "y": 9,
         "w": 24,
         "h": 20
       },
@@ -182,7 +197,8 @@
             "type": "loki",
             "uid": "urbex-loki"
           },
-          "expr": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\""
+          "expr": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\"",
+          "maxLines": 2000
         }
       ]
     }

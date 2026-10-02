@@ -6,12 +6,21 @@
 # follow-up, not yet implemented.
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.7.5
     restart: unless-stopped
     command: start-dev
     environment:
-      - KEYCLOAK_ADMIN=admin
-      - KEYCLOAK_ADMIN_PASSWORD={{ keycloak_admin_password }}
+      # The development database's credentials, as Keycloak 26.0 created
+      # it: later versions default to others and can't open it otherwise.
+      # The file stays inside the container's volume.
+      - KC_DB_USERNAME=sa
+      - KC_DB_PASSWORD=password
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD={{ keycloak_admin_password }}
+      # Logs worth having in Loki (role telemetry): every HTTP request, and
+      # logins and other user events at INFO (by default only failures).
+      - KC_HTTP_ACCESS_LOG_ENABLED=true
+      - KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_SUCCESS_LEVEL=info
 {% if keycloak_public_url | default('') %}
       # Public through the platform's Cloudflare Tunnel (ADR-0022): the
       # issuer users and apps see; services on the LAN may still use the
