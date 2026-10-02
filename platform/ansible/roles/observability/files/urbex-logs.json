@@ -5,8 +5,9 @@
     "urbex"
   ],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": false,
+  "description": "Logs of every Urbex LXC: kind=platform (Gitea, Komodo, Keycloak, ...) or kind=app (projects' services).",
   "time": {
     "from": "now-1h",
     "to": "now"
@@ -14,6 +15,31 @@
   "refresh": "30s",
   "templating": {
     "list": [
+      {
+        "name": "kind",
+        "label": "Kind",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "kind",
+          "stream": "",
+          "refId": "var"
+        },
+        "definition": "label_values(kind)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
       {
         "name": "project",
         "label": "Project",
@@ -25,14 +51,14 @@
         "query": {
           "type": 1,
           "label": "project",
-          "stream": "",
+          "stream": "{kind=~\"$kind\"}",
           "refId": "var"
         },
-        "definition": "label_values(project)",
+        "definition": "label_values({kind=~\"$kind\"}, project)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
-        "allValue": ".+",
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -50,14 +76,14 @@
         "query": {
           "type": 1,
           "label": "env",
-          "stream": "{project=~\"$project\"}",
+          "stream": "{kind=~\"$kind\", project=~\"$project\"}",
           "refId": "var"
         },
-        "definition": "label_values({project=~\"$project\"}, env)",
+        "definition": "label_values({kind=~\"$kind\", project=~\"$project\"}, env)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
-        "allValue": ".+",
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -75,14 +101,14 @@
         "query": {
           "type": 1,
           "label": "service",
-          "stream": "{project=~\"$project\", env=~\"$env\"}",
+          "stream": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}",
           "refId": "var"
         },
-        "definition": "label_values({project=~\"$project\", env=~\"$env\"}, service)",
+        "definition": "label_values({kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
-        "allValue": ".+",
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -105,7 +131,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Log lines per service",
+      "title": "Log lines",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -119,8 +145,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (project, service, env) (count_over_time({project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\" [$__auto]))",
-          "legendFormat": "{{project}} {{service}} {{env}}"
+          "datasource": {
+            "type": "loki",
+            "uid": "urbex-loki"
+          },
+          "expr": "sum by (kind, project, service, env) (count_over_time({kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\" [$__auto]))",
+          "legendFormat": "{{kind}} {{project}} {{service}} {{env}}"
         }
       ]
     },
@@ -140,6 +170,7 @@
       },
       "options": {
         "showTime": true,
+        "showLabels": true,
         "wrapLogMessage": true,
         "sortOrder": "Descending",
         "enableLogDetails": true
@@ -147,7 +178,11 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\""
+          "datasource": {
+            "type": "loki",
+            "uid": "urbex-loki"
+          },
+          "expr": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\""
         }
       ]
     }

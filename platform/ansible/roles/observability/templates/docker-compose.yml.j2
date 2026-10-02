@@ -1,13 +1,19 @@
 # Managed by urbex bootstrap - see docs/architecture.md#observability-prometheus--grafana--loki
 # in urbforge/urbex.
 #
-# Project LXCs ship their services' logs to Loki with a Grafana Alloy
-# agent (role logs, installed by urbex apply). Grafana comes with Loki and
+# Every LXC - base services and project services - runs a Grafana Alloy
+# agent (role telemetry) pushing its logs to Loki and its resource
+# metrics to Prometheus. Grafana comes with Loki and
 # Prometheus as data sources and an "Urbex logs" dashboard.
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: docker.io/prom/prometheus:v3.15.0
     restart: unless-stopped
+    # The LXCs' telemetry agents push their metrics (remote write).
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus

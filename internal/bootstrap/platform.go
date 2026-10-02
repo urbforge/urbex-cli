@@ -50,6 +50,8 @@ type Endpoints struct {
 	// LokiPushURL is where the LXCs' log agents send logs, e.g.
 	// http://192.168.1.204:3100/loki/api/v1/push.
 	LokiPushURL string
+	// PrometheusWriteURL is where they send metrics (remote write).
+	PrometheusWriteURL string
 }
 
 // EndpointsFor computes the base services' endpoints for cfg.
@@ -60,10 +62,11 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 	}
 	giteaIP := ips[Hostname("gitea")]
 	return Endpoints{
-		GiteaURL:    "http://" + giteaIP + ":3000",
-		Registry:    giteaIP + ":3000",
-		KomodoURL:   "http://" + ips[Hostname("komodo")] + ":9120",
-		LokiPushURL: "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
+		GiteaURL:           "http://" + giteaIP + ":3000",
+		Registry:           giteaIP + ":3000",
+		KomodoURL:          "http://" + ips[Hostname("komodo")] + ":9120",
+		LokiPushURL:        "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
+		PrometheusWriteURL: "http://" + ips[Hostname("observability")] + ":9090/api/v1/write",
 	}, nil
 }
 

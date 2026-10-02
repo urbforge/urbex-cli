@@ -175,20 +175,32 @@ step "a push to main is deployed to staging, with no command" '
   git -C /work/gitops pull -q "$(gitops_remote)" main 2>/dev/null
   git -C /work/gitops log -1 --format=%s | grep -q "hello main@" || fail "the deploy is not a commit to the gitops repo"'
 
-step "service logs reach Loki, labelled with project, service and environment" '
+step "logs and resource metrics reach the observability stack, tagged platform or app" '
   for _ in $(seq 1 30); do
     curl -s -o /dev/null http://$NET.210:8080/
-    found=$(loki_lines "{project=\"hello\", service=\"api\", env=\"staging\"}" hello-app)
+    found=$(loki_lines "{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}" hello-app)
     [ "$found" -gt 0 ] && break
     sleep 5
   done
   [ "$found" -gt 0 ] || fail "no log line of hello api (staging) in Loki"
   others=$(loki_lines "{host=\"hello-api-staging\", container!~\"hello-api-staging-.*\"}")
   [ "$others" = 0 ] || fail "only the Stack containers should be shipped, found $others other lines"
+  for svc in gitea komodo keycloak observability; do
+    [ "$(loki_lines "{kind=\"platform\", service=\"$svc\"}")" -gt 0 ] || fail "no log line of the platform service $svc in Loki"
+  done
+  for _ in $(seq 1 12); do
+    app=$(prom_series "node_memory_MemTotal_bytes{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}")
+    platform=$(prom_series "node_memory_MemTotal_bytes{kind=\"platform\"}")
+    [ "$app" -gt 0 ] && [ "$platform" -ge 5 ] && break
+    sleep 5
+  done
+  [ "$app" -gt 0 ] || fail "no resource metrics of hello api (staging) in Prometheus"
+  [ "$platform" -ge 5 ] || fail "resource metrics of only $platform platform LXCs in Prometheus"
   pass=$(cred grafanaAdminPassword)
-  curl -sf -u "admin:$pass" http://$NET.204:3000/api/datasources/uid/urbex-loki >/dev/null || fail "Grafana has no Loki data source"
-  curl -sf -u "admin:$pass" http://$NET.204:3000/api/dashboards/uid/urbex-logs >/dev/null || fail "Grafana has no Urbex logs dashboard"
-  echo "ok: $found log lines of hello api (staging) in Loki; Grafana has the data source and the dashboard"'
+  for uid in datasources/uid/urbex-loki datasources/uid/urbex-prometheus dashboards/uid/urbex-logs dashboards/uid/urbex-resources; do
+    curl -sf -u "admin:$pass" http://$NET.204:3000/api/$uid >/dev/null || fail "Grafana lacks $uid"
+  done
+  echo "ok: $found app log lines, platform logs and metrics of $platform base LXCs; Grafana has both dashboards"'
 
 step "release: the commit staging runs, tagged - nothing rebuilt" '
   runs=$(komodo_api read/ListUpdates "{}" | python3 -c "import sys,json;print(sum(1 for u in json.load(sys.stdin)[\"updates\"] if u[\"operation\"]==\"RunBuild\"))")

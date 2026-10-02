@@ -29,6 +29,7 @@
     - { src: datasources.yml, dest: provisioning/datasources/urbex.yml }
     - { src: dashboards.yml, dest: provisioning/dashboards/urbex.yml }
     - { src: urbex-logs.json, dest: dashboards/urbex-logs.json }
+    - { src: urbex-resources.json, dest: dashboards/urbex-resources.json }
   register: grafana_provisioning
 
 # The Grafana admin password comes from the environment of the machine

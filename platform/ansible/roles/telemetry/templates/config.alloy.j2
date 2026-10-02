@@ -1,0 +1,75 @@
+// Managed by urbex (role telemetry): what this LXC sends to the
+// platform's observability stack, and how it is labelled.
+{% set labels = {'kind': urbex_kind, 'host': inventory_hostname} %}
+{% if urbex_service | default('') %}{% set _ = labels.update({'service': urbex_service}) %}{% endif %}
+{% if urbex_project | default('') %}{% set _ = labels.update({'project': urbex_project}) %}{% endif %}
+{% if urbex_env | default('') %}{% set _ = labels.update({'env': urbex_env}) %}{% endif %}
+
+// --- resource metrics: the LXC's CPU, memory, disk and network ---------
+
+prometheus.exporter.unix "lxc" {
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  rootfs_path = "/host/root"
+}
+
+prometheus.scrape "lxc" {
+  targets         = prometheus.exporter.unix.lxc.targets
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.platform.receiver]
+}
+
+prometheus.remote_write "platform" {
+  endpoint {
+    url = "{{ prometheus_write_url }}"
+  }
+  external_labels = {
+{% for k, v in labels | dictsort %}
+    {{ k }} = "{{ v }}",
+{% endfor %}
+  }
+}
+{% if urbex_logs | default('true') | bool %}
+
+// --- logs: the containers of this LXC's service ------------------------
+
+discovery.docker "local" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Only the service's containers - its compose project: the Komodo Stack
+// of a project LXC, /opt/urbex on a base-service LXC - not Periphery's of
+// a project LXC, nor this agent's. Filtered here, at discovery:
+// relabel_rules on loki.source.docker don't drop targets.
+discovery.relabel "service" {
+  targets = discovery.docker.local.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "{{ telemetry_compose_project | default(inventory_hostname) }}"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "service" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.service.output
+  forward_to = [loki.write.platform.receiver]
+}
+
+loki.write "platform" {
+  endpoint {
+    url = "{{ loki_push_url }}"
+  }
+  external_labels = {
+{% for k, v in labels | dictsort %}
+    {{ k }} = "{{ v }}",
+{% endfor %}
+  }
+}
+{% endif %}

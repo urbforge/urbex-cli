@@ -122,6 +122,7 @@ func TestApply_InventoryShipsLogsToLoki(t *testing.T) {
 	for _, want := range []string{
 		`urbex_logs: "true"`, "loki_push_url: http://192.168.1.204:3100/loki/api/v1/push",
 		"urbex_project: my-app", "urbex_service: api", "urbex_env: staging",
+		"urbex_kind: app", "prometheus_write_url: http://192.168.1.204:9090/api/v1/write",
 	} {
 		if !strings.Contains(string(inventory), want) {
 			t.Errorf("inventory lacks %q:\n%s", want, inventory)

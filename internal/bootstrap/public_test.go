@@ -191,3 +191,28 @@ type noPINAllowed struct{ *cloudflare.Client }
 func (noPINAllowed) EnableOneTimePIN(context.Context) error {
 	return &cloudflare.APIError{Status: 403}
 }
+
+// Every base service's LXC runs the telemetry agent too, labelled as the
+// platform's, with its service name.
+func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
+	for _, want := range []string{
+		"urbex_kind: platform", "telemetry_compose_project: urbex",
+		"loki_push_url: http://192.168.1.204:3100/loki/api/v1/push",
+		"prometheus_write_url: http://192.168.1.204:9090/api/v1/write",
+		"urbex_service: gitea", "urbex_service: observability",
+	} {
+		if !strings.Contains(string(inventory), want) {
+			t.Errorf("base inventory lacks %q:\n%s", want, inventory)
+		}
+	}
+	playbook, _ := os.ReadFile(filepath.Join(dir, "ansible", "playbook.yml"))
+	if !strings.Contains(string(playbook), "- telemetry") {
+		t.Error("the base playbook should install the telemetry agent")
+	}
+}

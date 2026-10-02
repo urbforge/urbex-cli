@@ -44,9 +44,11 @@ runner and fails the test on the first assertion that doesn't hold:
    runs `main`'s head.
 3. A push to `main` reaches staging with no command, through a commit
    to the GitOps repo.
-4. The service's logs reach Loki with the labels `project`, `service`,
-   `env` (and only its own containers'); Grafana has the Loki data
-   source and the *Urbex logs* dashboard.
+4. Logs and resource metrics reach Loki and Prometheus: the service's,
+   labelled `kind="app"`, `project`, `service`, `env` (only its own
+   containers' logs), and the base services', labelled
+   `kind="platform"`; Grafana has the data sources and the *Urbex logs*
+   and *Urbex resources* dashboards.
 5. `urbex release` tags the commit staging runs and publishes its image
    without a new build; a tag pushed with plain git is a release too.
 6. `urbex apply prod` starts empty; `urbex promote` gives it the release

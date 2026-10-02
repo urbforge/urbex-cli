@@ -40,3 +40,9 @@
   become: true
   roles:
     - cloudflared
+
+- name: Send every base service's logs and resource metrics to the observability stack
+  hosts: all
+  become: true
+  roles:
+    - telemetry

@@ -1,4 +1,6 @@
-# Managed by urbex apply (role logs): the log agent of this LXC.
+# Managed by urbex (role telemetry): this LXC's telemetry agent. It reads
+# the containers' logs through Docker, and the LXC's resource usage from
+# /proc, /sys and the root filesystem, all read-only.
 services:
   alloy:
     image: docker.io/grafana/alloy:v1.20.1
@@ -7,6 +9,9 @@ services:
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
       - alloy-data:/var/lib/alloy/data
 
 volumes:

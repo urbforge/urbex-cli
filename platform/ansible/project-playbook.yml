@@ -18,8 +18,8 @@
   roles:
     - periphery
 
-- name: Ship their logs to the platform's observability stack
+- name: Send their logs and resource metrics to the observability stack
   hosts: all
   become: true
   roles:
-    - logs
+    - telemetry

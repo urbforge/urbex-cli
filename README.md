@@ -17,7 +17,9 @@ built by Komodo and deployed to staging, which follows `main`
 a release is a tag (`vX.Y.Z`) that gives a commit's images the version,
 and production runs releases. What each environment runs - version,
 configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
-which Komodo deploys whenever it changes. With Cloudflare configured
+which Komodo deploys whenever it changes. Every LXC sends its logs and
+resource metrics to the platform's Loki and Prometheus, labelled
+platform or app (ADR-0023). With Cloudflare configured
 ([ADR-0022](https://github.com/urbforge/urbex/blob/main/docs/decisions/0022-cloudflare-tunnel-access-workers.md)),
 the platform and the services marked `public: true` are published
 through a Cloudflare Tunnel - Gitea and Komodo behind Cloudflare Access -
@@ -69,10 +71,11 @@ Commands:
   service's secrets in the GitOps repo, encrypted with SOPS for the
   platform's age key and decrypted only on the LXC at deploy time.
   Needs the `sops` binary.
-- `urbex status [env]` — with no argument, which of the 5 base-service
-  LXCs exist on Proxmox; with an environment, per service, its
-  allocation, whether its LXC exists, the version the GitOps repo asks
-  for, and what Komodo reports running.
+- `urbex status [env]` — with no argument, which base-service LXCs
+  exist on Proxmox, every platform endpoint (LAN and public) and where
+  the logins are; with an environment, per service, its allocation,
+  whether its LXC exists, the version the GitOps repo asks for, what
+  Komodo reports running, and its LAN and public addresses.
 - `urbex destroy <env>` — takes the environment's Stacks down, removes
   its routes, DNS records and web Worker from Cloudflare, runs
   `terraform destroy`, then removes its folder, Terraform files and
@@ -91,8 +94,9 @@ The main ones - the full list, with workarounds, is
 in the docs repo:
 
 - Not implemented: Keycloak realms and clients, internal DNS
-  (Technitium), metrics and base-service logs to the observability stack
-  (the services' logs do reach Loki - ADR-0023),
+  (Technitium), the services' own metrics and alerting (logs and LXC
+  resource metrics of every service do reach Loki and Prometheus -
+  ADR-0023),
   mobile frontend deploys, several frontends per project, per-project
   Proxmox isolation, promotion by pull request, image pruning.
 - One Proxmox node; static IPs are neither checked nor reserved; LXCs
@@ -122,6 +126,19 @@ been run on a real Proxmox VE 9.2 node with a pool-scoped, non-root
 token and a real Cloudflare account. The Cloudflare parts are covered by
 unit tests against a fake API (`internal/cloudflare/cloudflaretest`), not
 by the e2e.
+
+## Run it in a container
+
+`tools/operator/urbex-op` runs `urbex` - and terraform, ansible, sops,
+git, ssh - in a container, against a workspace folder holding the
+credentials, the keys, the GitOps repo and your projects. Only podman or
+docker is needed. See [`tools/operator/README.md`](tools/operator/README.md).
+
+```sh
+tools/operator/urbex-op build && tools/operator/urbex-op -w ~/urbex-work init
+export URBEX_PROXMOX_TOKEN=...
+tools/operator/urbex-op -w ~/urbex-work 'urbex bootstrap'
+```
 
 ## Build & test
 
@@ -196,6 +213,7 @@ platform/ansible/            embedded Ansible playbooks/roles (base services + P
 platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends
 platform/komodo/             the Komodo Action that builds main, moves staging, and publishes release tags
 e2e/                         end-to-end test of the real binary (podman)
+tools/operator/              urbex-op: urbex and its tools in a container, run against a workspace
 ```
 
 ## Note on the vendored schema

@@ -54,7 +54,7 @@ module "technitium" {
   template_file_id = var.template_file_id
   ssh_public_key   = var.ssh_public_key
   cores            = 1
-  memory_mb        = 512
+  memory_mb        = 1024
   disk_gb          = 5
   ip_address       = var.base_service_ips["urbex-technitium"]
   ip_prefix_length = var.ip_prefix_length
@@ -120,7 +120,7 @@ module "tunnel" {
   template_file_id = var.template_file_id
   ssh_public_key   = var.ssh_public_key
   cores            = 1
-  memory_mb        = 256
+  memory_mb        = 512
   disk_gb          = 4
   ip_address       = var.base_service_ips["urbex-tunnel"]
   ip_prefix_length = var.ip_prefix_length

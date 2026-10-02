@@ -5,6 +5,7 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
-  # TODO: add scrape targets for the other base-service LXCs and for
-  # project-service LXCs once they export metrics (see urbex.yaml's
-  # observability.metrics field in docs/manifest-spec.md).
+# The LXCs' resource metrics are pushed by their telemetry agents (remote
+# write), labelled kind/service/host (and project/env for apps). Scraping
+# the services' own metrics (urbex.yaml's observability.metrics) is not
+# implemented yet.

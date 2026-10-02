@@ -56,8 +56,11 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 				"komodo_version":          bootstrap.KomodoVersion,
 				// The services' logs go to the platform's Loki, unless the
 				// manifest says observability.logs: false.
-				"urbex_logs":    strconv.FormatBool(shipLogs && ep.LokiPushURL != ""),
-				"loki_push_url": ep.LokiPushURL,
+				"urbex_logs":           strconv.FormatBool(shipLogs && ep.LokiPushURL != ""),
+				"loki_push_url":        ep.LokiPushURL,
+				"prometheus_write_url": ep.PrometheusWriteURL,
+				// A project's service, as opposed to the platform's.
+				"urbex_kind": "app",
 			},
 			Hosts: map[string]hostVars{},
 		},

@@ -10,6 +10,8 @@ import (
 
 type inventoryHost struct {
 	AnsibleHost string `yaml:"ansible_host"`
+	// Service labels the host's logs and metrics (gitea, komodo, ...).
+	Service string `yaml:"urbex_service"`
 }
 
 type inventoryGroup struct {
@@ -30,6 +32,11 @@ type inventoryVars struct {
 	// KeycloakPublicURL is Keycloak's public address, when it has one:
 	// the issuer the apps' users see.
 	KeycloakPublicURL string `yaml:"keycloak_public_url,omitempty"`
+	// The telemetry agents' destinations and labels (role telemetry).
+	LokiPushURL             string `yaml:"loki_push_url"`
+	PrometheusWriteURL      string `yaml:"prometheus_write_url"`
+	Kind                    string `yaml:"urbex_kind"`
+	TelemetryComposeProject string `yaml:"telemetry_compose_project"`
 }
 
 type inventoryAll struct {
@@ -68,6 +75,11 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 				KomodoServerName:     KomodoServerName,
 				KomodoVersion:        KomodoVersion,
 				KeycloakPublicURL:    httpsURL(pub.Keycloak),
+				LokiPushURL:          ep.LokiPushURL,
+				PrometheusWriteURL:   ep.PrometheusWriteURL,
+				Kind:                 "platform",
+				// Every base service is a compose project in /opt/urbex.
+				TelemetryComposeProject: "urbex",
 			},
 			Children: map[string]inventoryGroup{},
 		},
@@ -81,7 +93,7 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 		groupName := "urbex_" + svc.Name
 		root.All.Children[groupName] = inventoryGroup{
 			Hosts: map[string]inventoryHost{
-				hostname: {AnsibleHost: serviceIPs[hostname]},
+				hostname: {AnsibleHost: serviceIPs[hostname], Service: svc.Name},
 			},
 		}
 	}

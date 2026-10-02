@@ -90,6 +90,22 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 	for _, s := range statuses {
 		fmt.Fprintf(out, "  %-24s %s\n", s.Hostname, presence(s.Present))
 	}
+
+	endpoints, err := bootstrap.PlatformEndpoints(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "\nEndpoints:")
+	for _, e := range endpoints {
+		fmt.Fprintf(out, "  %-28s %-38s %s", e.Name, e.LAN, e.Public)
+		if e.Note != "" {
+			fmt.Fprintf(out, "  (%s)", e.Note)
+		}
+		fmt.Fprintln(out)
+	}
+	path, _ := credentials.DefaultPath()
+	fmt.Fprintf(out, "\nLogins: Gitea and Komodo urbex-admin, Grafana admin, Keycloak admin; passwords in %s\n", path)
+	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword).")
 	return nil
 }
 
@@ -176,7 +192,21 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		}
 		fmt.Fprintln(out)
 	}
-	fmt.Fprintln(out, "\nDNS and TLS certificates are not tracked yet.")
+	// Where each service is reached: its LXC on the LAN and, if it is
+	// public or a web frontend, its HTTPS address.
+	o := &provision.Orchestrator{Manifest: m, Config: cfg}
+	fmt.Fprintln(out, "\nEndpoints:")
+	for _, svc := range m.Deployables() {
+		lan := "-"
+		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
+			lan = fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+		}
+		public := ""
+		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
+			public = "https://" + host
+		}
+		fmt.Fprintf(out, "  %-16s %-28s %s\n", svc.Name, lan, public)
+	}
 	return nil
 }
 

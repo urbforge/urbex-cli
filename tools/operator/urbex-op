@@ -1,0 +1,63 @@
+#!/bin/bash
+# urbex-op: run urbex from a container, against a workspace directory that
+# holds everything a platform needs on the operator's side. See README.md.
+#
+#   urbex-op build                   build the operator image from this checkout
+#   urbex-op [-w DIR] init           create the workspace: keys, folders
+#   urbex-op [-w DIR] shell          a shell in the container, ready to run urbex
+#   urbex-op [-w DIR] 'COMMANDS'     run COMMANDS (bash) in the container
+#
+# DIR defaults to $URBEX_WORKSPACE, then ~/urbex-workspace. Tokens come from
+# the environment: export URBEX_PROXMOX_TOKEN (and URBEX_CLOUDFLARE_TOKEN)
+# before running - they are never written to the workspace.
+set -euo pipefail
+
+WS=${URBEX_WORKSPACE:-$HOME/urbex-workspace}
+if [ "${1:-}" = "-w" ]; then WS=$2; shift 2; fi
+IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+ENGINE=$(command -v podman || command -v docker || { echo "urbex-op: podman or docker is needed" >&2; exit 1; })
+
+case "${1:-}" in
+  ""|-h|--help)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  build)
+    exec "$ENGINE" build -t "$IMAGE" -f "$REPO/tools/operator/Containerfile" "$REPO" ;;
+  init)
+    mkdir -p "$WS/home/.ssh" "$WS/home/.urbex" "$WS/gitops" "$WS/projects"
+    chmod 700 "$WS/home/.ssh" "$WS/home/.urbex"
+    [ -f "$WS/home/.ssh/urbex" ] || ssh-keygen -q -t ed25519 -N "" -C urbex -f "$WS/home/.ssh/urbex"
+    if [ ! -f "$WS/home/age.key" ]; then
+      "$ENGINE" run --rm -v "$WS/home:/h:z" "$IMAGE" age-keygen -o /h/age.key 2>/dev/null
+      chmod 600 "$WS/home/age.key"
+    fi
+    cat <<NEXT
+Workspace ready: $WS
+  SSH public key (proxmox.sshPublicKey):  $(cat "$WS/home/.ssh/urbex.pub")
+  age key (back it up - secrets can't be recovered without it): $WS/home/age.key
+Next:
+  export URBEX_PROXMOX_TOKEN='user@pve!token=secret'
+  urbex-op -w $WS 'urbex bootstrap'      # scaffolds gitops/urbex.platform.yaml; edit it, run again
+NEXT
+    exit 0 ;;
+esac
+
+[ -d "$WS/home" ] || { echo "urbex-op: no workspace at $WS - run 'urbex-op -w $WS init' first" >&2; exit 1; }
+CMD=$1
+[ "$CMD" = shell ] && CMD="exec bash"
+TTY=(); [ -t 0 ] && [ -t 1 ] && TTY=(-it)
+# Files the container writes stay owned by you: podman maps your user in.
+USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
+
+exec "$ENGINE" run --rm "${TTY[@]}" --network host "${USERNS[@]}" --user "$(id -u):$(id -g)" \
+  -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops \
+  -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN \
+  -v "$WS:/work:z" -w /work "$IMAGE" bash -c '
+    set -e
+    export URBEX_AGE_KEY="$(grep AGE-SECRET-KEY /work/home/age.key)"
+    eval "$(ssh-agent -s)" >/dev/null; ssh-add -q /work/home/.ssh/urbex
+    trap "ssh-agent -k >/dev/null" EXIT
+    git config --global user.name >/dev/null || git config --global user.name urbex
+    git config --global user.email >/dev/null || git config --global user.email urbex@localhost
+    '"$CMD"

@@ -119,3 +119,9 @@ result = json.load(sys.stdin)["data"]["result"]
 print(sum(1 for s in result for _, line in s["values"] if text in line))
 ' "${2:-}"
 }
+
+# prom_series <promql>: how many series Prometheus returns for the query.
+prom_series() {
+  curl -s -G "http://$NET.204:9090/api/v1/query" --data-urlencode "query=$1" |
+    python3 -c 'import json, sys; print(len(json.load(sys.stdin)["data"]["result"]))'
+}
