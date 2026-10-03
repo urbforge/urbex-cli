@@ -6,7 +6,9 @@
 package proxmoxapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,17 +27,36 @@ type Client struct {
 }
 
 // New creates a Client. baseURL is typically
-// "https://<host>:8006/api2/json".
-func New(baseURL, token string) *Client {
+// "https://<host>:8006/api2/json". insecure skips TLS certificate
+// verification, for nodes using Proxmox's default self-signed certificate
+// (mirrors proxmox.insecure in urbex.platform.yaml).
+func New(baseURL, token string, insecure bool) *Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in via platform config
+	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: 15 * time.Second},
+		http:    &http.Client{Timeout: 15 * time.Second, Transport: transport},
 	}
 }
 
 type container struct {
 	Name string `json:"name"`
+	VMID vmid   `json:"vmid"`
+}
+
+// vmid accepts both forms Proxmox uses for a VMID: a number or a string.
+type vmid int
+
+func (v *vmid) UnmarshalJSON(b []byte) error {
+	var n int
+	if err := json.Unmarshal(bytes.Trim(b, `"`), &n); err != nil {
+		return fmt.Errorf("vmid %s: %w", b, err)
+	}
+	*v = vmid(n)
+	return nil
 }
 
 type listContainersResponse struct {
@@ -43,8 +64,34 @@ type listContainersResponse struct {
 }
 
 // ListContainerHostnames returns the hostnames ("name" field) of every
-// LXC container on the given Proxmox node.
+// LXC container on the given Proxmox node that the token can see.
 func (c *Client) ListContainerHostnames(ctx context.Context, node string) ([]string, error) {
+	cts, err := c.listContainers(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	hostnames := make([]string, 0, len(cts))
+	for _, ct := range cts {
+		hostnames = append(hostnames, ct.Name)
+	}
+	return hostnames, nil
+}
+
+// ListContainerIDs returns the VMIDs of every LXC container on the given
+// Proxmox node that the token can see.
+func (c *Client) ListContainerIDs(ctx context.Context, node string) ([]int, error) {
+	cts, err := c.listContainers(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(cts))
+	for _, ct := range cts {
+		ids = append(ids, int(ct.VMID))
+	}
+	return ids, nil
+}
+
+func (c *Client) listContainers(ctx context.Context, node string) ([]container, error) {
 	url := fmt.Sprintf("%s/nodes/%s/lxc", c.baseURL, node)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -68,10 +115,5 @@ func (c *Client) ListContainerHostnames(ctx context.Context, node string) ([]str
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("decoding proxmox api response: %w", err)
 	}
-
-	hostnames := make([]string, 0, len(parsed.Data))
-	for _, ct := range parsed.Data {
-		hostnames = append(hostnames, ct.Name)
-	}
-	return hostnames, nil
+	return parsed.Data, nil
 }

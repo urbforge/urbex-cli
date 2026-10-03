@@ -1,12 +1,19 @@
 # Managed by urbex bootstrap - see docs/architecture.md#observability-prometheus--grafana--loki
 # in urbforge/urbex.
 #
-# Promtail agents on other base/project LXCs (to ship their logs here)
-# are not yet deployed by urbex bootstrap - tracked as a follow-up.
+# Every LXC - base services and project services - runs a Grafana Alloy
+# agent (role telemetry) pushing its logs to Loki and its resource
+# metrics to Prometheus. Grafana comes with Loki and
+# Prometheus as data sources and an "Urbex logs" dashboard.
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: docker.io/prom/prometheus:v3.15.0
     restart: unless-stopped
+    # The LXCs' telemetry agents push their metrics (remote write).
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -14,7 +21,7 @@ services:
       - "9090:9090"
 
   loki:
-    image: grafana/loki:latest
+    image: docker.io/grafana/loki:3.7.8
     restart: unless-stopped
     volumes:
       - loki-data:/loki
@@ -22,12 +29,14 @@ services:
       - "3100:3100"
 
   grafana:
-    image: grafana/grafana:latest
+    image: docker.io/grafana/grafana:13.2.3
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password | default('CHANGE_ME_before_bootstrap') }}
+      - GF_SECURITY_ADMIN_PASSWORD={{ lookup('env', 'URBEX_GRAFANA_ADMIN_PASSWORD') }}
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
     depends_on:

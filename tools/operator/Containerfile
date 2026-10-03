@@ -1,0 +1,23 @@
+# The operator image: urbex, built from this checkout, and everything it
+# shells out to - terraform, ansible-playbook, sops, age, git, ssh. Build
+# from the repository root:
+#   podman build -t urbex-operator -f tools/operator/Containerfile .
+FROM docker.io/library/golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/urbex ./cmd/urbex
+
+FROM docker.io/library/python:3.12-slim
+ARG SOPS_VERSION=3.13.3
+ARG TF_VERSION=1.13.3
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl jq age unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir -q --root-user-action=ignore --disable-pip-version-check ansible-core \
+ && curl -fsSL -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
+ && chmod +x /usr/local/bin/sops \
+ && curl -fsSL -o /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
+ && unzip -q /tmp/tf.zip -d /usr/local/bin && rm /tmp/tf.zip
+COPY --from=build /out/urbex /usr/local/bin/urbex

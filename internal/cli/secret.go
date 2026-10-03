@@ -1,0 +1,181 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/secrets"
+)
+
+func newSecretCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "secret",
+		Short: "Manage an environment's secrets",
+		Long: `Secrets are environment variables a service gets in one environment,
+kept in the GitOps repo next to its configuration, in
+environments/<env>/<project>/<service>/secrets.sops.env - a dotenv file
+encrypted with SOPS for the platform's age key (URBEX_AGE_KEY). They are
+decrypted only on the service's LXC, at deploy time.
+
+These commands need the sops binary. With URBEX_AGE_KEY exported as
+SOPS_AGE_KEY, plain 'sops <file>' edits the same files. See
+docs/reference/gitops-repo.md in urbforge/urbex.`,
+	}
+	cmd.AddCommand(newSecretSetCmd(), newSecretUnsetCmd(), newSecretListCmd())
+	return cmd
+}
+
+// secretTarget resolves the arguments shared by the secret subcommands.
+func secretTarget(cmd *cobra.Command, manifestPath, gitopsRepoPath, env, service string) (*project, string, envrepo.Repo, error) {
+	repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
+	if err != nil {
+		return nil, "", envrepo.Repo{}, err
+	}
+	p, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, "", false)
+	if err != nil {
+		return nil, "", envrepo.Repo{}, err
+	}
+	repo := envrepo.Repo{Path: repoPath}
+	found := false
+	for _, svc := range p.Manifest.Services {
+		found = found || svc.Name == service
+	}
+	if !found {
+		return nil, "", repo, fmt.Errorf("urbex.yaml declares no service %q", service)
+	}
+	if !repo.Exists(env, p.Manifest.Project) {
+		return nil, "", repo, fmt.Errorf("%s is not applied to %s yet - run 'urbex apply %s' first", p.Manifest.Project, env, env)
+	}
+	return p, repoPath, repo, nil
+}
+
+func newSecretSetCmd() *cobra.Command {
+	var manifestPath, gitopsRepoPath string
+	cmd := &cobra.Command{
+		Use:   "set <env> <service> <KEY>",
+		Short: "Set a secret, reading its value from standard input",
+		Long: `Sets KEY for the service in the environment, reading the value from
+standard input so that it never appears in the shell history or the
+process list:
+
+  printf %s "$DB_PASSWORD" | urbex secret set prod api DB_PASSWORD
+
+The encrypted file is committed and pushed to the GitOps repo; Komodo
+then redeploys the service with the new value.`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env, service, key := args[0], args[1], args[2]
+			if !secrets.ValidKey(key) {
+				return fmt.Errorf("invalid secret name %q: use letters, digits and underscores, not starting with a digit", key)
+			}
+			p, repoPath, repo, err := secretTarget(cmd, manifestPath, gitopsRepoPath, env, service)
+			if err != nil {
+				return err
+			}
+			raw, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+			value := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
+			if value == "" {
+				return fmt.Errorf("no value on standard input (to remove a secret, use 'urbex secret unset')")
+			}
+			if strings.ContainsAny(value, "\n\r") {
+				return fmt.Errorf("multi-line values are not supported")
+			}
+			store, err := secrets.NewStore(p.creds.AgeKey)
+			if err != nil {
+				return err
+			}
+			if err := store.Set(cmd.Context(), repo.SecretsPath(env, p.Manifest.Project, service), key, value); err != nil {
+				return err
+			}
+			opts := provision.Options{Env: env, GitOpsRepoPath: repoPath}
+			if err := p.Publish(cmd.Context(), opts, "set secret "+key+" of "+service+" in"); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Set %s for %s (%s); Komodo redeploys it with the new value.\n", key, service, env)
+			return nil
+		},
+	}
+	addSecretFlags(cmd, &manifestPath, &gitopsRepoPath)
+	return cmd
+}
+
+func newSecretUnsetCmd() *cobra.Command {
+	var manifestPath, gitopsRepoPath string
+	cmd := &cobra.Command{
+		Use:   "unset <env> <service> <KEY>",
+		Short: "Remove a secret",
+		Long: `Removes KEY from the service's secrets in the environment. The file is
+committed and pushed to the GitOps repo; Komodo then redeploys the
+service without it.`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env, service, key := args[0], args[1], args[2]
+			p, repoPath, repo, err := secretTarget(cmd, manifestPath, gitopsRepoPath, env, service)
+			if err != nil {
+				return err
+			}
+			store, err := secrets.NewStore(p.creds.AgeKey)
+			if err != nil {
+				return err
+			}
+			removed, err := store.Unset(cmd.Context(), repo.SecretsPath(env, p.Manifest.Project, service), key)
+			if err != nil {
+				return err
+			}
+			if !removed {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s (%s) has no secret %s.\n", service, env, key)
+				return nil
+			}
+			opts := provision.Options{Env: env, GitOpsRepoPath: repoPath}
+			if err := p.Publish(cmd.Context(), opts, "unset secret "+key+" of "+service+" in"); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from %s (%s); Komodo redeploys it without.\n", key, service, env)
+			return nil
+		},
+	}
+	addSecretFlags(cmd, &manifestPath, &gitopsRepoPath)
+	return cmd
+}
+
+func newSecretListCmd() *cobra.Command {
+	var manifestPath, gitopsRepoPath string
+	cmd := &cobra.Command{
+		Use:   "list <env> <service>",
+		Short: "List the names of a service's secrets (never their values)",
+		Long: `Lists the names of the service's secrets in the environment, one per
+line. Names are not encrypted, so this needs neither sops nor the age
+key, and never prints a value.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env, service := args[0], args[1]
+			p, _, repo, err := secretTarget(cmd, manifestPath, gitopsRepoPath, env, service)
+			if err != nil {
+				return err
+			}
+			keys, err := secrets.Keys(repo.SecretsPath(env, p.Manifest.Project, service))
+			if err != nil {
+				return err
+			}
+			for _, k := range keys {
+				fmt.Fprintln(cmd.OutOrStdout(), k)
+			}
+			return nil
+		},
+	}
+	addSecretFlags(cmd, &manifestPath, &gitopsRepoPath)
+	return cmd
+}
+
+func addSecretFlags(cmd *cobra.Command, manifestPath, gitopsRepoPath *string) {
+	cmd.Flags().StringVar(manifestPath, "file", "urbex.yaml", "path to the app manifest")
+	cmd.Flags().StringVar(gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
+}

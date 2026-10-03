@@ -1,0 +1,71 @@
+---
+# Connects this LXC to Komodo Core as a Server named after its hostname,
+# so Komodo can roll out the project's containers on it - see
+# docs/decisions/0020-trunk-releases-gitops-environments.md in
+# urbforge/urbex.
+- name: Create Periphery's root directory
+  file:
+    path: /etc/komodo
+    state: directory
+    mode: "0750"
+
+# Komodo decrypts an environment's secrets at deploy time by running
+# `docker compose up` through a wrapper that calls sops (see
+# docs/decisions/0020-trunk-releases-gitops-environments.md). Both run
+# inside the Periphery container, which gets this directory mounted - the
+# directory, not the files, so that replacing them here reaches it.
+- name: Create the directory of tools shared with Periphery
+  file:
+    path: /opt/urbex/bin
+    state: directory
+    mode: "0755"
+
+- name: Install sops
+  get_url:
+    url: "https://github.com/getsops/sops/releases/download/v{{ sops_version }}/sops-v{{ sops_version }}.linux.{{ sops_arch }}"
+    dest: /opt/urbex/bin/sops
+    checksum: "sha256:{{ sops_checksums[sops_arch] }}"
+    mode: "0755"
+    # GitHub's release downloads can be slow to start: the default 10s
+    # timeout fails on an ordinary home connection now and then.
+    timeout: 60
+  register: sops_download
+  retries: 4
+  delay: 10
+  until: sops_download is succeeded
+  vars:
+    sops_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Install the compose wrapper that decrypts secrets
+  copy:
+    src: urbex-compose
+    dest: /opt/urbex/bin/urbex-compose
+    mode: "0755"
+
+# The onboarding key and the age key come from the environment of the
+# machine running
+# urbex (~/.urbex/credentials.yaml), never from the GitOps repo. The
+# onboarding key is only used the first time this server connects;
+# afterwards Periphery authenticates with its own key pair, kept in the
+# keys volume. The age key is what sops decrypts secrets with.
+- name: Template Periphery's environment
+  template:
+    src: periphery.env.j2
+    dest: /opt/urbex/periphery.env
+    mode: "0600"
+  no_log: true
+
+- name: Template Periphery docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+
+- name: Start Periphery via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  register: compose_up
+  # Always run: a failure after templating must not leave the agent
+  # down on the next run. up is a no-op when nothing changed.
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

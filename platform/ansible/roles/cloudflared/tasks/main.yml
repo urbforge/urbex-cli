@@ -1,0 +1,30 @@
+---
+# Runs the connector of the platform's Cloudflare Tunnel. The tunnel is
+# remotely managed: its routes live on Cloudflare (set by urbex through the
+# API), so the only configuration here is the connector's token - passed
+# by urbex in the environment, kept on this LXC only. See
+# docs/decisions/0022-cloudflare-tunnel-access-workers.md in urbforge/urbex.
+- name: Fail without the tunnel's token
+  fail:
+    msg: URBEX_CLOUDFLARE_TUNNEL_TOKEN is not set - urbex bootstrap passes it.
+  when: lookup('env', 'URBEX_CLOUDFLARE_TUNNEL_TOKEN') == ''
+
+- name: Write the connector's token
+  copy:
+    dest: /opt/urbex/cloudflared.env
+    content: "TUNNEL_TOKEN={{ lookup('env', 'URBEX_CLOUDFLARE_TUNNEL_TOKEN') }}\n"
+    mode: "0600"
+  no_log: true
+
+- name: Template cloudflared docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/docker-compose.yml
+    mode: "0640"
+
+- name: Start cloudflared via docker compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex
+  register: compose_up
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

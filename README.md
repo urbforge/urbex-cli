@@ -1,97 +1,151 @@
 # urbex-cli
 
 The `urbex` CLI — implementation repo. For architecture, ADRs, and the
-manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex).
-For a real-world, step-by-step walkthrough (bootstrap → deploy → test →
-promote → iterate → fleet status), see
-[`docs/guide.md`](https://github.com/urbforge/urbex/blob/main/docs/guide.md)
-there.
+manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex):
+[getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md),
+the [cookbook](https://github.com/urbforge/urbex/blob/main/docs/cookbook.md),
+and the [reference](https://github.com/urbforge/urbex/blob/main/docs/reference/)
+(every command and flag in
+[CLI reference](https://github.com/urbforge/urbex/blob/main/docs/reference/cli.md)).
 
 ## Status
 
-Scaffold stage - all 8 subcommands are implemented, but see the caveat
-below on the Terraform/Ansible content itself:
+The model ([ADR-0020](https://github.com/urbforge/urbex/blob/main/docs/decisions/0020-trunk-releases-gitops-environments.md)):
+projects are developed trunk-based on Gitea; every push to `main` is
+built by Komodo and deployed to staging, which follows `main`
+([ADR-0021](https://github.com/urbforge/urbex/blob/main/docs/decisions/0021-staging-follows-main.md));
+a release is a tag (`vX.Y.Z`) that gives a commit's images the version,
+and production runs releases. What each environment runs - version,
+configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
+which Komodo deploys whenever it changes. Every LXC sends its logs and
+resource metrics to the platform's Loki and Prometheus, labelled
+platform or app (ADR-0023). With Cloudflare configured
+([ADR-0022](https://github.com/urbforge/urbex/blob/main/docs/decisions/0022-cloudflare-tunnel-access-workers.md)),
+the platform and the services marked `public: true` are published
+through a Cloudflare Tunnel - Gitea and Komodo behind Cloudflare Access -
+and web frontends are deployed to Cloudflare Workers.
+
+Commands:
 
 - `urbex init` — scaffolds a starter `urbex.yaml` app manifest, or
   validates an existing one against the manifest schema.
-- `urbex bootstrap` — the provisioning phase: scaffolds
-  `urbex.platform.yaml` if missing, validates it, checks Proxmox for
-  base-service hostnames that already exist and aren't in local Terraform
-  state (aborting rather than risk adopting/duplicating them), allocates
-  static IPs for the 5 base-service LXCs, materializes the embedded
-  Terraform/Ansible assets into the GitOps repo, then runs `terraform
-  init/apply` and `ansible-playbook` (skippable with `--dry-run`).
-  **Pushing the resulting GitOps repo to Gitea is a later phase, not yet
-  implemented** — bootstrap prints what to do next instead.
-- `urbex plan <env>` / `urbex apply <env>` — the per-project provisioning
-  phase: read `urbex.yaml`, allocate a VMID/IP for each declared
-  service's LXC (one per service per environment, reusing the same
-  static-allocation approach as bootstrap but in its own VMID/IP range so
-  it never collides with the base services), materialize the generic
-  per-service Terraform module into `terraform/projects/<project>/<env>/`
-  in the GitOps repo, then run `terraform plan` (plan) or `terraform
-  apply` followed by `ansible-playbook` (apply) to actually configure the
-  LXC with Docker + a docker-compose skeleton. Requires
-  `urbex.platform.yaml` to already exist (i.e. `urbex bootstrap` to have
-  run at least once). **Building/pushing the service's actual container
-  image, DNS registration, Keycloak realm/client provisioning, and
-  Cloudflare Tunnel ingress are later phases, not yet implemented** — the
-  compose file references a placeholder image and `apply` prints what to
-  do next.
-- `urbex deploy <env>` — redeploys services `urbex apply` already
-  provisioned: re-renders the Ansible inventory from the current
-  `urbex.yaml` and re-runs `ansible-playbook` against the existing LXCs
-  (no Terraform, no new VMID/IP allocation - it errors out by name if any
-  declared service hasn't been applied yet). Needs no Proxmox API token,
-  only SSH access to the LXCs. **This runs Ansible directly and is not
-  yet integrated with Komodo's GitOps-driven reconciliation** (see
-  [ADR-0004](https://github.com/urbforge/urbex/blob/main/docs/decisions/0004-gitops-gitea-komodo.md)) —
-  there's no push-to-deploy yet, only this direct command.
-- `urbex status [env]` — with no argument, queries Proxmox for which of
-  the 5 base-service LXCs currently exist. With an environment argument,
-  reads `urbex.yaml` and reports, per service, whether `urbex
-  plan`/`apply` has allocated it a VMID/IP and whether its LXC currently
-  exists on Proxmox. **DNS records, TLS certificates, and the latest
-  deployed release are not tracked yet.**
-- `urbex promote` — creates and pushes an annotated Git tag (`vX.Y.Z`,
-  auto-incrementing the patch version from existing tags unless
-  `--version` is given) at HEAD of the app repo, the actual signal a
-  production release happened per
-  [ADR-0010](https://github.com/urbforge/urbex/blob/main/docs/decisions/0010-promotion-flow.md).
-  Since Komodo isn't yet watching tags to redeploy prod automatically,
-  promote then immediately calls the same `urbex deploy prod` mechanism
-  itself (`--skip-deploy` to only create/push the tag). Requires prod to
-  already be applied.
-- `urbex destroy <env>` — runs `terraform destroy` for every service
-  already applied to the given environment, then clears their entries
-  from the allocation ledger. Services never applied are silently
-  skipped; a no-op if none were applied. Only tears down project-service
-  infrastructure, not the base/platform services from `urbex bootstrap`.
+- `urbex bootstrap` — scaffolds `urbex.platform.yaml` if missing,
+  validates it, checks Proxmox for base-service hostnames that already
+  exist and aren't in local Terraform state (aborting rather than risk
+  adopting/duplicating them), allocates static IPs for the 5
+  base-service LXCs, materializes the embedded Terraform/Ansible assets
+  into the GitOps repo, runs `terraform init/apply` and
+  `ansible-playbook` (skippable with `--dry-run`), then **sets up the
+  platform**: generates admin passwords and secrets into
+  `~/.urbex/credentials.yaml`; creates a Gitea token, the org and its
+  `gitops` repo; a Komodo API key, the onboarding key project LXCs join
+  Komodo with, Komodo's Gitea git/registry accounts and `URBEX_*`
+  variables; the Komodo Action that builds `main` and publishes release
+  tags, and the Procedure (webhook + every 15 minutes) that deploys the
+  GitOps repo; `.sops.yaml`; and pushes the
+  GitOps repo to Gitea. Re-runs keep existing secrets and tokens.
+- `urbex plan <env>` — reads `urbex.yaml`, allocates a VMID/IP for each
+  declared service's LXC (one per service per environment, from a ledger
+  shared by every project in the GitOps repo), materializes the
+  per-service Terraform module into `terraform/projects/<project>/<env>/`,
+  and runs `terraform plan`.
+- `urbex apply <env>` — like `plan`, then `terraform apply`, then
+  Docker, the Komodo Periphery agent and sops on each LXC (Ansible), the
+  project's repo on Gitea with a Komodo Build per service and its
+  webhook, and the environment's folder in the GitOps repo
+  (`environments/<env>/<project>/<service>/`) with the Komodo Stack that
+  deploys it. A new staging follows `main` and runs its head; a new prod
+  runs nothing until promoted.
+- `urbex release` — tags the next release (`vX.Y.Z`, or `--version`) on
+  the commit staging runs (or `main`, or `--ref`) and waits for Komodo to
+  publish its images - the ones `main` built, retagged. Pushing such a
+  tag by hand does the same.
+- `urbex deploy <env>` — sets what the environment runs in the GitOps
+  repo: the latest release, `--version` (a release or a commit; also how
+  to roll back, and it stops the environment following `main`), or
+  `--follow-main`; pushes, and waits for Komodo to run it. No Terraform,
+  no SSH.
+- `urbex promote` — sets prod to the release staging runs: prod runs the
+  very images staging ran.
+- `urbex secret set|unset|list <env> <service> [KEY]` — manages a
+  service's secrets in the GitOps repo, encrypted with SOPS for the
+  platform's age key and decrypted only on the LXC at deploy time.
+  Needs the `sops` binary.
+- `urbex status [env]` — with no argument, which base-service LXCs
+  exist on Proxmox, every platform endpoint (LAN and public) and where
+  the logins are; with an environment, per service, its allocation,
+  whether its LXC exists, the version the GitOps repo asks for, what
+  Komodo reports running, and its LAN and public addresses.
+- `urbex destroy <env>` — takes the environment's Stacks down, removes
+  its routes, DNS records and web Worker from Cloudflare, runs
+  `terraform destroy`, then removes its folder, Terraform files and
+  ledger entries from the GitOps repo. The project's Builds go with its
+  last environment. Resumable after a failure.
+- `urbex teardown [--yes]` — destroys the platform bootstrap created:
+  the base-service LXCs (with everything on Gitea), the platform's
+  Cloudflare tunnel, records and Access objects, and the generated
+  credentials. Refuses while project environments exist; the GitOps repo
+  is kept as a local commit.
 
-All eight subcommands (`init`, `bootstrap`, `plan`, `apply`, `deploy`,
-`status`, `promote`, `destroy`) now have a real implementation - none are
-stubs.
+### Known limitations
 
-### Caveat: untested against real Proxmox
+The main ones - the full list, with workarounds, is
+[`docs/known-limitations.md`](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md)
+in the docs repo:
 
-The embedded Terraform modules and Ansible playbooks
-(`platform/terraform/`, `platform/ansible/`) were authored carefully but
-**have not been run against a live Proxmox server or real
-`terraform`/`ansible-playbook` binaries** (neither was available in the
-environment this was built in). The Go orchestration logic itself is
-covered by unit tests (fake Proxmox API via `httptest`, a fake command
-runner) and was smoke-tested end-to-end in `--dry-run` mode against a
-stub Proxmox API. Before running `urbex bootstrap` for real: review
-`platform/terraform/base/*.tf` and `platform/ansible/roles/*/templates/*.j2`
-yourself, run `terraform validate` / `ansible-playbook --syntax-check`,
-and double-check the Komodo/Keycloak image tags flagged with `TODO`
-comments against current upstream docs.
+- Not implemented: Keycloak realms and clients, internal DNS
+  (Technitium), the services' own metrics and alerting (logs and LXC
+  resource metrics of every service do reach Loki and Prometheus -
+  ADR-0023),
+  mobile frontend deploys, several frontends per project, per-project
+  Proxmox isolation, promotion by pull request, image pruning.
+- One Proxmox node; static IPs are neither checked nor reserved; LXCs
+  need `proxmox.network.dnsServers` if the host resolves through
+  Tailscale.
+- Keycloak answers ~4 minutes after bootstrap reports the platform ready
+  (development mode).
+- `nested` public hostnames need Advanced Certificate Manager, enabled
+  and ordered by hand.
+- Gitea and Komodo behind Access are for browsers: git and this CLI use
+  the LAN.
+- `urbex teardown` destroys Gitea and every repo on it.
+
+Planned next: see
+[`docs/roadmap.md`](https://github.com/urbforge/urbex/blob/main/docs/roadmap.md).
+
+### What has been validated
+
+[`e2e/run.sh`](e2e/README.md) runs the real binary through all of the
+above - bootstrap, apply, continuous deployment to staging, release,
+promote, secrets, a hand-edited configuration, pinning, rollback,
+destroy, re-apply onto a new machine - against Debian 13 systemd machines reachable over SSH, with
+only `terraform` and the Proxmox API stubbed. `terraform validate`
+passes with the real `bpg/proxmox` provider, and the whole flow -
+Cloudflare included, then `destroy` and `teardown` down to nothing - has
+been run on a real Proxmox VE 9.2 node with a pool-scoped, non-root
+token and a real Cloudflare account. The Cloudflare parts are covered by
+unit tests against a fake API (`internal/cloudflare/cloudflaretest`), not
+by the e2e.
+
+## Run it in a container
+
+`tools/operator/urbex-op` runs `urbex` - and terraform, ansible, sops,
+git, ssh - in a container, against a workspace folder holding the
+credentials, the keys, the GitOps repo and your projects. Only podman or
+docker is needed. See [`tools/operator/README.md`](tools/operator/README.md).
+
+```sh
+tools/operator/urbex-op build && tools/operator/urbex-op -w ~/urbex-work init
+export URBEX_PROXMOX_TOKEN=...
+tools/operator/urbex-op -w ~/urbex-work 'urbex bootstrap'
+```
 
 ## Build & test
 
 ```sh
 go build -o urbex ./cmd/urbex
 go test ./...
+e2e/run.sh        # end-to-end, needs podman - see e2e/README.md
 ```
 
 ## Try it
@@ -105,19 +159,24 @@ go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo
 # scaffolds urbex.platform.yaml there; edit it, then run again
 export URBEX_PROXMOX_TOKEN=... URBEX_AGE_KEY=...
 go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo --dry-run
+go run ./cmd/urbex bootstrap --gitops-repo /path/to/gitops-repo   # provisions + sets up Gitea/Komodo
 
 # from an app repo containing urbex.yaml:
 export URBEX_GITOPS_REPO=/path/to/gitops-repo
 go run ./cmd/urbex plan staging
-go run ./cmd/urbex apply staging
+go run ./cmd/urbex apply staging     # LXCs, builds, folder and stacks; staging runs main's head
+git push gitea main                  # ...and every push to main is deployed to staging
+go run ./cmd/urbex release           # tag what staging runs as the next release
 go run ./cmd/urbex status            # base-service status
-go run ./cmd/urbex status staging    # per-service status for this project+env
-go run ./cmd/urbex deploy staging    # re-run Ansible after editing urbex.yaml
+go run ./cmd/urbex status staging    # per service: wanted version against what Komodo runs
+printf %s "$TOKEN" | go run ./cmd/urbex secret set staging api API_TOKEN
 
 go run ./cmd/urbex apply prod                 # apply prod first
-go run ./cmd/urbex promote                    # tags, pushes, and redeploys prod
-go run ./cmd/urbex promote --skip-deploy       # only tag/push
-go run ./cmd/urbex destroy staging            # tears down staging's LXCs
+go run ./cmd/urbex promote                    # prod runs the release staging runs
+go run ./cmd/urbex deploy prod --version 0.1.0 # roll back
+go run ./cmd/urbex deploy staging --version 0.1.0  # pin staging; --follow-main resumes
+go run ./cmd/urbex destroy staging            # tears down staging (LXCs, Stacks, Cloudflare routes)
+go run ./cmd/urbex teardown --yes             # then the whole platform, once no environment is left
 ```
 
 ## Layout
@@ -133,16 +192,28 @@ internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.
 internal/netalloc/           static IP block allocation (base-service LXCs)
 internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
 internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
-internal/proxmoxapi/         minimal Proxmox API client (bootstrap's pre-flight check only)
+internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs)
+internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
+internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
+internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox
+internal/gitea/              minimal Gitea API client (tokens, org, repos, webhooks, tags, registry lookups)
+internal/komodo/             minimal Komodo v2 API client (keys, accounts, servers, builds, stacks, actions, procedures)
+internal/gitsync/            git commit/push helpers (GitOps repo, a project's main branch)
+internal/rollout/            a project's Builds and an environment's Stacks on Komodo; releases; waiting for deploys
+internal/envrepo/            the environments/ tree of the GitOps repo: compose files, versions, configuration
+internal/secrets/            SOPS-encrypted secrets files (age recipient, sops invocation)
+internal/semver/             release versions (vX.Y.Z): parse, latest, next
 internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
 internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
-internal/bootstrap/          urbex bootstrap orchestration (base services)
+internal/bootstrap/          urbex bootstrap orchestration (base services + Gitea/Komodo setup)
 internal/provision/          urbex plan/apply/deploy/destroy orchestration (project services)
 internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
-internal/gittag/             semver tag parsing/increment (pure, no I/O beyond listing tags)
-internal/promote/            urbex promote: creates/pushes the Git tag
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
-platform/ansible/            embedded Ansible playbooks/roles (base services + generic service role)
+platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
+platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends
+platform/komodo/             the Komodo Action that builds main, moves staging, and publishes release tags
+e2e/                         end-to-end test of the real binary (podman)
+tools/operator/              urbex-op: urbex and its tools in a container, run against a workspace
 ```
 
 ## Note on the vendored schema

@@ -1,0 +1,206 @@
+{
+  "uid": "urbex-logs",
+  "title": "Urbex logs",
+  "tags": [
+    "urbex"
+  ],
+  "schemaVersion": 39,
+  "version": 3,
+  "editable": false,
+  "description": "Logs of every Urbex LXC: kind=platform (Gitea, Komodo, Keycloak, ...) or kind=app (projects' services).",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "kind",
+        "label": "Kind",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "kind",
+          "stream": "",
+          "refId": "var"
+        },
+        "definition": "label_values(kind)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "project",
+        "label": "Project",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "project",
+          "stream": "{kind=~\"$kind\"}",
+          "refId": "var"
+        },
+        "definition": "label_values({kind=~\"$kind\"}, project)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "env",
+        "label": "Env",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "env",
+          "stream": "{kind=~\"$kind\", project=~\"$project\"}",
+          "refId": "var"
+        },
+        "definition": "label_values({kind=~\"$kind\", project=~\"$project\"}, env)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "urbex-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "service",
+          "stream": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}",
+          "refId": "var"
+        },
+        "definition": "label_values({kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 3,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Logs of every Urbex LXC: **kind=platform** (Gitea, Komodo, Keycloak, Technitium, observability, tunnel) or **kind=app** (projects' services, with project and env). A service logs what it writes to stdout/stderr - an API that gets no requests shows nothing new. **Not here:** web frontends (Cloudflare Workers: their logs are on Cloudflare). Keycloak logs every HTTP request and user event (logins)."
+      }
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log lines",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "urbex-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "urbex-loki"
+          },
+          "expr": "sum by (kind, project, service, env) (count_over_time({kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\" [$__auto]))",
+          "legendFormat": "{{kind}} {{project}} {{service}} {{env}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Logs",
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 20
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "urbex-loki"
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "urbex-loki"
+          },
+          "expr": "{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"} |= \"$search\"",
+          "maxLines": 2000
+        }
+      ]
+    }
+  ]
+}

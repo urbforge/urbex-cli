@@ -1,7 +1,7 @@
 package manifest
 
 // Manifest is the typed form of a validated urbex.yaml. See
-// docs/manifest-spec.md in urbforge/urbex and
+// docs/reference/manifest.md in urbforge/urbex and
 // schema/urbex.schema.json for the authoritative shape.
 type Manifest struct {
 	APIVersion    string         `yaml:"apiVersion"`
@@ -21,14 +21,23 @@ type Frontend struct {
 }
 
 type Service struct {
-	Name        string                       `yaml:"name"`
-	Runtime     string                       `yaml:"runtime"`
-	Dockerfile  string                       `yaml:"dockerfile,omitempty"`
-	Port        int                          `yaml:"port"`
-	Healthcheck string                       `yaml:"healthcheck,omitempty"`
-	Resources   *Resources                   `yaml:"resources,omitempty"`
-	Env         map[string]map[string]string `yaml:"env,omitempty"`
-	Auth        *Auth                        `yaml:"auth,omitempty"`
+	Name        string `yaml:"name"`
+	Runtime     string `yaml:"runtime"`
+	Dockerfile  string `yaml:"dockerfile,omitempty"`
+	Port        int    `yaml:"port"`
+	Healthcheck string `yaml:"healthcheck,omitempty"`
+	// Public publishes the service on the internet, through the
+	// platform's Cloudflare Tunnel (ADR-0022).
+	Public    bool                         `yaml:"public,omitempty"`
+	Resources *Resources                   `yaml:"resources,omitempty"`
+	Env       map[string]map[string]string `yaml:"env,omitempty"`
+	Auth      *Auth                        `yaml:"auth,omitempty"`
+	// Frontend is set on the service Deployables makes of a web
+	// frontend; never read from urbex.yaml.
+	Frontend *Frontend `yaml:"-"`
+	// Extra is environment urbex gives the service in an environment
+	// (e.g. its Keycloak realm's issuer); never read from urbex.yaml.
+	Extra map[string]string `yaml:"-"`
 }
 
 // Default resource sizing applied when a service omits (or partially
@@ -85,11 +94,40 @@ type Domain struct {
 
 type Observability struct {
 	Metrics bool `yaml:"metrics"`
-	Logs    bool `yaml:"logs"`
+	// Logs is nil when omitted: logs are shipped unless set to false.
+	Logs *bool `yaml:"logs"`
+}
+
+// ShipsLogs reports whether the project's services send their logs to
+// the platform's observability stack: yes, unless observability.logs is
+// false.
+func (m *Manifest) ShipsLogs() bool {
+	return m.Observability == nil || m.Observability.Logs == nil || *m.Observability.Logs
 }
 
 type Email struct {
 	Provider    string `yaml:"provider"`
 	FromAddress string `yaml:"fromAddress"`
 	FromName    string `yaml:"fromName,omitempty"`
+}
+
+// WebService is the name, and WebRuntime the runtime, of the service a
+// web frontend is deployed as: built like the others, deployed to a
+// Cloudflare Worker instead of an LXC (ADR-0022).
+const (
+	WebService = "web"
+	WebRuntime = "web"
+)
+
+// IsWeb reports whether s is a web frontend.
+func (s Service) IsWeb() bool { return s.Runtime == WebRuntime }
+
+// Deployables returns what an environment of the project runs: its
+// services and, if it has one, its web frontend.
+func (m *Manifest) Deployables() []Service {
+	out := append([]Service{}, m.Services...)
+	if m.Frontend != nil && m.Frontend.Type == "web" {
+		out = append(out, Service{Name: WebService, Runtime: WebRuntime, Frontend: m.Frontend})
+	}
+	return out
 }

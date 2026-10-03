@@ -1,0 +1,7 @@
+# Managed by urbex bootstrap (role cloudflared).
+services:
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:2026.9.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: cloudflared.env

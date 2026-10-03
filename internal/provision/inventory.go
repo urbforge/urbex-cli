@@ -1,21 +1,24 @@
 package provision
 
 import (
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 )
 
 type hostVars struct {
-	AnsibleHost     string            `yaml:"ansible_host"`
-	DockerImage     string            `yaml:"docker_image"`
-	ContainerPort   int               `yaml:"container_port"`
-	HealthcheckPath string            `yaml:"healthcheck_path,omitempty"`
-	EnvVars         map[string]string `yaml:"env_vars,omitempty"`
+	AnsibleHost string `yaml:"ansible_host"`
+	// What the host's log agent labels its logs with.
+	Project string `yaml:"urbex_project"`
+	Service string `yaml:"urbex_service"`
+	Env     string `yaml:"urbex_env"`
 }
 
 type inventoryAll struct {
@@ -28,15 +31,36 @@ type inventoryRoot struct {
 }
 
 // writeInventory renders an Ansible inventory for every service in the
-// manifest, one host per <project>-<service>-<env> hostname, with the
-// per-service docker-compose template variables consumed by
-// platform/ansible/roles/service.
-func writeInventory(ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry) error {
+// manifest, one host per <project>-<service>-<env> hostname, with what
+// platform/ansible/roles/common and periphery need: the registry to
+// trust and the Komodo Core to connect to. Nothing about the app itself -
+// Komodo deploys that. The onboarding key is not an inventory var: the
+// role reads it from the environment.
+func writeInventory(repoPath, ansibleDir, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, ep bootstrap.Endpoints, shipLogs bool) error {
+	if err := knownhosts.Ensure(repoPath); err != nil {
+		return err
+	}
+	sshArgs, err := knownhosts.SSHArgs(repoPath)
+	if err != nil {
+		return err
+	}
 	root := inventoryRoot{
 		All: inventoryAll{
 			Vars: map[string]string{
 				"ansible_user":            "root",
-				"ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new",
+				"ansible_ssh_common_args": sshArgs,
+				"ansible_timeout":         knownhosts.ConnectTimeout,
+				"ansible_ssh_retries":     knownhosts.ConnectRetries,
+				"gitea_registry":          ep.Registry,
+				"komodo_core_address":     ep.KomodoURL,
+				"komodo_version":          bootstrap.KomodoVersion,
+				// The services' logs go to the platform's Loki, unless the
+				// manifest says observability.logs: false.
+				"urbex_logs":           strconv.FormatBool(shipLogs && ep.LokiPushURL != ""),
+				"loki_push_url":        ep.LokiPushURL,
+				"prometheus_write_url": ep.PrometheusWriteURL,
+				// A project's service, as opposed to the platform's.
+				"urbex_kind": "app",
 			},
 			Hosts: map[string]hostVars{},
 		},
@@ -44,15 +68,7 @@ func writeInventory(ansibleDir, project, env string, services []manifest.Service
 
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
-		entry := allocations[hostname]
-
-		root.All.Hosts[hostname] = hostVars{
-			AnsibleHost:     entry.IP,
-			DockerImage:     placeholderImage(project, svc.Name, env),
-			ContainerPort:   svc.Port,
-			HealthcheckPath: svc.Healthcheck,
-			EnvVars:         svc.EnvFor(env),
-		}
+		root.All.Hosts[hostname] = hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: svc.Name, Env: env}
 	}
 
 	data, err := yaml.Marshal(root)
@@ -64,11 +80,4 @@ func writeInventory(ansibleDir, project, env string, services []manifest.Service
 		return err
 	}
 	return os.WriteFile(filepath.Join(ansibleDir, "inventory.yml"), data, 0o644)
-}
-
-// placeholderImage is a stand-in image reference. Actually building and
-// pushing a real image is not yet implemented - see the TODO in
-// platform/ansible/roles/service/templates/docker-compose.yml.j2.
-func placeholderImage(project, service, env string) string {
-	return project + "/" + service + ":" + env + "-latest"
 }

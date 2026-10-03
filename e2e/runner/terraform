@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stub terraform: the machines are created by e2e/run.sh. It only logs
+# what urbex asked for and, like the real one, leaves a state file behind
+# after an apply - urbex's pre-flight check looks for it.
+echo "[stub terraform] $*"
+case "$1" in
+  apply) [ -f terraform.tfstate ] || echo '{"version": 4, "resources": []}' > terraform.tfstate ;;
+esac

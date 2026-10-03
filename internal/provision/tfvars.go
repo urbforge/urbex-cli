@@ -32,6 +32,10 @@ type tfVars struct {
 	Gateway         string                 `json:"gateway"`
 	IPPrefixLength  int                    `json:"ip_prefix_length"`
 	Services        map[string]serviceVars `json:"services"`
+	PoolID          string                 `json:"pool_id"`
+	Keyctl          bool                   `json:"keyctl"`
+	NetworkBridge   string                 `json:"network_bridge"`
+	DNSServers      []string               `json:"dns_servers"`
 }
 
 func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int) error {
@@ -68,6 +72,10 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 		SSHPublicKey:    cfg.Proxmox.SSHPublicKey,
 		Gateway:         cfg.Proxmox.Network.Gateway,
 		IPPrefixLength:  prefixLen,
+		PoolID:          cfg.Proxmox.Pool,
+		Keyctl:          cfg.Proxmox.KeyctlEnabled(),
+		NetworkBridge:   cfg.Proxmox.Network.Bridge,
+		DNSServers:      append([]string{}, cfg.Proxmox.Network.DNSServers...),
 		Services:        svcVars,
 	}
 

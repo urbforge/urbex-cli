@@ -13,14 +13,18 @@ func newDestroyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "destroy <env>",
 		Short: "Remove an environment's infrastructure",
-		Long: `Runs 'terraform destroy' for every service of this project that 'urbex
-apply' already provisioned for the given environment, then removes their
-entries from the allocation ledger. Services that were never applied are
-silently skipped - there's nothing to destroy for them; if none were
-applied, this is a no-op.
+		Long: `Removes an environment of this project: takes its Komodo Stacks down and
+deletes them, removes the project's folder from that environment in the
+GitOps repo, runs 'terraform destroy' for every service 'urbex apply'
+provisioned there, deletes their Komodo Servers, and removes their
+entries from the allocation ledger. When the project has no environment
+left, its Komodo Builds and release webhook go too; its repo and images
+stay on Gitea. Services that were never applied are skipped; if none
+were, this is a no-op.
 
 Only destroys project-service infrastructure - base/platform services
-created by 'urbex bootstrap' are out of scope.`,
+created by 'urbex bootstrap' are out of scope. See docs/reference/cli.md
+in urbforge/urbex.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -28,7 +32,7 @@ created by 'urbex bootstrap' are out of scope.`,
 				return err
 			}
 
-			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, true)
+			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, "", true)
 			if err != nil {
 				return err
 			}

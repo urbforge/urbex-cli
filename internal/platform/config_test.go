@@ -70,3 +70,48 @@ func TestValidate_ReportsMissingFields(t *testing.T) {
 		t.Errorf("expected %q among errors, got: %v", want, errs)
 	}
 }
+
+func TestCloudflareHostnames(t *testing.T) {
+	flat := CloudflareConfig{Name: "urbex", Hostnames: HostnamesFlat}
+	nested := CloudflareConfig{Name: "urbex", Hostnames: HostnamesNested}
+	for _, tc := range []struct {
+		labels       []string
+		flat, nested string
+	}{
+		{[]string{"auth"}, "auth-urbex.cubotto.net", "auth.urbex.cubotto.net"},
+		{[]string{"hello"}, "hello-urbex.cubotto.net", "hello.urbex.cubotto.net"},
+		{[]string{"api", "staging", "hello"}, "api-staging-hello-urbex.cubotto.net", "api.staging.hello.urbex.cubotto.net"},
+	} {
+		if got := flat.Hostname("cubotto.net", tc.labels...); got != tc.flat {
+			t.Errorf("flat %v = %s, want %s", tc.labels, got, tc.flat)
+		}
+		if got := nested.Hostname("cubotto.net", tc.labels...); got != tc.nested {
+			t.Errorf("nested %v = %s, want %s", tc.labels, got, tc.nested)
+		}
+	}
+}
+
+func TestCloudflareValidation(t *testing.T) {
+	base := func() *Config {
+		c := &Config{Domain: "d", Git: GitConfig{GiteaURL: "g"}}
+		c.Proxmox = ProxmoxConfig{APIURL: "a", Node: "n", LXCTemplate: "t", SSHPublicKey: "k", Network: NetworkConfig{CIDR: "c", Gateway: "g"}}
+		return c
+	}
+	if errs := base().Validate(); len(errs) != 0 {
+		t.Fatalf("no cloudflare must be valid: %v", errs)
+	}
+	c := base()
+	c.Cloudflare = CloudflareConfig{AccountID: "a"}
+	if errs := c.Validate(); len(errs) == 0 {
+		t.Error("an account without a zone must be refused")
+	}
+	c.Cloudflare = CloudflareConfig{AccountID: "a", ZoneID: "z"}
+	if errs := c.Validate(); len(errs) == 0 {
+		t.Error("Access emails must be required")
+	}
+	c.Cloudflare.Access.Emails = []string{"me@example.com"}
+	c.Cloudflare.Hostnames = "deep"
+	if errs := c.Validate(); len(errs) != 1 {
+		t.Errorf("expected only the hostnames error, got %v", errs)
+	}
+}

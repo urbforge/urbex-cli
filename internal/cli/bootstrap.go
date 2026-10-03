@@ -26,9 +26,16 @@ repo working directory.
 If urbex.platform.yaml does not exist yet in that directory, bootstrap
 scaffolds a starter one to be edited before running again.
 
-Pushing the resulting GitOps repo to Gitea is a later phase, not yet
-implemented - see docs/decisions/0006-bootstrap-command.md in
-urbforge/urbex.`,
+Then it sets up the platform: generates admin passwords (stored in
+~/.urbex/credentials.yaml, never in the GitOps repo); creates a Gitea API
+token, the org and its "gitops" repo; a Komodo API key, the onboarding
+key project LXCs join Komodo with, Komodo's Gitea git and registry
+accounts and the variables its scripts use; the Komodo Action that
+builds main and releases, and the Procedure that deploys the GitOps repo
+on every push and every 15 minutes; .sops.yaml; and pushes the GitOps
+repo to Gitea. Safe to re-run: existing secrets and tokens are kept.
+
+See docs/reference/cli.md in urbforge/urbex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
@@ -88,7 +95,7 @@ func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool) error 
 		return fmt.Errorf("missing required credentials")
 	}
 
-	proxmoxClient := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken)
+	proxmoxClient := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 	orchestrator := &bootstrap.Orchestrator{
 		Config:      cfg,

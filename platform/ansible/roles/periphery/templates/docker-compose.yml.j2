@@ -1,0 +1,26 @@
+# Managed by urbex apply - see
+# docs/decisions/0020-trunk-releases-gitops-environments.md in
+# urbforge/urbex.
+#
+# Only the Komodo Periphery agent is defined here. The project's own
+# compose project is not: Komodo deploys it through this agent from the
+# service's folder in the GitOps repo, whenever that folder changes.
+services:
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    init: true
+    restart: unless-stopped
+    env_file: ./periphery.env
+    volumes:
+      # Periphery's identity: must survive container re-creation, or Core
+      # rejects the server as a different one.
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      - /etc/komodo:/etc/komodo
+      # sops and the compose wrapper that decrypts secrets with it at
+      # deploy time; the key is SOPS_AGE_KEY.
+      - /opt/urbex/bin:/opt/urbex/bin:ro
+
+volumes:
+  keys:

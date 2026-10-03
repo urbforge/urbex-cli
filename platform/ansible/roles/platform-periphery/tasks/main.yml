@@ -1,0 +1,36 @@
+---
+# Connects a base-service LXC to Komodo as a Server named after its
+# hostname (urbex-gitea, ...), tagged "platform" by urbex bootstrap, so
+# Komodo shows and monitors its containers next to the projects'. It
+# deploys nothing there: the base services are run by Ansible. Periphery
+# lives in its own compose project, apart from the service's /opt/urbex.
+- name: Create Periphery's root and compose directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - /etc/komodo
+    - /opt/urbex/periphery
+
+# The onboarding key comes from the environment of the machine running
+# urbex, and is only used the first time the server connects.
+- name: Template Periphery's environment
+  template:
+    src: periphery.env.j2
+    dest: /opt/urbex/periphery/periphery.env
+    mode: "0600"
+  no_log: true
+
+- name: Template Periphery docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/periphery/docker-compose.yml
+    mode: "0640"
+
+- name: Start Periphery
+  command: docker compose up -d
+  args:
+    chdir: /opt/urbex/periphery
+  register: compose_up
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

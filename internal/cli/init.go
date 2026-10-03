@@ -23,8 +23,7 @@ urbex.yaml for the app to be edited (typically by the LLM developing the
 app). If it already exists, urbex init instead validates it against the
 urbex manifest schema and reports any errors.
 
-See docs/decisions/0002-app-manifest-in-app-repo.md and
-docs/manifest-spec.md in urbforge/urbex.`,
+See docs/reference/manifest.md in urbforge/urbex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(cmd, manifestPath, project)
 		},

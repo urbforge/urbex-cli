@@ -35,7 +35,7 @@ variable "storage_pool" {
 
 variable "template_file_id" {
   type        = string
-  description = "Proxmox storage ID of the LXC template (e.g. a Debian 12 template)."
+  description = "Proxmox storage ID of the LXC template (a Debian 13 template)."
 }
 
 variable "ssh_public_key" {
@@ -60,4 +60,23 @@ variable "ip_prefix_length" {
 
 variable "gateway" {
   type = string
+}
+
+variable "pool_id" {
+  type        = string
+  default     = ""
+  description = "Proxmox resource pool to create the container in; empty for none."
+}
+
+variable "keyctl" {
+  type        = bool
+  default     = true
+  description = "Enable the keyctl feature (needed by Docker on most hosts; root@pam only)."
+}
+
+variable "dns_servers" {
+  type        = list(string)
+  default     = []
+  nullable    = false
+  description = "Nameservers of the LXCs; empty copies the Proxmox host's."
 }

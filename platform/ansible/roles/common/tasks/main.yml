@@ -1,5 +1,5 @@
 ---
-# Installs Docker Engine + the compose plugin on a fresh Debian-based LXC,
+# Installs Docker Engine + the compose plugin on a fresh Debian 13 LXC,
 # per docs/decisions/0003-terraform-ansible-provisioning.md in
 # urbforge/urbex.
 
@@ -9,26 +9,18 @@
       - ca-certificates
       - curl
       - gnupg
+      - python3-debian # needed by deb822_repository
     state: present
     update_cache: true
 
-- name: Create the apt keyrings directory
-  file:
-    path: /etc/apt/keyrings
-    state: directory
-    mode: "0755"
-
-- name: Add Docker's official GPG key
-  get_url:
-    url: https://download.docker.com/linux/debian/gpg
-    dest: /etc/apt/keyrings/docker.asc
-    mode: "0644"
-
 - name: Add the Docker apt repository
-  apt_repository:
-    repo: "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
-    state: present
-    filename: docker
+  deb822_repository:
+    name: docker
+    types: [deb]
+    uris: https://download.docker.com/linux/debian
+    suites: ["{{ ansible_facts['distribution_release'] }}"]
+    components: [stable]
+    signed_by: https://download.docker.com/linux/debian/gpg
 
 - name: Install Docker Engine and the Compose plugin
   apt:
@@ -51,3 +43,20 @@
     path: /opt/urbex
     state: directory
     mode: "0750"
+
+# Gitea's container registry is plain HTTP until ingress/TLS exists
+# (docs/decisions/0018-image-build-komodo-gitea-registry.md in
+# urbforge/urbex), so Docker must be told to trust it explicitly.
+- name: Trust the Gitea container registry over HTTP
+  copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ {'insecure-registries': [gitea_registry]} | to_nice_json }}\n"
+    mode: "0644"
+  register: docker_daemon_json
+  when: gitea_registry | default('') | length > 0
+
+- name: Restart Docker to pick up the registry configuration
+  systemd:
+    name: docker
+    state: restarted
+  when: docker_daemon_json is changed

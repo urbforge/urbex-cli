@@ -6,14 +6,16 @@
 // docs/decisions/0006-bootstrap-command.md and
 // docs/decisions/0017-embedded-base-infra-assets.md in urbforge/urbex.
 //
-// Pushing the resulting GitOps repo to Gitea (and configuring the
-// Cloudflare tunnel) is a later phase, not yet implemented here - see the
-// message printed at the end of a successful Run.
+// After provisioning, it wires the base services together (Gitea tokens,
+// org and GitOps repo, Komodo API key and accounts - see platform.go) and
+// pushes the GitOps repo to Gitea. Configuring the Cloudflare tunnel is a
+// later phase, not yet implemented here.
 package bootstrap
 
 import (
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +25,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/runner"
+	"github.com/urbforge/urbex-cli/internal/secrets"
 )
 
 // ProxmoxLister is the subset of proxmoxapi.Client used for the
@@ -47,6 +50,9 @@ type Orchestrator struct {
 	Proxmox     ProxmoxLister
 	Runner      CommandRunner
 	Out         io.Writer
+	// Clients builds the Gitea/Komodo API clients used after provisioning;
+	// zero value means DefaultClients().
+	Clients Clients
 }
 
 // Options controls a single Run.
@@ -70,6 +76,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
 		return fmt.Errorf("missing required credentials: %v", missing)
 	}
+	if o.Config.Cloudflare.Enabled() && o.Credentials.CloudflareToken == "" {
+		return fmt.Errorf("missing required credentials: [URBEX_CLOUDFLARE_TOKEN] (urbex.platform.yaml sets cloudflare.accountId)")
+	}
+	// The age key encrypts every secret in the GitOps repo: better to
+	// learn it is malformed now than after provisioning.
+	if _, err := secrets.Recipient(o.Credentials.AgeKey); err != nil {
+		return err
+	}
 
 	toCreate, alreadyPresent, err := o.checkExisting(ctx, opts.GitOpsRepoPath)
 	if err != nil {
@@ -82,6 +96,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("allocating static IPs: %w", err)
 	}
+	ep, err := EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
@@ -93,7 +111,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible")
-	if err := writeInventory(ansibleDir, ips); err != nil {
+	if err := writeInventory(ansibleDir, o.Config.Domain, ep, PublicEndpointsFor(o.Config), ips); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 
@@ -102,23 +120,61 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return nil
 	}
 
+	if err := ensureSecrets(o.Credentials); err != nil {
+		return fmt.Errorf("generating platform secrets: %w", err)
+	}
 	tfEnv := []string{"TF_VAR_proxmox_api_token=" + o.Credentials.ProxmoxToken}
 
 	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: tfEnv}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
-	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"apply", "-auto-approve"}, Env: tfEnv}); err != nil {
-		return fmt.Errorf("terraform apply: %w", err)
+	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", tfEnv); err != nil {
+		return err
+	}
+	// The LXCs just created have new host keys at addresses that may have
+	// served others before (a teardown, an LXC deleted by hand).
+	var created []string
+	for _, hostname := range toCreate {
+		created = append(created, ips[hostname])
+	}
+	if err := knownhosts.Forget(opts.GitOpsRepoPath, created...); err != nil {
+		return fmt.Errorf("updating known hosts: %w", err)
+	}
+
+	clients := o.Clients
+	if clients.Gitea == nil || clients.Komodo == nil || clients.SyncRepo == nil {
+		clients = DefaultClients()
 	}
 
 	ansibleArgs := []string{"-i", "inventory.yml", "playbook.yml"}
-	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs}); err != nil {
+	ansibleEnv := o.Credentials.Env(ansibleSecretEnv...)
+	if o.Config.Cloudflare.Enabled() {
+		// The tunnel's connector token reaches its LXC through Ansible's
+		// environment only.
+		token, err := o.tunnelToken(ctx, clients)
+		if err != nil {
+			return fmt.Errorf("setting up the cloudflare tunnel: %w", err)
+		}
+		ansibleEnv = append(ansibleEnv, "URBEX_CLOUDFLARE_TUNNEL_TOKEN="+token)
+	}
+	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs, Env: ansibleEnv}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
 	}
-
 	fmt.Fprintln(o.Out, "Base services provisioned.")
-	fmt.Fprintln(o.Out, "Next (not yet implemented by urbex bootstrap): create a Gitea admin token,")
-	fmt.Fprintln(o.Out, "set URBEX_GITEA_TOKEN, commit this GitOps repo, and push it to Gitea.")
+
+	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
+		return fmt.Errorf("setting up gitea/komodo: %w", err)
+	}
+	if err := o.connectPlatformServers(ctx, clients, ansibleDir); err != nil {
+		return fmt.Errorf("connecting the base services to komodo: %w", err)
+	}
+	if o.Config.Cloudflare.Enabled() {
+		if err := o.publishPlatform(ctx, clients, ips); err != nil {
+			return fmt.Errorf("publishing the platform on cloudflare: %w", err)
+		}
+	}
+	path, _ := credentials.DefaultPath()
+	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
 	return nil
 }
 
@@ -137,7 +193,7 @@ func (o *Orchestrator) checkExisting(ctx context.Context, gitopsRepoPath string)
 		existingSet[h] = true
 	}
 
-	for _, svc := range BaseServices {
+	for _, svc := range BaseServicesFor(o.Config) {
 		h := Hostname(svc.Name)
 		if existingSet[h] {
 			alreadyPresent = append(alreadyPresent, h)
@@ -160,13 +216,14 @@ func (o *Orchestrator) checkExisting(ctx context.Context, gitopsRepoPath string)
 }
 
 func allocateIPs(cfg *platform.Config) (map[string]string, int, error) {
-	addrs, prefixLen, err := netalloc.Allocate(cfg.Proxmox.Network.CIDR, cfg.Proxmox.Network.BaseHostOffset, len(BaseServices))
+	services := BaseServicesFor(cfg)
+	addrs, prefixLen, err := netalloc.Allocate(cfg.Proxmox.Network.CIDR, cfg.Proxmox.Network.BaseHostOffset, len(services))
 	if err != nil {
 		return nil, 0, err
 	}
 
-	ips := make(map[string]string, len(BaseServices))
-	for i, svc := range BaseServices {
+	ips := make(map[string]string, len(services))
+	for i, svc := range services {
 		ips[Hostname(svc.Name)] = addrs[i]
 	}
 	return ips, prefixLen, nil

@@ -1,0 +1,16 @@
+# Managed by urbex bootstrap (role platform-periphery): Komodo's agent on a
+# base-service LXC, for monitoring its containers.
+services:
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    init: true
+    restart: unless-stopped
+    env_file: ./periphery.env
+    volumes:
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      - /etc/komodo:/etc/komodo
+
+volumes:
+  keys:

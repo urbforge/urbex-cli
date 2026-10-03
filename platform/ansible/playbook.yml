@@ -34,3 +34,15 @@
   become: true
   roles:
     - observability
+
+- name: Deploy the Cloudflare Tunnel connector
+  hosts: urbex_tunnel
+  become: true
+  roles:
+    - cloudflared
+
+- name: Send every base service's logs and resource metrics to the observability stack
+  hosts: all
+  become: true
+  roles:
+    - telemetry

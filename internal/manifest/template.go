@@ -10,7 +10,7 @@ project: %s
 
 # Declare a frontend and/or one or more services below, then run
 # 'urbex init' again to validate. See:
-# https://github.com/urbforge/urbex/blob/main/docs/manifest-spec.md
+# https://github.com/urbforge/urbex/blob/main/docs/reference/manifest.md
 #
 # frontend:
 #   type: web                    # web | mobile

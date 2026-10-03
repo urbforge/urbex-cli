@@ -1,0 +1,244 @@
+// Package secrets manages the SOPS-encrypted dotenv files that hold each
+// environment's secrets in the GitOps repo. They are encrypted for the
+// platform's age key, whose public half (the recipient) is written to
+// .sops.yaml at the root of the repo so that plain `sops <file>` works
+// too. See docs/decisions/0011-secrets-sops-age.md and
+// docs/decisions/0020-trunk-releases-gitops-environments.md in
+// urbforge/urbex.
+//
+// Encryption and decryption are done by the sops binary; only deriving
+// the recipient from the key is done here.
+package secrets
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"filippo.io/age"
+)
+
+// FileName is the name of a service's encrypted secrets file, inside its
+// folder of an environment.
+const FileName = "secrets.sops.env"
+
+// Placeholder is the content of a secrets file with no secrets in it.
+// The file always exists, because Komodo tracks it and refuses to deploy
+// a Stack with a tracked file missing; without sops metadata it is simply
+// not decrypted.
+const Placeholder = "# No secrets. Add one with: urbex secret set <env> <service> <KEY>\n"
+
+// EnsureFile creates the secrets file at path, empty of secrets, if it
+// doesn't exist.
+func EnsureFile(path string) error {
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, []byte(Placeholder), 0o644)
+}
+
+// encrypted reports whether data is a sops-encrypted dotenv file.
+func encrypted(data []byte) bool {
+	for key := range parseDotenv(data) {
+		if strings.HasPrefix(key, "sops_") {
+			return true
+		}
+	}
+	return false
+}
+
+// sopsConfig is the GitOps repo's .sops.yaml: every secrets file under
+// environments/ is encrypted for the platform's age key.
+const sopsConfig = `# Managed by urbex. Secrets in this repo are encrypted for the platform's
+# age key; with that key in SOPS_AGE_KEY (or SOPS_AGE_KEY_FILE), edit one
+# with: sops environments/<env>/<project>/<service>/secrets.sops.env
+creation_rules:
+  - path_regex: (^|/)secrets\.sops\.env$
+    age: %s
+`
+
+// Recipient returns the public key of an age secret key
+// ("AGE-SECRET-KEY-1..."), i.e. what secrets are encrypted for.
+func Recipient(ageSecretKey string) (string, error) {
+	identity, err := age.ParseX25519Identity(strings.TrimSpace(ageSecretKey))
+	if err != nil {
+		return "", fmt.Errorf("URBEX_AGE_KEY is not a valid age secret key (expected AGE-SECRET-KEY-1..., from age-keygen): %w", err)
+	}
+	return identity.Recipient().String(), nil
+}
+
+// WriteSopsConfig writes .sops.yaml at the root of the GitOps repo.
+func WriteSopsConfig(gitopsRepoPath, recipient string) error {
+	path := filepath.Join(gitopsRepoPath, ".sops.yaml")
+	return os.WriteFile(path, []byte(fmt.Sprintf(sopsConfig, recipient)), 0o644)
+}
+
+// Store reads and writes encrypted secrets files with sops.
+type Store struct {
+	// AgeKey is the age secret key, passed to sops as SOPS_AGE_KEY.
+	AgeKey string
+	// Recipient is AgeKey's public key.
+	Recipient string
+}
+
+// NewStore returns a Store for the given age secret key.
+func NewStore(ageSecretKey string) (*Store, error) {
+	recipient, err := Recipient(ageSecretKey)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{AgeKey: strings.TrimSpace(ageSecretKey), Recipient: recipient}, nil
+}
+
+// Read decrypts the secrets file at path. A file that doesn't exist, or
+// holds only the placeholder, has no secrets.
+func (s *Store) Read(ctx context.Context, path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !encrypted(data) {
+		return map[string]string{}, nil
+	}
+	out, err := s.sops(ctx, nil, "decrypt", "--input-type", "dotenv", "--output-type", "dotenv", path)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting %s: %w", path, err)
+	}
+	return parseDotenv(out), nil
+}
+
+// Write encrypts values into the secrets file at path, replacing it.
+// Writing no values leaves the placeholder.
+func (s *Store) Write(ctx context.Context, path string, values map[string]string) error {
+	if len(values) == 0 {
+		return os.WriteFile(path, []byte(Placeholder), 0o644)
+	}
+	plain := formatDotenv(values)
+	// The plaintext only ever travels over stdin; sops is told the format
+	// explicitly because it can't infer it from "/dev/stdin".
+	out, err := s.sops(ctx, plain, "encrypt", "--age", s.Recipient,
+		"--input-type", "dotenv", "--output-type", "dotenv", "/dev/stdin")
+	if err != nil {
+		return fmt.Errorf("encrypting %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
+// Set adds or replaces one secret in the file at path.
+func (s *Store) Set(ctx context.Context, path, key, value string) error {
+	values, err := s.Read(ctx, path)
+	if err != nil {
+		return err
+	}
+	values[key] = value
+	return s.Write(ctx, path, values)
+}
+
+// Unset removes one secret from the file at path; it reports whether the
+// secret was there.
+func (s *Store) Unset(ctx context.Context, path, key string) (bool, error) {
+	values, err := s.Read(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	if _, ok := values[key]; !ok {
+		return false, nil
+	}
+	delete(values, key)
+	return true, s.Write(ctx, path, values)
+}
+
+// Keys lists the names of the secrets in the file at path without
+// decrypting it: sops leaves dotenv keys in the clear.
+func Keys(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for key := range parseDotenv(data) {
+		if !strings.HasPrefix(key, "sops_") {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func (s *Store) sops(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "sops", args...)
+	cmd.Env = append(os.Environ(), "SOPS_AGE_KEY="+s.AgeKey)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("sops is not installed - it is needed to manage secrets (https://github.com/getsops/sops)")
+		}
+		return nil, fmt.Errorf("sops %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// ValidKey reports whether key can be an environment variable name.
+func ValidKey(key string) bool {
+	if key == "" || strings.HasPrefix(key, "sops_") {
+		return false
+	}
+	for i, r := range key {
+		letter := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		if !letter && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// parseDotenv reads KEY=value lines, skipping blanks and comments. Values
+// are taken verbatim: urbex writes them unquoted, on one line.
+func parseDotenv(data []byte) map[string]string {
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		values[key] = value
+	}
+	return values
+}
+
+func formatDotenv(values map[string]string) []byte {
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k + "=" + values[k] + "\n")
+	}
+	return []byte(b.String())
+}

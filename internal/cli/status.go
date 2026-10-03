@@ -9,11 +9,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/status"
 )
 
@@ -24,15 +27,22 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [env]",
 		Short: "Show the current status of the platform or of a project environment",
-		Long: `With no arguments, shows which base-service LXCs (Gitea, Komodo,
-Technitium, Keycloak, observability) currently exist on Proxmox.
+		Long: `With no arguments, shows the platform and everything on it: which
+base-service LXCs exist on Proxmox, every platform endpoint (on the LAN
+and public) and where the logins are, then every project environment of
+the GitOps repo - per service its version, what Komodo runs, and its LAN
+and public addresses.
 
 With an environment argument (staging or prod), shows, for each service
 declared in urbex.yaml, whether urbex plan/apply has allocated it a
-VMID/IP and whether its LXC currently exists on Proxmox.
+VMID/IP, whether its LXC currently exists on Proxmox, the version the
+GitOps repo sets for it, and what Komodo reports it is running.
 
-DNS records, TLS certificates, and the latest deployed release are not
-tracked yet - see docs/architecture.md in urbforge/urbex.`,
+A version is a release (1.4.2) or a commit of main (a1b2c3d);
+"(follows-main)" marks an environment that every push to main moves.
+
+DNS records and TLS certificates are not tracked yet. See
+docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -58,12 +68,15 @@ tracked yet - see docs/architecture.md in urbforge/urbex.`,
 			if creds.ProxmoxToken == "" {
 				return fmt.Errorf("URBEX_PROXMOX_TOKEN (or proxmoxToken in ~/.urbex/credentials.yaml) is required")
 			}
-			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken)
+			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 			if len(args) == 0 {
-				return runBaseStatus(cmd, out, client, cfg)
+				if err := runBaseStatus(cmd, out, client, cfg); err != nil {
+					return err
+				}
+				return printProjects(cmd.Context(), out, cfg, creds, repoPath)
 			}
-			return runProjectStatus(cmd, out, client, cfg, repoPath, manifestPath, args[0])
+			return runProjectStatus(cmd, out, client, cfg, creds, repoPath, manifestPath, args[0])
 		},
 	}
 
@@ -74,7 +87,7 @@ tracked yet - see docs/architecture.md in urbforge/urbex.`,
 }
 
 func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config) error {
-	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node)
+	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node, bootstrap.BaseServicesFor(cfg))
 	if err != nil {
 		return fmt.Errorf("checking Proxmox: %w", err)
 	}
@@ -83,13 +96,30 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 	for _, s := range statuses {
 		fmt.Fprintf(out, "  %-24s %s\n", s.Hostname, presence(s.Present))
 	}
+
+	endpoints, err := bootstrap.PlatformEndpoints(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "\nEndpoints:")
+	for _, e := range endpoints {
+		fmt.Fprintf(out, "  %-28s %-38s %s", e.Name, e.LAN, e.Public)
+		if e.Note != "" {
+			fmt.Fprintf(out, "  (%s)", e.Note)
+		}
+		fmt.Fprintln(out)
+	}
+	path, _ := credentials.DefaultPath()
+	fmt.Fprintf(out, "\nLogins: Gitea and Komodo urbex-admin, Grafana admin, Keycloak admin; passwords in %s\n", path)
+	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword).")
 	return nil
 }
 
-func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, repoPath, manifestPath, env string) error {
+func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) error {
 	if !provision.ValidEnvs[env] {
 		return fmt.Errorf("invalid environment %q: must be one of staging, prod", env)
 	}
+	refreshForStatus(cmd.Context(), out, cfg, creds, repoPath)
 
 	m, result, err := manifest.LoadTyped(manifestPath)
 	if err != nil {
@@ -114,12 +144,76 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		return fmt.Errorf("checking Proxmox: %w", err)
 	}
 
+	// What the GitOps repo asks for and what Komodo runs, when this
+	// machine has been bootstrapped.
+	deployed := map[string]rollout.Deployed{}
+	if len(creds.MissingForPlatform()) == 0 {
+		ep, err := bootstrap.EndpointsFor(cfg)
+		if err != nil {
+			return err
+		}
+		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
+		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
+		if err != nil {
+			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
+		}
+		for _, d := range list {
+			deployed[d.Service] = d
+		}
+	}
+
 	fmt.Fprintf(out, "%s (%s):\n", m.Project, env)
 	for _, s := range statuses {
-		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%s\n",
+		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%-3s",
 			s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
+		if d, ok := deployed[s.Service]; ok {
+			want := d.Want
+			if want == "" {
+				want = "none"
+			}
+			if d.Track {
+				want += "(follows-main)"
+			}
+			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
+			if d.Image != "" {
+				fmt.Fprintf(out, " image=%s", d.Image)
+			}
+		}
+		fmt.Fprintln(out)
 	}
-	fmt.Fprintln(out, "\nDNS, TLS certificates, and the latest deployed release are not tracked yet.")
+	for _, svc := range m.Deployables() {
+		if !svc.IsWeb() {
+			continue
+		}
+		// No LXC: its Stack runs on the builder and deploys to a Worker.
+		fmt.Fprintf(out, "  %-16s %-32s", svc.Name, rollout.WorkerName(m.Project, env))
+		if d, ok := deployed[svc.Name]; ok {
+			want := d.Want
+			if want == "" {
+				want = "none"
+			}
+			if d.Track {
+				want += "(follows-main)"
+			}
+			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
+		}
+		fmt.Fprintln(out)
+	}
+	// Where each service is reached: its LXC on the LAN and, if it is
+	// public or a web frontend, its HTTPS address.
+	o := &provision.Orchestrator{Manifest: m, Config: cfg}
+	fmt.Fprintln(out, "\nEndpoints:")
+	for _, svc := range m.Deployables() {
+		lan := "-"
+		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
+			lan = fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+		}
+		public := ""
+		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
+			public = "https://" + host
+		}
+		fmt.Fprintf(out, "  %-16s %-28s %s\n", svc.Name, lan, public)
+	}
 	return nil
 }
 

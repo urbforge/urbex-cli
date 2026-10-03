@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
@@ -25,6 +30,14 @@ func (f *fakeRunner) Run(ctx context.Context, c runner.Command) error {
 	return f.err
 }
 
+// runnerFunc runs a function for each command, and succeeds.
+type runnerFunc func(runner.Command)
+
+func (f runnerFunc) Run(_ context.Context, c runner.Command) error {
+	f(c)
+	return nil
+}
+
 func validPlatformConfig() *platform.Config {
 	return &platform.Config{
 		Domain: "example.com",
@@ -33,7 +46,7 @@ func validPlatformConfig() *platform.Config {
 			APIURL:       "https://proxmox.example.internal:8006/api2/json",
 			Node:         "pve",
 			StoragePool:  "local-lvm",
-			LXCTemplate:  "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst",
+			LXCTemplate:  "local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst",
 			SSHPublicKey: "ssh-ed25519 AAAA... test",
 			VMIDBase:     9000,
 			Network: platform.NetworkConfig{
@@ -56,7 +69,145 @@ func validManifest() *manifest.Manifest {
 }
 
 func validCredentials() *credentials.Credentials {
-	return &credentials.Credentials{ProxmoxToken: "pve-token", AgeKey: "age-key"}
+	return &credentials.Credentials{
+		ProxmoxToken:        "pve-token",
+		AgeKey:              "AGE-SECRET-KEY-13E9XGFYJN5M6PKTQJFHSXX3MCEZS9XT2EA88VFZ3Z3RFA3VHXGGQ6LS0RC",
+		GiteaToken:          "gitea-token",
+		KomodoAPIKey:        "K_key_K",
+		KomodoAPISecret:     "S_secret_S",
+		KomodoOnboardingKey: "O_onboard_O",
+		KomodoWebhookSecret: "hook-secret",
+	}
+}
+
+// fakeRollout stands in for internal/rollout: it writes the environment
+// folders like the real one, and "runs" whatever the GitOps repo asks.
+type fakeRollout struct {
+	projects, envSetups, deploys int
+	reconciles                   int
+	missing                      []string // images MissingImages reports
+	waitErr                      error
+	removedEnvs                  []rollout.Target
+	serversRemoved               int
+	projectsRemoved              []string
+	mainBuilds                   int
+	// mainVersion is what a build of main sets following environments to.
+	mainVersion string
+	releases    []gitea.Tag
+	repo        *envrepo.Repo
+	services    []manifest.Service
+}
+
+func (f *fakeRollout) SetupProject(ctx context.Context, project string, services []manifest.Service) error {
+	f.projects++
+	return nil
+}
+
+func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
+	for _, svc := range t.Services {
+		if err := repo.WriteService(t.Env, t.Project, svc, "192.168.1.200:3000/urbex/"+t.Project+"-"+svc.Name, rollout.FollowsMainByDefault(t.Env)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeRollout) SetupEnv(ctx context.Context, t rollout.Target, repo envrepo.Repo) error {
+	f.envSetups++
+	f.repo, f.services = &repo, t.Services
+	return f.WriteEnv(t, repo)
+}
+
+func (f *fakeRollout) MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error) {
+	return f.missing, nil
+}
+
+func (f *fakeRollout) Deploy(ctx context.Context, t rollout.Target) error {
+	f.deploys++
+	return nil
+}
+
+// BuildMain stands in for the release Action: it sets every following
+// environment of the last target seen to mainVersion.
+func (f *fakeRollout) BuildMain(ctx context.Context, project string) error {
+	f.mainBuilds++
+	if f.repo == nil {
+		return nil
+	}
+	for _, env := range []string{"staging", "prod"} {
+		for _, svc := range f.services {
+			st, _ := f.repo.Version(env, project, svc.Name)
+			if st.Track {
+				f.repo.SetVersion(env, project, svc.Name, envrepo.VersionFileState{Version: f.mainVersion, Track: true})
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeRollout) Releases(ctx context.Context, project string) ([]gitea.Tag, error) {
+	return f.releases, nil
+}
+
+func (f *fakeRollout) Reconcile(ctx context.Context) error {
+	f.reconciles++
+	return nil
+}
+
+func (f *fakeRollout) WaitDeployed(ctx context.Context, t rollout.Target, repo envrepo.Repo) ([]rollout.Deployed, error) {
+	if f.waitErr != nil {
+		return nil, f.waitErr
+	}
+	var deployed []rollout.Deployed
+	for _, svc := range t.Services {
+		st, err := repo.Version(t.Env, t.Project, svc.Name)
+		if err != nil {
+			return nil, err
+		}
+		want := st.Version
+		deployed = append(deployed, rollout.Deployed{
+			Service: svc.Name,
+			Want:    want,
+			Track:   st.Track,
+			State:   "running",
+			Image:   "192.168.1.200:3000/urbex/" + t.Project + "-" + svc.Name + ":" + want,
+		})
+	}
+	return deployed, nil
+}
+
+func (f *fakeRollout) RemoveEnv(ctx context.Context, t rollout.Target) error {
+	f.removedEnvs = append(f.removedEnvs, t)
+	return nil
+}
+
+func (f *fakeRollout) RemoveServers(ctx context.Context, t rollout.Target) error {
+	f.serversRemoved++
+	return nil
+}
+
+func (f *fakeRollout) RemoveProject(ctx context.Context, project string, services []manifest.Service) error {
+	f.projectsRemoved = append(f.projectsRemoved, project)
+	return nil
+}
+
+// newOrchestrator returns an Orchestrator on fakes, recording what it
+// syncs to the GitOps repo.
+func newOrchestrator(m *manifest.Manifest) (o *Orchestrator, r *fakeRunner, ro *fakeRollout, out *bytes.Buffer, synced *[]string) {
+	r, ro, out, synced = &fakeRunner{}, &fakeRollout{}, &bytes.Buffer{}, &[]string{}
+	o = &Orchestrator{
+		Manifest:    m,
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      r,
+		Out:         out,
+		Rollout:     ro,
+		SyncGitOps: func(ctx context.Context, path, message string) error {
+			*synced = append(*synced, message)
+			return nil
+		},
+	}
+	return o, r, ro, out, synced
 }
 
 func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
@@ -69,6 +220,7 @@ func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	if err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -85,7 +237,6 @@ func TestPlan_RunsTerraformInitAndPlanOnly(t *testing.T) {
 	for _, want := range []string{
 		"terraform/projects/my-app/staging/main.tf",
 		"terraform/projects/my-app/staging/terraform.auto.tfvars.json",
-		"ansible/projects/my-app/staging/inventory.yml",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
 			t.Errorf("expected %s to be materialized: %v", want, err)
@@ -103,6 +254,7 @@ func TestApply_RunsTerraformThenAnsible(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -127,6 +279,7 @@ func TestPrepare_AllocatesAndPersistsIPsAndVMIDs(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	if err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -187,6 +340,7 @@ func TestPlan_InvalidEnv(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "development", GitOpsRepoPath: dir})
@@ -211,6 +365,7 @@ func TestPlan_NoServices(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -229,6 +384,7 @@ func TestDeploy_RequiresPriorApply(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -240,33 +396,156 @@ func TestDeploy_RequiresPriorApply(t *testing.T) {
 	}
 }
 
-func TestDeploy_RunsAnsibleOnlyAfterApply(t *testing.T) {
+func TestDeploy_SetsTheVersionInTheGitOpsRepoAndWaits(t *testing.T) {
 	dir := t.TempDir()
-
-	o := &Orchestrator{
-		Manifest:    validManifest(),
-		Config:      validPlatformConfig(),
-		Credentials: validCredentials(),
-		Runner:      &fakeRunner{},
-		Out:         &bytes.Buffer{},
-	}
-
+	o, r, ro, out, synced := newOrchestrator(validManifest())
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
+	r.calls, ro.envSetups, *synced = nil, 0, nil
 
-	deployRunner := &fakeRunner{}
-	o.Runner = deployRunner
-
-	if err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+	if err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"}); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
 
-	if len(deployRunner.calls) != 1 {
-		t.Fatalf("expected exactly 1 command (ansible-playbook, no terraform), got %d: %+v", len(deployRunner.calls), deployRunner.calls)
+	if len(r.calls) != 0 {
+		t.Fatalf("expected deploy to run no terraform/ansible at all, got %+v", r.calls)
 	}
-	if deployRunner.calls[0].Name != "ansible-playbook" {
-		t.Errorf("expected ansible-playbook, got %s", deployRunner.calls[0].Name)
+	version, err := os.ReadFile(filepath.Join(dir, "environments", "staging", "my-app", "api", "version.env"))
+	if err != nil || !strings.Contains(string(version), "VERSION=1.4.2\n") {
+		t.Errorf("expected the version written to the gitops repo (%v):\n%s", err, version)
+	}
+	if len(*synced) != 1 || (*synced)[0] != "urbex deploy 1.4.2 to my-app staging" {
+		t.Errorf("expected exactly one push of the gitops repo, got %v", *synced)
+	}
+	// Deploying is a commit: touching the Stacks or telling Komodo to
+	// deploy would bypass - and race with - the GitOps path.
+	if ro.envSetups != 0 || ro.deploys != 0 {
+		t.Errorf("deploy must not re-declare stacks or deploy explicitly, got setups=%d deploys=%d", ro.envSetups, ro.deploys)
+	}
+	if !strings.Contains(out.String(), "http://192.168.1.210:8080  1.4.2 (192.168.1.200:3000/urbex/my-app-api:1.4.2)") {
+		t.Errorf("expected the deployed service in the output:\n%s", out)
+	}
+	// Staging followed main; deploying a version pins it, and says so.
+	if st, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api"); st.Track {
+		t.Errorf("deploying a version must stop following main, got %+v", st)
+	}
+	if !strings.Contains(out.String(), "no longer follows main") {
+		t.Errorf("expected a note that staging stopped following main:\n%s", out)
+	}
+}
+
+func TestDeploy_RefusesAVersionThatWasNotBuilt(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, _, synced := newOrchestrator(validManifest())
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	*synced = nil
+	ro.missing = []string{"api"}
+
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: "9.9.9"})
+	if err == nil || !strings.Contains(err.Error(), "9.9.9 has no image for [api]") {
+		t.Fatalf("expected a missing image error, got %v", err)
+	}
+	if len(*synced) != 0 {
+		t.Errorf("nothing must be pushed for a version that doesn't exist, got %v", *synced)
+	}
+	for _, bad := range []string{"", "v1.4.2", "1.4", "latest", "abc12", "ABC1234", "g123456"} {
+		if err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: bad}); err == nil || !strings.Contains(err.Error(), "invalid version") {
+			t.Errorf("Deploy(%q): expected an invalid version error, got %v", bad, err)
+		}
+	}
+}
+
+func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, synced := newOrchestrator(validManifest())
+	ctx := context.Background()
+
+	if _, err := o.Promote(ctx, dir); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
+		t.Fatalf("expected promote before any apply to say so, got %v", err)
+	}
+	ro.mainVersion = "a1b2c3d"
+	for _, env := range []string{"staging", "prod"} {
+		if err := o.Apply(ctx, Options{Env: env, GitOpsRepoPath: dir}); err != nil {
+			t.Fatalf("Apply %s: %v", env, err)
+		}
+	}
+
+	// Staging runs a commit of main that was never released.
+	_, err := o.Promote(ctx, dir)
+	if err == nil || !strings.Contains(err.Error(), "commit a1b2c3d, which is not a release") {
+		t.Fatalf("expected promote of an unreleased commit to point at urbex release, got %v", err)
+	}
+
+	// Once released, promote finds the release by its commit.
+	ro.releases = []gitea.Tag{
+		{Name: "v1.4.1", Commit: "0000000000000000000000000000000000000000"},
+		{Name: "v1.4.2", Commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
+	}
+	*synced = nil
+	changed, err := o.Promote(ctx, dir)
+	if err != nil || !changed {
+		t.Fatalf("Promote = %v, %v; want a change", changed, err)
+	}
+	prod, _ := (envrepo.Repo{Path: dir}).Version("prod", "my-app", "api")
+	if prod != (envrepo.VersionFileState{Version: "1.4.2"}) {
+		t.Errorf("expected prod pinned to release 1.4.2, got %+v", prod)
+	}
+	if staging, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api"); !staging.Track {
+		t.Error("promoting must leave staging following main")
+	}
+	if len(*synced) != 1 || (*synced)[0] != "urbex promote staging to my-app prod" {
+		t.Errorf("unexpected gitops syncs %v", *synced)
+	}
+	if !strings.Contains(out.String(), "api: none -> 1.4.2") {
+		t.Errorf("expected the version change in the output:\n%s", out)
+	}
+
+	*synced = nil
+	changed, err = o.Promote(ctx, dir)
+	if err != nil || changed || len(*synced) != 0 {
+		t.Errorf("a second promote must change and push nothing, got changed=%v err=%v synced=%v", changed, err, *synced)
+	}
+}
+
+func TestDeploy_FollowMainResumesTracking(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ctx := context.Background()
+	ro.mainVersion = "a1b2c3d"
+	if err := o.Apply(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	ro.mainVersion, ro.mainBuilds = "f00ba47", 0
+	out.Reset()
+
+	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, FollowMain: true}); err != nil {
+		t.Fatalf("Deploy --follow-main: %v", err)
+	}
+	st, _ := (envrepo.Repo{Path: dir}).Version("staging", "my-app", "api")
+	if st != (envrepo.VersionFileState{Version: "f00ba47", Track: true}) || ro.mainBuilds != 1 {
+		t.Errorf("expected staging to follow main again and run main's head, got %+v after %d builds", st, ro.mainBuilds)
+	}
+	if !strings.Contains(out.String(), "staging follows main") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+}
+
+func TestValidVersion(t *testing.T) {
+	for _, ok := range []string{"1.4.2", "0.1.0", "a1b2c3d", "a1b2c3d4e5f6"} {
+		if !ValidVersion(ok) {
+			t.Errorf("ValidVersion(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"", "v1.4.2", "1.4", "a1b2c3", "a1b2c3d4e5f60", "main"} {
+		if ValidVersion(bad) {
+			t.Errorf("ValidVersion(%q) = true", bad)
+		}
 	}
 }
 
@@ -282,6 +561,7 @@ func TestDeploy_PartiallyProvisionedFailsListingAllMissing(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      &fakeRunner{},
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	// Provision only the first service via Plan+manual ledger write is
@@ -314,6 +594,7 @@ func TestDestroy_NothingAppliedIsANoOp(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -333,6 +614,7 @@ func TestDestroy_RunsTerraformDestroyAndClearsLedger(t *testing.T) {
 		Credentials: validCredentials(),
 		Runner:      &fakeRunner{},
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
@@ -381,6 +663,7 @@ func TestDestroy_MissingCredentials(t *testing.T) {
 		Credentials: &credentials.Credentials{},
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -402,6 +685,7 @@ func TestPlan_MissingCredentials(t *testing.T) {
 		Credentials: &credentials.Credentials{},
 		Runner:      r,
 		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
 	}
 
 	err := o.Plan(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir})
@@ -410,5 +694,237 @@ func TestPlan_MissingCredentials(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("expected no commands run for missing credentials, got: %+v", r.calls)
+	}
+}
+
+func TestApply_SetsUpProjectAndAnEmptyProdEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	o, r, ro, out, synced := newOrchestrator(validManifest())
+
+	if err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if ro.projects != 1 || ro.envSetups != 1 {
+		t.Errorf("expected the project and the environment to be set up once, got %d/%d", ro.projects, ro.envSetups)
+	}
+	inventory, err := os.ReadFile(filepath.Join(dir, "ansible", "projects", "my-app", "prod", "inventory.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"gitea_registry: 192.168.1.200:3000",
+		"komodo_core_address: http://192.168.1.201:9120",
+		"komodo_version: 2.2.0",
+		"ansible_host: 192.168.1.210",
+	} {
+		if !strings.Contains(string(inventory), want) {
+			t.Errorf("expected %q in inventory:\n%s", want, inventory)
+		}
+	}
+	if strings.Contains(string(inventory), "O_onboard_O") || strings.Contains(string(inventory), "AGE-SECRET-KEY") {
+		t.Errorf("the inventory must hold no secrets:\n%s", inventory)
+	}
+	ansible := r.calls[len(r.calls)-1]
+	env := strings.Join(ansible.Env, " ")
+	if ansible.Name != "ansible-playbook" || len(ansible.Env) != 2 ||
+		!strings.Contains(env, "URBEX_KOMODO_ONBOARDING_KEY=O_onboard_O") || !strings.Contains(env, "URBEX_AGE_KEY=AGE-SECRET-KEY-") {
+		t.Errorf("expected ansible last, with only the onboarding and age keys in its env, got %s %d vars", ansible.Name, len(ansible.Env))
+	}
+	for _, f := range []string{"compose.yaml", "config.env", "secrets.sops.env"} {
+		if _, err := os.Stat(filepath.Join(dir, "environments", "prod", "my-app", "api", f)); err != nil {
+			t.Errorf("expected %s in the environment's folder: %v", f, err)
+		}
+	}
+	if len(*synced) != 1 || (*synced)[0] != "urbex apply my-app prod" {
+		t.Errorf("unexpected gitops syncs %v", *synced)
+	}
+	// A new environment has no version: nothing to deploy, and apply says
+	// how to get there.
+	if ro.deploys != 0 {
+		t.Errorf("an environment without a version must not be deployed, got %d deploys", ro.deploys)
+	}
+	for _, want := range []string{"no version to run yet", "http://192.168.1.210:8080", "urbex release", "urbex promote"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestApply_StagingFollowsMainAndRunsItsHead(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ro.mainVersion = "a1b2c3d"
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if ro.mainBuilds != 1 {
+		t.Errorf("expected apply to build main once for a new staging, got %d", ro.mainBuilds)
+	}
+	for _, want := range []string{"http://192.168.1.210:8080  a1b2c3d", "staging follows main"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestApply_RedeploysAnEnvironmentThatHasAVersion(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ctx := context.Background()
+	if err := o.Apply(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := o.Deploy(ctx, Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	out.Reset()
+
+	// E.g. onto a recreated LXC: nothing changes in the repo, so Komodo
+	// has to be told.
+	if err := o.Apply(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	if ro.deploys != 1 {
+		t.Errorf("expected re-apply to deploy explicitly once, got %d", ro.deploys)
+	}
+	if !strings.Contains(out.String(), "1.4.2 (192.168.1.200:3000/urbex/my-app-api:1.4.2)") {
+		t.Errorf("expected the running version in the output:\n%s", out)
+	}
+}
+
+func TestDeploy_FailureToConvergeIsReported(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, _, synced := newOrchestrator(validManifest())
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	*synced = nil
+	ro.waitErr = errors.New("my-app (staging) did not converge: api (want 1.4.2, unhealthy)")
+
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"})
+	if err == nil || !strings.Contains(err.Error(), "did not converge") {
+		t.Fatalf("expected the convergence failure, got %v", err)
+	}
+	if len(*synced) != 1 {
+		t.Errorf("the version is pushed regardless - the repo is what should run - got %d syncs", len(*synced))
+	}
+}
+
+func TestDeploy_RequiresBootstrappedPlatformCredentials(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _, _, _ := newOrchestrator(validManifest())
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	o.Credentials.KomodoAPIKey = ""
+	err := o.Deploy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir, Version: "1.4.2"})
+	if err == nil || !strings.Contains(err.Error(), "URBEX_KOMODO_API_KEY") {
+		t.Errorf("expected a missing platform credential error, got %v", err)
+	}
+}
+
+func TestDestroy_RemovesStacksFolderServersAndFinallyTheProject(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, _, _ := newOrchestrator(validManifest())
+	ctx := context.Background()
+	for _, env := range []string{"staging", "prod"} {
+		if err := o.Apply(ctx, Options{Env: env, GitOpsRepoPath: dir}); err != nil {
+			t.Fatalf("Apply %s: %v", env, err)
+		}
+	}
+
+	if err := o.Destroy(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if len(ro.removedEnvs) != 1 || ro.removedEnvs[0].Env != "staging" || ro.serversRemoved != 1 {
+		t.Errorf("expected staging's stacks and servers to be removed, got %+v / %d", ro.removedEnvs, ro.serversRemoved)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "environments", "staging", "my-app")); !os.IsNotExist(err) {
+		t.Errorf("expected staging's folder to be deleted from the gitops repo, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "environments", "prod", "my-app", "api", "compose.yaml")); err != nil {
+		t.Errorf("prod's folder must be untouched: %v", err)
+	}
+	if len(ro.projectsRemoved) != 0 {
+		t.Errorf("the project's builds must stay while prod exists, got %v", ro.projectsRemoved)
+	}
+
+	if err := o.Destroy(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy prod: %v", err)
+	}
+	if len(ro.projectsRemoved) != 1 || ro.projectsRemoved[0] != "my-app" {
+		t.Errorf("expected the project's builds to go with its last environment, got %v", ro.projectsRemoved)
+	}
+}
+
+func TestPublish_PushesAndReconciles(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, _, synced := newOrchestrator(validManifest())
+	opts := Options{Env: "staging", GitOpsRepoPath: dir}
+
+	if err := o.Publish(context.Background(), opts, "set secret X of api in"); err == nil {
+		t.Fatal("expected publishing to an environment that was never applied to fail")
+	}
+	if err := o.Apply(context.Background(), opts); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	*synced = nil
+	if err := o.Publish(context.Background(), opts, "set secret X of api in"); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(*synced) != 1 || (*synced)[0] != "urbex set secret X of api in my-app staging" || ro.reconciles != 1 {
+		t.Errorf("expected one push and one reconcile, got %v / %d", *synced, ro.reconciles)
+	}
+}
+
+// Destroy works from what Gitea has, removes the environment's folder
+// only after terraform destroy - right before committing, so a release
+// Action updating it meanwhile can't conflict - and leaves nothing of the
+// environment behind in the GitOps repo.
+func TestDestroy_RefreshesAndLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	o := &Orchestrator{
+		Manifest:    validManifest(),
+		Config:      validPlatformConfig(),
+		Credentials: validCredentials(),
+		Runner:      &fakeRunner{},
+		Out:         &bytes.Buffer{},
+		Rollout:     &fakeRollout{},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	folder := filepath.Join(dir, "environments", "staging", "my-app")
+	refreshes := 0
+	o.RefreshGitOps = func(context.Context, string) error { refreshes++; return nil }
+	folderAtTerraformDestroy := false
+	o.Runner = runnerFunc(func(cmd runner.Command) {
+		if len(cmd.Args) > 0 && cmd.Args[0] == "destroy" {
+			_, err := os.Stat(folder)
+			folderAtTerraformDestroy = err == nil
+		}
+	})
+	if err := o.Destroy(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	if refreshes < 2 {
+		t.Errorf("expected the gitops repo to be refreshed before reading it and before removing the folder, got %d refreshes", refreshes)
+	}
+	if !folderAtTerraformDestroy {
+		t.Error("the environment's folder should still exist while terraform destroys the LXCs")
+	}
+	for _, gone := range []string{
+		folder,
+		filepath.Join(dir, "terraform", "projects", "my-app"),
+		filepath.Join(dir, "ansible", "projects", "my-app"),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s should be gone after destroying the project's only environment", gone)
+		}
 	}
 }

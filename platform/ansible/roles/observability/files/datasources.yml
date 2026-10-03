@@ -1,0 +1,14 @@
+# Managed by urbex bootstrap (role observability).
+apiVersion: 1
+datasources:
+  - name: Loki
+    uid: urbex-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+  - name: Prometheus
+    uid: urbex-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

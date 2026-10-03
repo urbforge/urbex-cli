@@ -1,16 +1,25 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/cloudflare"
+	"github.com/urbforge/urbex-cli/internal/keycloak"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
+	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
@@ -26,14 +35,27 @@ func resolveGitOpsRepoPath(flagValue string) (string, error) {
 	return "", fmt.Errorf("--gitops-repo (or URBEX_GITOPS_REPO) is required")
 }
 
-// newProvisionOrchestrator loads and validates everything urbex
-// plan/apply/deploy need: the local app manifest and the platform config
-// from an already-bootstrapped GitOps repo, plus credentials when
-// requireCreds is true (plan/apply need the Proxmox token for Terraform;
-// deploy only runs Ansible over SSH and needs none). It writes validation
-// errors to out itself (mirroring `urbex init`'s behavior) before
-// returning a plain error.
-func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath string, requireCreds bool) (*provision.Orchestrator, error) {
+// project is everything a command acting on one project needs: the
+// orchestrator, and the rollout driver behind it for what only the CLI
+// does with it (releases, status).
+type project struct {
+	*provision.Orchestrator
+	rollout *rollout.Rollout
+	creds   *credentials.Credentials
+}
+
+// newProvisionOrchestrator loads and validates everything a project
+// command needs: the local app manifest and the platform config from an
+// already-bootstrapped GitOps repo, plus credentials when requireCreds is
+// true (plan/apply/destroy need the Proxmox token for Terraform; the
+// others only talk to Gitea and Komodo). It writes validation errors to
+// out itself (mirroring `urbex init`'s behavior) before returning a plain
+// error.
+//
+// repoDir is the app repo's working copy, used by apply only to create
+// the project's main branch on Gitea when it doesn't exist yet; the
+// other commands pass "".
+func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, repoDir string, requireCreds bool) (*project, error) {
 	out := cmd.OutOrStdout()
 
 	m, result, err := manifest.LoadTyped(manifestPath)
@@ -78,11 +100,48 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath s
 		}
 	}
 
-	return &provision.Orchestrator{
+	ep, err := bootstrap.EndpointsFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	o := &provision.Orchestrator{
 		Manifest:    m,
 		Config:      cfg,
 		Credentials: creds,
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
+		Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
 		Out:         out,
-	}, nil
+		SyncGitOps: func(ctx context.Context, path, message string) error {
+			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
+		},
+		RefreshGitOps: func(ctx context.Context, path string) error {
+			return bootstrap.PullRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken)
+		},
+	}
+	ro := newRollout(cfg, creds, ep, repoDir, out)
+	o.Rollout = ro
+	o.KeycloakURL = ep.KeycloakURL
+	if creds.KeycloakAdminPassword != "" {
+		o.Keycloak = keycloak.New(ep.KeycloakURL, "admin", creds.KeycloakAdminPassword)
+	}
+	if cfg.Cloudflare.Enabled() && creds.CloudflareToken != "" {
+		o.Cloudflare = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)
+	}
+	return &project{Orchestrator: o, rollout: ro, creds: creds}, nil
+}
+
+// newRollout builds the Gitea+Komodo rollout driver for an already
+// bootstrapped platform.
+func newRollout(cfg *platform.Config, creds *credentials.Credentials, ep bootstrap.Endpoints, repoDir string, out io.Writer) *rollout.Rollout {
+	return &rollout.Rollout{
+		Gitea:         gitea.New(ep.GiteaURL, creds.GiteaToken),
+		Komodo:        komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
+		Git:           rollout.GitCLI{},
+		Endpoints:     ep,
+		Org:           cfg.Git.Org,
+		Token:         creds.GiteaToken,
+		WebhookSecret: creds.KomodoWebhookSecret,
+		RepoDir:       repoDir,
+		Out:           out,
+	}
 }

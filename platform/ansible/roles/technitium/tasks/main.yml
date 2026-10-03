@@ -10,4 +10,8 @@
   command: docker compose up -d
   args:
     chdir: /opt/urbex
-  when: compose_file.changed
+  register: compose_up
+  # Always run: a failure after templating must not leave the service
+  # down on the next run. up is a no-op when nothing changed, and pulls
+  # images that aren't present yet (e.g. a newly deployed tag).
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

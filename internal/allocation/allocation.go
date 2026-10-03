@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 )
@@ -100,4 +101,14 @@ func (l *Ledger) Save(path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// Hostnames returns the hostnames with an allocation, sorted.
+func (l *Ledger) Hostnames() []string {
+	names := make([]string, 0, len(l.Entries))
+	for h := range l.Entries {
+		names = append(names, h)
+	}
+	sort.Strings(names)
+	return names
 }

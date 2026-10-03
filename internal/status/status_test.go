@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"path/filepath"
 	"testing"
 
@@ -20,7 +21,7 @@ func (f *fakeProxmox) ListContainerHostnames(ctx context.Context, node string) (
 func TestBase_ReportsPresenceOfEachBaseService(t *testing.T) {
 	proxmox := &fakeProxmox{hostnames: []string{"urbex-gitea", "urbex-keycloak"}}
 
-	statuses, err := Base(context.Background(), proxmox, "pve")
+	statuses, err := Base(context.Background(), proxmox, "pve", bootstrap.BaseServices)
 	if err != nil {
 		t.Fatalf("Base: %v", err)
 	}

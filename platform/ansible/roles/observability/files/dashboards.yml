@@ -1,0 +1,10 @@
+# Managed by urbex bootstrap (role observability).
+apiVersion: 1
+providers:
+  - name: urbex
+    folder: Urbex
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
