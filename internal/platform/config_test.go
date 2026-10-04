@@ -115,3 +115,21 @@ func TestCloudflareValidation(t *testing.T) {
 		t.Errorf("expected only the hostnames error, got %v", errs)
 	}
 }
+
+func TestQuickTunnelValidation(t *testing.T) {
+	base := func() *Config {
+		c := &Config{Domain: "d", Git: GitConfig{GiteaURL: "g"}}
+		c.Proxmox = ProxmoxConfig{APIURL: "a", Node: "n", LXCTemplate: "t", SSHPublicKey: "k", Network: NetworkConfig{CIDR: "c", Gateway: "g"}}
+		return c
+	}
+	c := base()
+	c.Cloudflare.QuickTunnel = true
+	if errs := c.Validate(); len(errs) != 0 {
+		t.Errorf("quickTunnel alone must be valid: %v", errs)
+	}
+	c.Cloudflare.AccountID, c.Cloudflare.ZoneID = "a", "z"
+	c.Cloudflare.Access.Emails = []string{"me@example.com"}
+	if errs := c.Validate(); len(errs) == 0 {
+		t.Error("quickTunnel together with accountId/zoneId must be refused")
+	}
+}

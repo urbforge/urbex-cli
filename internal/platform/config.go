@@ -46,6 +46,16 @@ type CloudflareConfig struct {
 	Hostnames string `yaml:"hostnames,omitempty"`
 	// Access lists who may reach the protected platform services.
 	Access AccessConfig `yaml:"access,omitempty"`
+	// QuickTunnel starts a Cloudflare Quick Tunnel (cloudflared tunnel
+	// --url, no account, domain or token needed) on the LXC of every
+	// manifest service marked public: true, instead of routing it
+	// through AccountID/ZoneID's named tunnel. A stand-in for when
+	// Cloudflare isn't configured yet, not a production substitute: the
+	// hostname is random and changes on every restart, the tunnel
+	// doesn't always recover from a network interruption, and there is
+	// no authentication in front of the service. See
+	// docs/decisions/0025-cloudflare-quick-tunnel.md in urbforge/urbex.
+	QuickTunnel bool `yaml:"quickTunnel,omitempty"`
 }
 
 // AccessConfig is who Cloudflare Access lets through to Gitea and Komodo.
@@ -199,6 +209,9 @@ func (c *Config) Validate() []string {
 	}
 	if cf.Enabled() && len(cf.Access.Emails) == 0 {
 		errs = append(errs, "cloudflare.access.emails is required: who may reach Gitea and Komodo through Cloudflare Access")
+	}
+	if cf.QuickTunnel && cf.Enabled() {
+		errs = append(errs, "cloudflare.quickTunnel and cloudflare.accountId/zoneId are alternatives: set one, not both")
 	}
 
 	return errs

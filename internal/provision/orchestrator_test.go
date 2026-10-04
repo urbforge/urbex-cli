@@ -794,6 +794,45 @@ func TestApply_RedeploysAnEnvironmentThatHasAVersion(t *testing.T) {
 	}
 }
 
+func TestApply_PublicServiceReportsQuickTunnelURL(t *testing.T) {
+	dir := t.TempDir()
+	m := validManifest()
+	m.Services[0].Public = true
+	o, _, _, out, _ := newOrchestrator(m)
+	o.Config.Cloudflare.QuickTunnel = true
+	o.QuickTunnel = func(ctx context.Context, ip string) (string, error) {
+		if ip != "192.168.1.210" {
+			t.Errorf("expected to look up the service's own IP, got %q", ip)
+		}
+		return "https://random-words.trycloudflare.com", nil
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !strings.Contains(out.String(), "https://random-words.trycloudflare.com") {
+		t.Errorf("expected the quick tunnel URL in the output:\n%s", out)
+	}
+}
+
+func TestApply_QuickTunnelNotReadyIsReportedNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	m := validManifest()
+	m.Services[0].Public = true
+	o, _, _, out, _ := newOrchestrator(m)
+	o.Config.Cloudflare.QuickTunnel = true
+	o.QuickTunnel = func(ctx context.Context, ip string) (string, error) {
+		return "", errors.New("connection refused")
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("a quick tunnel not answering yet must not fail Apply: %v", err)
+	}
+	if !strings.Contains(out.String(), "quick tunnel not ready") {
+		t.Errorf("expected a quick tunnel warning in the output:\n%s", out)
+	}
+}
+
 func TestDeploy_FailureToConvergeIsReported(t *testing.T) {
 	dir := t.TempDir()
 	o, _, ro, _, synced := newOrchestrator(validManifest())

@@ -1,0 +1,25 @@
+---
+# Exposes this service on the internet via a Cloudflare Quick Tunnel
+# (cloudflared tunnel --url): no Cloudflare account, domain or token
+# needed, unlike the platform's named tunnel (role cloudflared). Only
+# runs on the public_service group, which urbex apply populates from
+# the manifest's public: true services when cloudflare.quickTunnel is
+# set and no Cloudflare account is configured. See
+# docs/decisions/0025-cloudflare-quick-tunnel.md in urbforge/urbex.
+#
+# This is a stand-in, not a substitute for a real Cloudflare account in
+# production: the hostname is random and changes on every restart, the
+# tunnel doesn't always recover from a network interruption, and there
+# is no authentication in front of the service.
+- name: Template the quick tunnel's docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/urbex/quicktunnel-compose.yml
+    mode: "0640"
+
+- name: Start the quick tunnel via docker compose
+  command: docker compose -f quicktunnel-compose.yml up -d
+  args:
+    chdir: /opt/urbex
+  register: compose_up
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"

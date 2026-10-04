@@ -23,3 +23,12 @@
   become: true
   roles:
     - telemetry
+
+# Empty (hence a no-op) unless cloudflare.quickTunnel is set and no
+# Cloudflare account is configured - see
+# docs/decisions/0025-cloudflare-quick-tunnel.md in urbforge/urbex.
+- name: Expose public services via Cloudflare Quick Tunnel
+  hosts: public_service
+  become: true
+  roles:
+    - quicktunnel
