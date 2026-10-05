@@ -271,7 +271,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	if !o.Config.Cloudflare.Enabled() {
+	if !o.Config.Cloudflare.Enabled() && !o.Config.Cloudflare.QuickTunnel {
 		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
 	}
 	return nil
