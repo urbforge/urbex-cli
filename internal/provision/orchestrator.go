@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
@@ -77,7 +78,11 @@ type Orchestrator struct {
 	// Cloudflare publishes public services (manifest public: true) when
 	// the platform has Cloudflare configured; nil disables publishing.
 	Cloudflare CloudflareAPI
-	Out        io.Writer
+	// QuickTunnel looks up a public service's Cloudflare Quick Tunnel
+	// hostname (cloudflare.quickTunnel, ADR-0025); nil disables it, same
+	// as Cloudflare disables the named tunnel.
+	QuickTunnel QuickTunnelLookup
+	Out         io.Writer
 	// Rollout drives Komodo; required by everything but Plan.
 	Rollout Rollouter
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
@@ -181,7 +186,8 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible", "projects", o.Manifest.Project, opts.Env)
-	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep, o.Manifest.ShipsLogs()); err != nil {
+	quickTunnel := o.Config.Cloudflare.QuickTunnel && !o.Config.Cloudflare.Enabled()
+	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep, o.Manifest.ShipsLogs(), quickTunnel); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 	if err := o.runAnsible(ctx, opts); err != nil {
@@ -565,9 +571,26 @@ func (o *Orchestrator) waitAndReport(ctx context.Context, opts Options, allocati
 		fmt.Fprintf(o.Out, "  %-16s %s  %s (%s)\n", svc.Name, o.address(opts.Env, svc, allocations), deployed[i].Want, deployed[i].Image)
 		if host := o.PublicHostname(opts.Env, svc); host != "" && svc.Public {
 			fmt.Fprintf(o.Out, "  %-16s https://%s\n", "", host)
+		} else if o.QuickTunnel != nil && svc.Public && !svc.IsWeb() {
+			o.reportQuickTunnel(ctx, Hostname(o.Manifest.Project, svc.Name, opts.Env), allocations)
 		}
 	}
 	return nil
+}
+
+// reportQuickTunnel prints a public service's Cloudflare Quick Tunnel
+// URL (ADR-0025), or why it couldn't be found - the connector on a
+// freshly started container needs some time to register with
+// Cloudflare's edge, hence the bounded wait.
+func (o *Orchestrator) reportQuickTunnel(ctx context.Context, hostname string, allocations map[string]allocation.Entry) {
+	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	url, err := o.QuickTunnel(qctx, allocations[hostname].IP)
+	if err != nil {
+		fmt.Fprintf(o.Out, "  %-16s (cloudflare quick tunnel not ready: %v)\n", "", err)
+		return
+	}
+	fmt.Fprintf(o.Out, "  %-16s %s (cloudflare quick tunnel: random URL, no authentication, changes on every restart - never a substitute for cloudflare.accountId/zoneId in production, see ADR-0025)\n", "", url)
 }
 
 func (o *Orchestrator) checkPlatform() error {

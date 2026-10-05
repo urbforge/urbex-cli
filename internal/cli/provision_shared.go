@@ -127,6 +127,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	if cfg.Cloudflare.Enabled() && creds.CloudflareToken != "" {
 		o.Cloudflare = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)
 	}
+	if cfg.Cloudflare.QuickTunnel {
+		o.QuickTunnel = provision.QuickTunnelURL
+	}
 	return &project{Orchestrator: o, rollout: ro, creds: creds}, nil
 }
 

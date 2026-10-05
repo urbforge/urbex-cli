@@ -1,0 +1,9 @@
+# Managed by urbex apply (role quicktunnel). Ephemeral: cloudflared is
+# given a new hostname every time this container restarts - see
+# docs/decisions/0025-cloudflare-quick-tunnel.md in urbforge/urbex.
+services:
+  quicktunnel:
+    image: docker.io/cloudflare/cloudflared:2026.9.3
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate --url http://localhost:{{ urbex_app_port }} --metrics 0.0.0.0:49399
