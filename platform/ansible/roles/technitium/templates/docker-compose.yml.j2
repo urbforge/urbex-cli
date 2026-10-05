@@ -6,6 +6,12 @@ services:
     restart: unless-stopped
     environment:
       - DNS_SERVER_DOMAIN={{ inventory_hostname }}
+      # Non-interactive setup: without it the admin account is only
+      # reachable through the first-run web wizard, and urbex bootstrap
+      # can't mint an API token for it. See
+      # docs/decisions/0026-technitium-internal-dns-records.md in
+      # urbforge/urbex.
+      - DNS_SERVER_ADMIN_PASSWORD={{ lookup('env', 'URBEX_TECHNITIUM_ADMIN_PASSWORD') }}
     volumes:
       - technitium-data:/etc/dns
     ports:
