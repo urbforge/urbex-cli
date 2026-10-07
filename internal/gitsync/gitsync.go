@@ -43,10 +43,7 @@ func CommitAll(ctx context.Context, dir, message string) (bool, error) {
 	if _, err := git(ctx, dir, nil, "diff", "--cached", "--quiet"); err == nil {
 		return false, nil
 	}
-	args := []string{"commit", "-q", "-m", message}
-	if email, _ := git(ctx, dir, nil, "config", "user.email"); email == "" {
-		args = append([]string{"-c", "user.name=urbex", "-c", "user.email=urbex@localhost"}, args...)
-	}
+	args := append(identity(ctx, dir), "commit", "-q", "-m", message)
 	if _, err := git(ctx, dir, nil, args...); err != nil {
 		return false, err
 	}
@@ -87,11 +84,28 @@ func Pull(ctx context.Context, dir, remoteURL, token, branch string) error {
 		}
 		return err
 	}
-	if _, err := git(ctx, dir, nil, "rebase", "-q", "--autostash", "FETCH_HEAD"); err != nil {
+	// Rebasing rewrites commits (and autostash makes one): git needs an
+	// identity for them.
+	args := append(identity(ctx, dir), "rebase", "-q", "--autostash", "FETCH_HEAD")
+	if _, err := git(ctx, dir, nil, args...); err != nil {
 		_, _ = git(ctx, dir, nil, "rebase", "--abort")
 		return fmt.Errorf("%w - resolve it in %s (git pull --rebase), then retry", err, dir)
 	}
 	return nil
+}
+
+// identity returns the git options that make commits in dir possible
+// when no identity is configured - urbex <urbex@localhost> for whatever
+// is missing - and none when git has one, which is then kept.
+func identity(ctx context.Context, dir string) []string {
+	var args []string
+	if name, _ := git(ctx, dir, nil, "config", "user.name"); name == "" {
+		args = append(args, "-c", "user.name=urbex")
+	}
+	if email, _ := git(ctx, dir, nil, "config", "user.email"); email == "" {
+		args = append(args, "-c", "user.email=urbex@localhost")
+	}
+	return args
 }
 
 // HeadCommit returns the full SHA of HEAD in the repo at dir.
@@ -109,9 +123,21 @@ func git(ctx context.Context, dir string, env []string, args ...string) (string,
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+			return "", fmt.Errorf("git %s: %w: %s", subcommand(args), err, strings.TrimSpace(stderr.String()))
 		}
-		return "", fmt.Errorf("git %s: %w", args[0], err)
+		return "", fmt.Errorf("git %s: %w", subcommand(args), err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// subcommand is the git command args run, past its -c options.
+func subcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" {
+			i++
+			continue
+		}
+		return args[i]
+	}
+	return ""
 }
