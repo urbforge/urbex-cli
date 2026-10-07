@@ -211,7 +211,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.publish(ctx, opts.Env, allocations); err != nil {
 		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
-	if err := o.registerDNS(ctx, opts.Env, allocations); err != nil {
+	if o.Technitium == nil {
+		fmt.Fprintln(o.Out, "No Technitium API token (URBEX_TECHNITIUM_TOKEN): services get no internal DNS record. Run 'urbex bootstrap' again once Technitium's admin password is known (see docs/reference/credentials.md in urbforge/urbex).")
+	} else if err := o.registerDNS(ctx, opts.Env, allocations); err != nil {
 		return fmt.Errorf("registering internal dns: %w", err)
 	}
 	usersChanged, err := o.setupIdentity(ctx, opts)

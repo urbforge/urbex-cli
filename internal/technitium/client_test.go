@@ -89,3 +89,28 @@ func TestAPIError(t *testing.T) {
 		t.Error("NotFound should match")
 	}
 }
+
+func TestGetRecords(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newTestClient(t)
+	if err := c.EnsureZone(ctx, "urbex.lab"); err != nil {
+		t.Fatal(err)
+	}
+
+	ips, err := c.GetRecords(ctx, "urbex.lab", "api.urbex.lab")
+	if err != nil || len(ips) != 0 {
+		t.Fatalf("GetRecords before any record = %v, %v; want none", ips, err)
+	}
+
+	if err := c.SetRecord(ctx, "urbex.lab", "api.urbex.lab", "192.168.1.210"); err != nil {
+		t.Fatal(err)
+	}
+	ips, err = c.GetRecords(ctx, "urbex.lab", "api.urbex.lab")
+	if err != nil || len(ips) != 1 || ips[0] != "192.168.1.210" {
+		t.Fatalf("GetRecords = %v, %v; want [192.168.1.210]", ips, err)
+	}
+
+	if _, err := c.GetRecords(ctx, "nope.lab", "api.nope.lab"); err == nil {
+		t.Error("GetRecords in a zone that doesn't exist must fail")
+	}
+}

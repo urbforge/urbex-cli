@@ -41,8 +41,10 @@ GitOps repo sets for it, and what Komodo reports it is running.
 A version is a release (1.4.2) or a commit of main (a1b2c3d);
 "(follows-main)" marks an environment that every push to main moves.
 
-DNS records and TLS certificates are not tracked yet. See
-docs/reference/cli.md in urbforge/urbex.`,
+Each service with an LXC also shows its internal DNS name (Technitium),
+read from the server: "(missing)" when it has no record, or where it
+points when that is not the allocated IP. TLS certificates are not
+tracked yet. See docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
@@ -202,17 +204,19 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 	// Where each service is reached: its LXC on the LAN and, if it is
 	// public or a web frontend, its HTTPS address.
 	o := &provision.Orchestrator{Manifest: m, Config: cfg}
+	dns := newDNSChecker(cfg, creds)
 	fmt.Fprintln(out, "\nEndpoints:")
 	for _, svc := range m.Deployables() {
-		lan := "-"
+		lan, record := "-", ""
 		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
 			lan = fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+			record = dns.Check(cmd.Context(), o.InternalHostname(env, svc), entry.IP)
 		}
 		public := ""
 		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
 			public = "https://" + host
 		}
-		fmt.Fprintf(out, "  %-16s %-28s %s\n", svc.Name, lan, public)
+		fmt.Fprintf(out, "  %-16s %-28s %-48s %s\n", svc.Name, lan, public, record)
 	}
 	return nil
 }

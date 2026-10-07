@@ -71,6 +71,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Records[zone][domain] = ip
 		ok(w, map[string]any{"addedRecord": map[string]any{"name": domain, "rData": map[string]any{"ipAddress": ip}}})
+	case "/api/zones/records/get":
+		zone, domain := q.Get("zone"), q.Get("domain")
+		if !s.Zones[zone] {
+			fail(w, "Zone does not exist: "+zone)
+			return
+		}
+		records := []map[string]any{}
+		if ip, exists := s.Records[zone][domain]; exists {
+			records = append(records, map[string]any{"name": domain, "type": "A", "rData": map[string]any{"ipAddress": ip}})
+		}
+		ok(w, map[string]any{"zone": map[string]any{"name": zone}, "records": records})
 	case "/api/zones/records/delete":
 		zone, domain := q.Get("zone"), q.Get("domain")
 		if _, exists := s.Records[zone][domain]; !exists {

@@ -3,6 +3,7 @@
 
 GITEA="http://$NET.200:3000"
 KOMODO="http://$NET.201:9120"
+TECHNITIUM="http://$NET.202:5380"
 
 cred() { # cred <key>: a value from the generated credentials file
   sed -n "s/^$1: //p" /work/home/.urbex/credentials.yaml
@@ -100,6 +101,20 @@ unchanged_http() {
     sleep 3
   done
   echo "ok: $1 still -> $_out"
+}
+
+# technitium_record <hostname>: the IP of its A record in Technitium,
+# or empty if there is none.
+technitium_record() {
+  curl -s "$TECHNITIUM/api/zones/records/get?token=$(cred technitiumToken)&domain=$1&zone=urbex.test" |
+    python3 -c '
+import json, sys
+host = sys.argv[1]
+data = json.load(sys.stdin)
+for r in data.get("response", {}).get("records", []):
+    if r["type"] == "A" and r["name"] == host:
+        print(r["rData"]["ipAddress"])
+' "$1"
 }
 
 komodo_api() { # komodo_api <read|write|execute>/<Type> <json>

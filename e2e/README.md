@@ -37,11 +37,11 @@ binary, the GitOps repo working copy, the app repo, and
 runner and fails the test on the first assertion that doesn't hold:
 
 1. `urbex bootstrap` scaffolds the platform config; a second run
-   provisions the five base services and sets up Gitea and Komodo; a
-   third changes nothing.
+   provisions the five base services and sets up Gitea and Komodo, mints
+   a Technitium API token and creates its zone; a third changes nothing.
 2. `urbex apply staging` for the sample app (`e2e/app`): the environment
-   exists - folder in the GitOps repo, Build, Stack - follows `main`, and
-   runs `main`'s head.
+   exists - folder in the GitOps repo, Build, Stack, internal DNS record
+   in Technitium - follows `main`, and runs `main`'s head.
 3. A push to `main` reaches staging with no command, through a commit
    to the GitOps repo.
 4. Logs and resource metrics reach Loki and Prometheus: the service's,
@@ -54,8 +54,9 @@ runner and fails the test on the first assertion that doesn't hold:
    lets `test-member` in and refuses no token or a forged one.
 6. `urbex release` tags the commit staging runs and publishes its image
    without a new build; a tag pushed with plain git is a release too.
-7. `urbex apply prod` starts empty; `urbex promote` gives it the release
-   staging runs; an unreleased commit on staging is refused.
+7. `urbex apply prod` starts empty, with its own internal DNS record;
+   `urbex promote` gives it the release staging runs; an unreleased
+   commit on staging is refused.
 8. `urbex secret set`: the secret reaches the service, is nowhere in
    plaintext in the GitOps repo, and goes away with `unset`.
 9. `config.env` edited by hand and pushed with plain git is deployed; an
@@ -65,9 +66,10 @@ runner and fails the test on the first assertion that doesn't hold:
 11. Rollback with `urbex deploy prod --version`; a release that doesn't
    exist is refused.
 12. `urbex destroy staging` leaves production and the project's Builds
-    alone.
-13. `urbex apply staging` on a brand-new machine: it rejoins Komodo and
-    follows `main` again.
+    alone, and removes its internal DNS record.
+13. `urbex apply staging` on a brand-new machine: it rejoins Komodo,
+    follows `main` again, and gets its internal DNS record at the new
+    address.
 
 ## When a step fails
 

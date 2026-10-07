@@ -33,9 +33,10 @@ Re-applying an environment that runs something redeploys it.
 
 It also keeps the environment's Keycloak realm (<project>-<env>): the
 roles the services declare, a client per frontend and, in staging, a
-test user per role ('urbex users staging'). With Cloudflare, it
-publishes the services marked public: true. Addresses are printed at the
-end; internal DNS (Technitium) is not implemented yet.
+test user per role ('urbex users staging'). It registers every
+service's internal DNS name in Technitium, independently of Cloudflare,
+and, with Cloudflare, publishes the services marked public: true.
+Addresses are printed at the end.
 
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,

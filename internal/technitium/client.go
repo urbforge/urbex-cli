@@ -1,6 +1,6 @@
 // Package technitium is a minimal client for the parts of Technitium DNS's
 // HTTP API Urbex uses: minting an API token, creating a zone, and
-// setting/removing A records in it. See
+// setting/reading/removing A records in it. See
 // docs/decisions/0026-technitium-internal-dns-records.md in urbforge/urbex.
 //
 // Every call is a plain GET with query parameters, including the ones
@@ -97,6 +97,31 @@ func (c *Client) SetRecord(ctx context.Context, zone, domain, ip string) error {
 		return fmt.Errorf("setting record %s: %w", domain, err)
 	}
 	return nil
+}
+
+// GetRecords returns the IPs of domain's A records in zone, none if it
+// has no record.
+func (c *Client) GetRecords(ctx context.Context, zone, domain string) ([]string, error) {
+	var out struct {
+		Records []struct {
+			Name  string `json:"name"`
+			Type  string `json:"type"`
+			RData struct {
+				IPAddress string `json:"ipAddress"`
+			} `json:"rData"`
+		} `json:"records"`
+	}
+	q := url.Values{"zone": {zone}, "domain": {domain}}
+	if err := c.do(ctx, "/api/zones/records/get", q, &out); err != nil {
+		return nil, fmt.Errorf("getting record %s: %w", domain, err)
+	}
+	var ips []string
+	for _, r := range out.Records {
+		if r.Type == "A" && strings.EqualFold(r.Name, domain) {
+			ips = append(ips, r.RData.IPAddress)
+		}
+	}
+	return ips, nil
 }
 
 // DeleteRecord removes domain's A record in zone pointing at ip,
