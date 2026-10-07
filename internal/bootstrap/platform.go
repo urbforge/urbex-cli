@@ -12,6 +12,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/secrets"
+	"github.com/urbforge/urbex-cli/internal/technitium"
 	platformassets "github.com/urbforge/urbex-cli/platform"
 )
 
@@ -54,6 +55,9 @@ type Endpoints struct {
 	PrometheusWriteURL string
 	// KeycloakURL is Keycloak on the LAN, e.g. http://192.168.1.203:8080.
 	KeycloakURL string
+	// TechnitiumURL is Technitium's API on the LAN, e.g.
+	// http://192.168.1.202:5380.
+	TechnitiumURL string
 }
 
 // EndpointsFor computes the base services' endpoints for cfg.
@@ -70,6 +74,7 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		LokiPushURL:        "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
 		PrometheusWriteURL: "http://" + ips[Hostname("observability")] + ":9090/api/v1/write",
 		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
+		TechnitiumURL:      "http://" + ips[Hostname("technitium")] + ":5380",
 	}, nil
 }
 
@@ -132,15 +137,18 @@ type Clients struct {
 	PullRepo func(ctx context.Context, dir, remoteURL, token string) error
 	// Cloudflare builds the Cloudflare client; nil means the real one.
 	Cloudflare func(token, accountID, zoneID string) CloudflareAPI
+	// Technitium builds the Technitium client; nil means the real one.
+	Technitium func(baseURL, token string) TechnitiumAPI
 }
 
 // DefaultClients returns Clients backed by the real HTTP clients and git.
 func DefaultClients() Clients {
 	return Clients{
-		Gitea:    func(u, t string) GiteaAPI { return gitea.New(u, t) },
-		Komodo:   func(u, k, s string) KomodoAPI { return komodo.New(u, k, s) },
-		SyncRepo: SyncRepo,
-		PullRepo: PullRepo,
+		Gitea:      func(u, t string) GiteaAPI { return gitea.New(u, t) },
+		Komodo:     func(u, k, s string) KomodoAPI { return komodo.New(u, k, s) },
+		SyncRepo:   SyncRepo,
+		PullRepo:   PullRepo,
+		Technitium: func(u, t string) TechnitiumAPI { return technitium.New(u, t) },
 	}
 }
 
@@ -154,6 +162,7 @@ var ansibleSecretEnv = []string{
 	"URBEX_KOMODO_WEBHOOK_SECRET",
 	"URBEX_KEYCLOAK_ADMIN_PASSWORD",
 	"URBEX_GRAFANA_ADMIN_PASSWORD",
+	"URBEX_TECHNITIUM_ADMIN_PASSWORD",
 }
 
 // ensureSecrets generates any missing platform secret the base-service

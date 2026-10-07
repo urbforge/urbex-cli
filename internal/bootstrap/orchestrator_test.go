@@ -67,20 +67,21 @@ func validCredentials() *credentials.Credentials {
 // fakePlatform records what bootstrap's platform setup phase asks of
 // Gitea, Komodo, and git.
 type fakePlatform struct {
-	tokens         map[string]string // token name -> password used
-	orgs, repos    []string
-	apiKeys        int
-	onboardingKeys int
-	gitAccounts    []string
-	regAccounts    []string
-	synced         []string            // remote URLs
-	pulled         []string            // remote URLs
-	tags           map[string][]string // "Kind name" -> tags
-	waitedServers  []string
-	hooks          []string
-	actions        map[string]komodo.ActionConfig
-	variables      map[string]string
-	procedures     map[string]komodo.ProcedureConfig
+	tokens          map[string]string // token name -> password used
+	orgs, repos     []string
+	apiKeys         int
+	onboardingKeys  int
+	gitAccounts     []string
+	regAccounts     []string
+	synced          []string            // remote URLs
+	pulled          []string            // remote URLs
+	tags            map[string][]string // "Kind name" -> tags
+	waitedServers   []string
+	hooks           []string
+	actions         map[string]komodo.ActionConfig
+	variables       map[string]string
+	procedures      map[string]komodo.ProcedureConfig
+	technitiumZones []string
 }
 
 func (f *fakePlatform) clients() Clients {
@@ -95,6 +96,7 @@ func (f *fakePlatform) clients() Clients {
 			f.pulled = append(f.pulled, remoteURL)
 			return nil
 		},
+		Technitium: func(baseURL, token string) TechnitiumAPI { return &fakeTechnitium{f} },
 	}
 }
 
@@ -118,6 +120,16 @@ func (g *fakeGitea) EnsureRepo(ctx context.Context, owner, name string) error {
 }
 func (g *fakeGitea) EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, filter string) error {
 	g.f.hooks = append(g.f.hooks, owner+"/"+repo+" -> "+targetURL+" ("+filter+")")
+	return nil
+}
+
+type fakeTechnitium struct{ f *fakePlatform }
+
+func (d *fakeTechnitium) CreateToken(ctx context.Context, user, pass, name string) (string, error) {
+	return "technitium-token", nil
+}
+func (d *fakeTechnitium) EnsureZone(ctx context.Context, zone string) error {
+	d.f.technitiumZones = append(d.f.technitiumZones, zone)
 	return nil
 }
 
@@ -360,8 +372,14 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	}
 
 	creds := o.Credentials
-	if creds.GiteaAdminPassword == "" || creds.KomodoDBPassword == "" || creds.KeycloakAdminPassword == "" {
+	if creds.GiteaAdminPassword == "" || creds.KomodoDBPassword == "" || creds.KeycloakAdminPassword == "" || creds.TechnitiumAdminPassword == "" {
 		t.Errorf("expected platform secrets to be generated, got %+v", creds)
+	}
+	if creds.TechnitiumToken != "technitium-token" {
+		t.Errorf("expected the technitium token to be minted and stored, got %q", creds.TechnitiumToken)
+	}
+	if len(fp.technitiumZones) != 1 || fp.technitiumZones[0] != "example.com" {
+		t.Errorf("expected the platform's domain as the internal DNS zone, got %v", fp.technitiumZones)
 	}
 	ansible := runner.calls[2]
 	env := strings.Join(ansible.Env, "\n")
@@ -441,12 +459,22 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 
 	// Re-running keeps existing secrets and tokens instead of rotating them.
 	password, token := creds.GiteaAdminPassword, creds.GiteaToken
+	technitiumPassword, technitiumToken := creds.TechnitiumAdminPassword, creds.TechnitiumToken
 	fp.tokens, fp.apiKeys, fp.onboardingKeys = nil, 0, 0
 	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
 	if creds.GiteaAdminPassword != password || creds.GiteaToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 || fp.onboardingKeys != 0 {
 		t.Errorf("expected no secret/token rotation on re-run (tokens=%v apiKeys=%d onboardingKeys=%d)", fp.tokens, fp.apiKeys, fp.onboardingKeys)
+	}
+	if creds.TechnitiumAdminPassword != technitiumPassword || creds.TechnitiumToken != technitiumToken {
+		t.Errorf("expected no technitium secret/token rotation on re-run, got password changed=%v token changed=%v",
+			creds.TechnitiumAdminPassword != technitiumPassword, creds.TechnitiumToken != technitiumToken)
+	}
+	// EnsureZone itself is idempotent on Technitium's side (tolerates
+	// "already exists"); urbex calls it every run regardless.
+	if len(fp.technitiumZones) != 2 {
+		t.Errorf("expected EnsureZone called on every run, got %v", fp.technitiumZones)
 	}
 }
 

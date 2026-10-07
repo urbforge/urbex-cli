@@ -9,9 +9,6 @@
 // What an environment runs is decided by the GitOps repo alone: deploy
 // and promote only change version files there and push; Komodo does the
 // rest. See docs/decisions/0020-trunk-releases-gitops-environments.md.
-//
-// DNS registration, Keycloak realm/client provisioning, and ingress
-// (Cloudflare Tunnel) setup are later phases, not yet implemented here.
 package provision
 
 import (
@@ -82,7 +79,11 @@ type Orchestrator struct {
 	// hostname (cloudflare.quickTunnel, ADR-0025); nil disables it, same
 	// as Cloudflare disables the named tunnel.
 	QuickTunnel QuickTunnelLookup
-	Out         io.Writer
+	// Technitium gives the environment's services internal DNS records
+	// (ADR-0026), unconditionally - unlike Cloudflare, nil just means it
+	// wasn't wired up (no credentials yet), not that it is disabled.
+	Technitium TechnitiumAPI
+	Out        io.Writer
 	// Rollout drives Komodo; required by everything but Plan.
 	Rollout Rollouter
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
@@ -210,6 +211,11 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.publish(ctx, opts.Env, allocations); err != nil {
 		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
+	if o.Technitium == nil {
+		fmt.Fprintln(o.Out, "No Technitium API token (URBEX_TECHNITIUM_TOKEN): services get no internal DNS record. Run 'urbex bootstrap' again once Technitium's admin password is known (see docs/reference/credentials.md in urbforge/urbex).")
+	} else if err := o.registerDNS(ctx, opts.Env, allocations); err != nil {
+		return fmt.Errorf("registering internal dns: %w", err)
+	}
 	usersChanged, err := o.setupIdentity(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("setting up keycloak: %w", err)
@@ -267,7 +273,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	if !o.Config.Cloudflare.Enabled() {
+	if !o.Config.Cloudflare.Enabled() && !o.Config.Cloudflare.QuickTunnel {
 		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
 	}
 	return nil
@@ -713,6 +719,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	}
 	if err := o.unpublish(ctx, opts.Env, toDestroy); err != nil {
 		return fmt.Errorf("removing from cloudflare: %w", err)
+	}
+	if err := o.unregisterDNS(ctx, opts.Env, toDestroy, allocations); err != nil {
+		return fmt.Errorf("removing internal dns: %w", err)
 	}
 	if err := o.unpublishWeb(ctx, opts.Env); err != nil {
 		return fmt.Errorf("removing the web frontend from cloudflare: %w", err)

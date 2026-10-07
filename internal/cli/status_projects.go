@@ -40,6 +40,7 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 		return err
 	}
 	public := publicRoutes(ctx, cfg, creds)
+	dns := newDNSChecker(cfg, creds)
 
 	var ro *rollout.Rollout
 	if len(creds.MissingForPlatform()) == 0 {
@@ -77,13 +78,14 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 			if st.Track {
 				version += "(follows-main)"
 			}
-			lan, pub := "-", ""
+			lan, pub, record := "-", "", ""
 			if svc.IsWeb() {
 				if host := o.PublicHostname(d.Env, svc); host != "" {
 					pub = "https://" + host
 				}
 			} else if entry, ok := ledger.Lookup(provision.Hostname(d.Project, svc.Name, d.Env)); ok {
 				lan = fmt.Sprintf("http://%s:%d", entry.IP, repo.Port(d.Env, d.Project, svc.Name))
+				record = dns.Check(ctx, o.InternalHostname(d.Env, svc), entry.IP)
 				pub = public[strings.TrimPrefix(lan, "http://")]
 				if pub == "" && cfg.Cloudflare.QuickTunnel {
 					pub = quickTunnelRoute(ctx, entry.IP)
@@ -93,7 +95,11 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 			if s, ok := state[svc.Name]; ok {
 				stack = " stack=" + s.State
 			}
-			fmt.Fprintf(out, "    %-14s %-28s %-48s version=%s%s\n", svc.Name, lan, pub, version, stack)
+			fmt.Fprintf(out, "    %-14s %-28s %-48s version=%s%s", svc.Name, lan, pub, version, stack)
+			if record != "" {
+				fmt.Fprintf(out, " %s", record)
+			}
+			fmt.Fprintln(out)
 		}
 	}
 	return nil

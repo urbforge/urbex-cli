@@ -162,6 +162,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	fmt.Fprintln(o.Out, "Base services provisioned.")
 
+	if err := o.setupDNS(ctx, clients, ep); err != nil {
+		return fmt.Errorf("setting up technitium: %w", err)
+	}
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
 	}

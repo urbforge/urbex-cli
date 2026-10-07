@@ -21,6 +21,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
+	"github.com/urbforge/urbex-cli/internal/technitium"
 )
 
 // resolveGitOpsRepoPath returns flagValue if set, else URBEX_GITOPS_REPO,
@@ -129,6 +130,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	}
 	if cfg.Cloudflare.QuickTunnel {
 		o.QuickTunnel = provision.QuickTunnelURL
+	}
+	if creds.TechnitiumToken != "" {
+		o.Technitium = technitium.New(ep.TechnitiumURL, creds.TechnitiumToken)
 	}
 	return &project{Orchestrator: o, rollout: ro, creds: creds}, nil
 }

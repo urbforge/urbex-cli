@@ -19,7 +19,9 @@ and production runs releases. What each environment runs - version,
 configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
 which Komodo deploys whenever it changes. Every LXC sends its logs and
 resource metrics to the platform's Loki and Prometheus, labelled
-platform or app (ADR-0023). With Cloudflare configured
+platform or app (ADR-0023). Every project environment also gets an
+internal DNS record in Technitium (ADR-0026), independently of
+Cloudflare. With Cloudflare configured
 ([ADR-0022](https://github.com/urbforge/urbex/blob/main/docs/decisions/0022-cloudflare-tunnel-access-workers.md)),
 the platform and the services marked `public: true` are published
 through a Cloudflare Tunnel - Gitea and Komodo behind Cloudflare Access -
@@ -54,7 +56,8 @@ Commands:
   project's repo on Gitea with a Komodo Build per service and its
   webhook, and the environment's folder in the GitOps repo
   (`environments/<env>/<project>/<service>/`) with the Komodo Stack that
-  deploys it. A new staging follows `main` and runs its head; a new prod
+  deploys it. Also registers every service's internal DNS name in
+  Technitium. A new staging follows `main` and runs its head; a new prod
   runs nothing until promoted.
 - `urbex release` — tags the next release (`vX.Y.Z`, or `--version`) on
   the commit staging runs (or `main`, or `--ref`) and waits for Komodo to
@@ -75,12 +78,15 @@ Commands:
   exist on Proxmox, every platform endpoint (LAN and public) and where
   the logins are; with an environment, per service, its allocation,
   whether its LXC exists, the version the GitOps repo asks for, what
-  Komodo reports running, and its LAN and public addresses.
+  Komodo reports running, its LAN and public addresses and its
+  internal DNS name, read from Technitium (flagged if missing or
+  pointing elsewhere).
 - `urbex destroy <env>` — takes the environment's Stacks down, removes
-  its routes, DNS records and web Worker from Cloudflare, runs
-  `terraform destroy`, then removes its folder, Terraform files and
-  ledger entries from the GitOps repo. The project's Builds go with its
-  last environment. Resumable after a failure.
+  its routes and DNS records from Cloudflare and its web Worker, removes
+  each service's internal DNS record from Technitium, runs `terraform
+  destroy`, then removes its folder, Terraform files and ledger entries
+  from the GitOps repo. The project's Builds go with its last
+  environment. Resumable after a failure.
 - `urbex teardown [--yes]` — destroys the platform bootstrap created:
   the base-service LXCs (with everything on Gitea), the platform's
   Cloudflare tunnel, records and Access objects, and the generated
@@ -93,10 +99,9 @@ The main ones - the full list, with workarounds, is
 [`docs/known-limitations.md`](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md)
 in the docs repo:
 
-- Not implemented: Keycloak realms and clients, internal DNS
-  (Technitium), the services' own metrics and alerting (logs and LXC
-  resource metrics of every service do reach Loki and Prometheus -
-  ADR-0023),
+- Not implemented: Keycloak realms and clients, the services' own
+  metrics and alerting (logs and LXC resource metrics of every service
+  do reach Loki and Prometheus - ADR-0023),
   mobile frontend deploys, several frontends per project, per-project
   Proxmox isolation, promotion by pull request, image pruning.
 - One Proxmox node; static IPs are neither checked nor reserved; LXCs
