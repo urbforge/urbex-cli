@@ -1,9 +1,11 @@
 # urbex-op: urbex in a container
 
 `urbex` shells out to `terraform`, `ansible-playbook`, `sops`, `git` and
-`ssh`. `urbex-op` runs it in a container that has all of them, against a
-**workspace**: one directory holding everything a platform needs on your
-side. Nothing gets installed on your machine but podman (or docker).
+`ssh`. `urbex-op` runs it in a container that has all of them, at the
+versions pinned in the repository's [`mise.toml`](../../mise.toml),
+against a **workspace**: one directory holding everything a platform
+needs on your side. Nothing gets installed on your machine but podman
+(or docker).
 
 ## Quick start
 
@@ -105,5 +107,6 @@ See *Find every endpoint* in the cookbook
 | `URBEX_OPERATOR_IMAGE` | `urbex-operator` | The image `build` creates and runs use. |
 | `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN`, `URBEX_AGE_KEY` | - | Passed to the container when set; otherwise the credentials file is used. |
 
-Rebuild the image (`urbex-op build`) after updating this checkout: the
-image contains the `urbex` binary built from it.
+Rebuild the image (`urbex-op build`, or `mise run operator-image`) after
+updating this checkout: the image contains the `urbex` binary built from
+it, and the tools at the versions `mise.toml` pins.

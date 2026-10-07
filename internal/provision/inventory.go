@@ -39,8 +39,8 @@ type publicServiceGroup struct {
 }
 
 type inventoryRoot struct {
-	All           inventoryAll         `yaml:"all"`
-	PublicService *publicServiceGroup  `yaml:"public_service,omitempty"`
+	All           inventoryAll        `yaml:"all"`
+	PublicService *publicServiceGroup `yaml:"public_service,omitempty"`
 }
 
 // writeInventory renders an Ansible inventory for every service in the

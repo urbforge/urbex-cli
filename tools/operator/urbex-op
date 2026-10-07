@@ -26,17 +26,20 @@ case "${1:-}" in
     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   build)
-    exec "$ENGINE" build -t "$IMAGE" -f "$REPO/tools/operator/Containerfile" "$REPO" ;;
+    # Go's and mise's versions come from mise.toml, like every other tool's.
+    pinned() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$REPO/mise.toml"; }
+    exec "$ENGINE" build -t "$IMAGE" --build-arg "GO_VERSION=$(pinned go)" --build-arg "MISE_VERSION=$(pinned min_version)" \
+      -f "$REPO/tools/operator/Containerfile" "$REPO" ;;
   set)
     KEY=${2:?usage: urbex-op set KEY - e.g. proxmoxToken, cloudflareToken, ageKey}
     [ -d "$WS/home/.urbex" ] || { echo "urbex-op: no workspace at $WS - run init first" >&2; exit 1; }
     VALUE=
     if [ -t 0 ]; then read -rsp "$KEY: " VALUE || true; echo; else IFS= read -r VALUE || true; fi
     [ -n "$VALUE" ] || { echo "urbex-op: empty value, nothing stored" >&2; exit 1; }
-    # Written with the image's Python, so the file stays valid YAML and
+    # Written with the image's Python (Ansible's, which has PyYAML), so the file stays valid YAML and
     # keeps every other credential; mode 0600.
     printf '%s' "$VALUE" | "$ENGINE" run --rm -i "${USERNS[@]}" --user "$(id -u):$(id -g)" \
-      -v "$WS/home/.urbex:/c:z" "$IMAGE" python3 -c '
+      -v "$WS/home/.urbex:/c:z" "$IMAGE" urbex-python -c '
 import os, sys, yaml
 path = "/c/credentials.yaml"
 data = {}

@@ -79,15 +79,18 @@ mkdir -p "$WORK/bin" "$WORK/home" "$WORK/gitops" "$WORK/logs"
 
 ssh-keygen -q -t ed25519 -N "" -C urbex-e2e -f "$WORK/id_e2e"
 
+# Versions come from mise.toml, like the developer's and the operator's.
+pinned() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$REPO/mise.toml"; }
 if command -v go >/dev/null; then
   CGO_ENABLED=0 go build -o "$WORK/bin/urbex" ./cmd/urbex
 else
   podman run --rm -v "$REPO:/src:z" -v urbex-e2e-gomod:/go/pkg/mod -w /src \
-    docker.io/library/golang:1.26 sh -c 'CGO_ENABLED=0 go build -o e2e/.work/bin/urbex ./cmd/urbex'
+    "docker.io/library/golang:$(pinned go)" sh -c 'CGO_ENABLED=0 go build -o e2e/.work/bin/urbex ./cmd/urbex'
 fi
 
 podman build -q -t urbex-e2e-machine --build-arg "PUBKEY=$(cat "$WORK/id_e2e.pub")" e2e/machine >/dev/null 2>&1
-podman build -q -t urbex-e2e-runner e2e/runner >/dev/null 2>&1
+podman build -q -t urbex-e2e-runner --build-arg "MISE_VERSION=$(pinned min_version)" \
+  -f e2e/runner/Containerfile "$REPO" >/dev/null 2>&1
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
 podman run --rm -v "$WORK:/work:z" urbex-e2e-runner age-keygen -o /work/age.key 2>/dev/null
 

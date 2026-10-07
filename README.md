@@ -147,11 +147,33 @@ tools/operator/urbex-op -w ~/urbex-work 'urbex bootstrap'
 
 ## Build & test
 
+The tools and their versions are pinned in [`mise.toml`](mise.toml) -
+Go, Terraform, sops, age, Python, Ansible - and installed with
+[mise](https://mise.jdx.dev), without root:
+
 ```sh
-go build -o urbex ./cmd/urbex
-go test ./...
-e2e/run.sh        # end-to-end, needs podman - see e2e/README.md
+mise install           # once after cloning, and when mise.toml changes
+mise run build         # ./urbex
+mise run test          # unit tests
+mise run lint          # go vet + gofmt check (mise run fmt formats)
+mise run e2e           # end-to-end, needs podman - see e2e/README.md
+mise tasks             # every task
 ```
+
+With mise [activated in your shell](https://mise.jdx.dev/getting-started.html),
+`go`, `terraform`, `ansible-playbook`... are the pinned ones whenever you
+are in this directory; otherwise prefix commands with `mise exec --`.
+Personal settings go in `mise.local.toml`, which git ignores, e.g.:
+
+```toml
+[env]
+URBEX_GITOPS_REPO = "/home/me/urbex-gitops"
+```
+
+Credentials don't: they stay in `~/.urbex/credentials.yaml`. The operator
+image ([`tools/operator`](tools/operator/README.md)) and the e2e runner
+install their tools from the same `mise.toml`, so changing a version
+there changes it everywhere.
 
 ## Try it
 
