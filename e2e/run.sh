@@ -185,6 +185,7 @@ step "apply staging: it follows main, and runs main's head right away" '
   [ "$(keycloak_realm hello-staging)" = 200 ] || fail "no Keycloak realm for the project in staging"
   [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "no internal dns record for staging api"
   urbex status staging | grep -F "dns=api.staging.hello.urbex.urbex.test" | grep -qv "(missing)\|(points to" || fail "status should show the staging api internal dns name"
+  urbex status | grep -F "Gitea" | grep -F "http://git.urbex.urbex.test:3000" | grep -F "http://$NET.200:3000" | grep -qv "(missing)\|(points to" || fail "status should show gitea by internal name and LAN address, with its record"
   echo "ok: staging follows main"'
 
 step "a push to main is deployed to staging, with no command" '

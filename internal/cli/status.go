@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -73,7 +75,7 @@ tracked yet. See docs/reference/cli.md in urbforge/urbex.`,
 			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 			if len(args) == 0 {
-				if err := runBaseStatus(cmd, out, client, cfg); err != nil {
+				if err := runBaseStatus(cmd, out, client, cfg, creds); err != nil {
 					return err
 				}
 				return printProjects(cmd.Context(), out, cfg, creds, repoPath)
@@ -88,7 +90,7 @@ tracked yet. See docs/reference/cli.md in urbforge/urbex.`,
 	return cmd
 }
 
-func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config) error {
+func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials) error {
 	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node, bootstrap.BaseServicesFor(cfg))
 	if err != nil {
 		return fmt.Errorf("checking Proxmox: %w", err)
@@ -103,11 +105,21 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 	if err != nil {
 		return err
 	}
+	// Each endpoint by internal name, LAN address and public URL; a
+	// name whose record is missing or points elsewhere says so.
+	dns := newDNSChecker(cfg, creds)
 	fmt.Fprintln(out, "\nEndpoints:")
 	for _, e := range endpoints {
 		fmt.Fprintf(out, "  %-28s %-44s %-38s %s", e.Name, e.Internal, e.LAN, e.Public)
 		if e.Note != "" {
 			fmt.Fprintf(out, "  (%s)", e.Note)
+		}
+		if dns != nil {
+			internal, _ := url.Parse(e.Internal)
+			lan, _ := url.Parse(e.LAN)
+			if record := dns.Check(cmd.Context(), internal.Hostname(), lan.Hostname()); strings.Contains(record, " (") {
+				fmt.Fprintf(out, "  %s", record)
+			}
 		}
 		fmt.Fprintln(out)
 	}

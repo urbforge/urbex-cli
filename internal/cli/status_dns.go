@@ -22,7 +22,8 @@ type dnsChecker struct {
 }
 
 // newDNSChecker is nil when this machine has no Technitium token (the
-// platform was bootstrapped without one), and status then shows no DNS.
+// platform was bootstrapped without one): status then shows the names
+// without checking them.
 func newDNSChecker(cfg *platform.Config, creds *credentials.Credentials) *dnsChecker {
 	if creds.TechnitiumToken == "" {
 		return nil
@@ -36,10 +37,13 @@ func newDNSChecker(cfg *platform.Config, creds *credentials.Credentials) *dnsChe
 
 // Check is how a service's internal name reads in status: the name when
 // its record points at ip, otherwise what is wrong with it. Safe on a
-// nil checker, which says nothing.
+// nil checker, which shows the name unchecked.
 func (d *dnsChecker) Check(ctx context.Context, host, ip string) string {
-	if d == nil || host == "" {
+	if host == "" {
 		return ""
+	}
+	if d == nil {
+		return "dns=" + host + " (not checked: no technitium token)"
 	}
 	if d.down != nil {
 		return "dns=" + host + " (technitium unreachable)"
