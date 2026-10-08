@@ -151,6 +151,8 @@ step "bootstrap: base services and platform setup" '
   [ "$(technitium_record git.urbex.urbex.test)" = "$NET.200" ] || fail "no internal dns record for gitea"
   [ "$(technitium_record auth.urbex.urbex.test)" = "$NET.203" ] || fail "no internal dns record for keycloak"
   [ "$(technitium_resolve loki.urbex.urbex.test)" = "$NET.204" ] || fail "technitium does not resolve loki by its internal name"
+  # The first forwarded lookups can time out while Technitium warms up.
+  for _ in $(seq 10); do [ -n "$(technitium_resolve deb.debian.org)" ] && break; sleep 3; done
   [ -n "$(technitium_resolve deb.debian.org)" ] || fail "technitium does not resolve public names through its forwarders"
   servers="urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium"
   [ "$(komodo_names Servers)" = "$servers" ] || fail "unexpected komodo servers: $(komodo_names Servers)"
