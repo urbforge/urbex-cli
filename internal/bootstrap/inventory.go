@@ -25,11 +25,15 @@ type inventoryVars struct {
 	AnsibleSSHRetries    string `yaml:"ansible_ssh_retries"`
 	UrbexDomain          string `yaml:"urbex_domain"`
 	GiteaRegistry        string `yaml:"gitea_registry"`
-	GiteaAdminUsername   string `yaml:"gitea_admin_username"`
-	KomodoAdminUsername  string `yaml:"komodo_admin_username"`
-	KomodoServerName     string `yaml:"komodo_server_name"`
-	KomodoVersion        string `yaml:"komodo_version"`
-	KomodoCoreAddress    string `yaml:"komodo_core_address"`
+	// GiteaURL and KomodoURL are the services' own addresses, by
+	// internal name: Gitea's ROOT_URL, Komodo's KOMODO_HOST.
+	GiteaURL            string `yaml:"gitea_url"`
+	KomodoURL           string `yaml:"komodo_url"`
+	GiteaAdminUsername  string `yaml:"gitea_admin_username"`
+	KomodoAdminUsername string `yaml:"komodo_admin_username"`
+	KomodoServerName    string `yaml:"komodo_server_name"`
+	KomodoVersion       string `yaml:"komodo_version"`
+	KomodoCoreAddress   string `yaml:"komodo_core_address"`
 	// KeycloakPublicURL is Keycloak's public address, when it has one:
 	// the issuer the apps' users see.
 	KeycloakPublicURL string `yaml:"keycloak_public_url,omitempty"`
@@ -51,7 +55,9 @@ type inventoryRoot struct {
 
 // writeInventory renders an Ansible inventory grouping each base service
 // under "urbex_<name>" (matching the hosts: fields in
-// platform/ansible/playbook.yml), pointing at its statically allocated IP.
+// platform/ansible/playbook.yml), pointing at its statically allocated IP;
+// ep are the endpoints the services are configured with, by internal
+// name.
 // Secrets are not inventory vars: roles read them from the environment.
 func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints, serviceIPs map[string]string) error {
 	repoPath := filepath.Dir(ansibleDir)
@@ -71,6 +77,8 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 				AnsibleSSHRetries:    knownhosts.ConnectRetries,
 				UrbexDomain:          domain,
 				GiteaRegistry:        ep.Registry,
+				GiteaURL:             ep.GiteaURL,
+				KomodoURL:            ep.KomodoURL,
 				GiteaAdminUsername:   GiteaAdminUser,
 				KomodoAdminUsername:  KomodoAdminUser,
 				KomodoServerName:     KomodoServerName,

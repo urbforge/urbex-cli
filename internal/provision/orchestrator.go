@@ -69,6 +69,9 @@ type Orchestrator struct {
 	// skips it. KeycloakURL is Keycloak's LAN address.
 	Keycloak    KeycloakAPI
 	KeycloakURL string
+	// KeycloakInternalURL is Keycloak by internal DNS name: where the
+	// services fetch its signing keys (ADR-0027).
+	KeycloakInternalURL string
 	// Secrets encrypts the staging test users' passwords; nil means sops
 	// with the platform's age key.
 	Secrets SecretStore
@@ -182,7 +185,8 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return fmt.Errorf("updating known hosts: %w", err)
 		}
 	}
-	ep, err := bootstrap.EndpointsFor(o.Config)
+	// The LXCs are configured to reach the platform by name (ADR-0027).
+	ep, err := bootstrap.InternalEndpointsFor(o.Config)
 	if err != nil {
 		return err
 	}
@@ -208,7 +212,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.sync(ctx, opts, "apply"); err != nil {
 		return err
 	}
-	if err := o.publish(ctx, opts.Env, allocations); err != nil {
+	if err := o.publish(ctx, opts.Env); err != nil {
 		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
 	if o.Technitium == nil {

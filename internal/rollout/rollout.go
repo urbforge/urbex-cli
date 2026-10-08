@@ -87,10 +87,15 @@ type Git interface {
 // Rollout manages projects and their environments through Gitea and
 // Komodo.
 type Rollout struct {
-	Gitea     Gitea
-	Komodo    Komodo
-	Git       Git
+	Gitea  Gitea
+	Komodo Komodo
+	Git    Git
+	// Endpoints is how the CLI reaches Gitea and Komodo (LAN addresses);
+	// Internal, by internal DNS name, what Komodo and Gitea are
+	// configured with: image names, git and registry providers, webhooks
+	// (ADR-0027).
 	Endpoints bootstrap.Endpoints
+	Internal  bootstrap.Endpoints
 	Org       string
 	Token     string // Gitea token with write:repository
 	// WebhookSecret is Komodo's webhook secret, which Gitea signs with.
@@ -175,7 +180,7 @@ func (r *Rollout) timeout() time.Duration {
 
 // Image is a service's image reference without its tag.
 func (r *Rollout) Image(project, service string) string {
-	return r.Endpoints.Registry + "/" + r.Org + "/" + BuildName(project, service)
+	return r.Internal.Registry + "/" + r.Org + "/" + BuildName(project, service)
 }
 
 // SetupProject makes a project releasable: its repo on Gitea (creating
@@ -202,8 +207,24 @@ func (r *Rollout) SetupProject(ctx context.Context, project string, services []m
 		}
 	}
 	// Every push: the Action itself tells release tags from the rest.
-	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
+	// Komodo is reached by name; a webhook set up by an older urbex,
+	// by address, goes - both would deploy every push twice.
+	if err := r.deleteLANWebhook(ctx, project); err != nil {
+		return err
+	}
+	hook := r.Internal.ActionWebhook(bootstrap.ReleaseAction)
 	return r.Gitea.EnsureWebhook(ctx, r.Org, project, hook, r.WebhookSecret, "*")
+}
+
+// deleteLANWebhook removes the project's release webhook to Komodo's LAN
+// address, set up before the services reached each other by name
+// (ADR-0027).
+func (r *Rollout) deleteLANWebhook(ctx context.Context, project string) error {
+	lan := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
+	if lan == r.Internal.ActionWebhook(bootstrap.ReleaseAction) {
+		return nil
+	}
+	return r.Gitea.DeleteWebhook(ctx, r.Org, project, lan)
 }
 
 // ensureTrunk creates the project's main branch on Gitea from the local
@@ -522,8 +543,11 @@ func (r *Rollout) RemoveServers(ctx context.Context, t Target) error {
 // RemoveProject deletes a project's Builds and its release webhook, once
 // no environment runs it anymore. The repo and its images stay on Gitea.
 func (r *Rollout) RemoveProject(ctx context.Context, project string, services []manifest.Service) error {
-	hook := r.Endpoints.ActionWebhook(bootstrap.ReleaseAction)
+	hook := r.Internal.ActionWebhook(bootstrap.ReleaseAction)
 	if err := r.Gitea.DeleteWebhook(ctx, r.Org, project, hook); err != nil {
+		return err
+	}
+	if err := r.deleteLANWebhook(ctx, project); err != nil {
 		return err
 	}
 	// No push starts a build any more, but one may be running - a push
@@ -552,7 +576,7 @@ func (r *Rollout) RemoveProject(ctx context.Context, project string, services []
 func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.BuildConfig, error) {
 	cfg := komodo.BuildConfig{
 		BuilderID:          bootstrap.KomodoServerName,
-		GitProvider:        r.Endpoints.Registry, // Gitea's host:port serves both git and the registry
+		GitProvider:        r.Internal.Registry, // Gitea's host:port serves both git and the registry
 		GitHTTPS:           false,
 		GitAccount:         bootstrap.GiteaAdminUser,
 		Repo:               r.Org + "/" + project,
@@ -562,7 +586,7 @@ func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.Buil
 		IncludeVersionTags: false,
 		IncludeCommitTag:   true,
 		ImageRegistry: []komodo.ImageRegistry{{
-			Domain:       r.Endpoints.Registry,
+			Domain:       r.Internal.Registry,
 			Account:      bootstrap.GiteaAdminUser,
 			Organization: r.Org,
 		}},
@@ -615,7 +639,7 @@ func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komod
 	}
 	return komodo.StackConfig{
 		ServerID:           name, // the LXC's Periphery registers under its hostname
-		GitProvider:        r.Endpoints.Registry,
+		GitProvider:        r.Internal.Registry,
 		GitHTTPS:           false,
 		GitAccount:         bootstrap.GiteaAdminUser,
 		Repo:               r.Org + "/" + bootstrap.GitOpsRepoName,
@@ -626,7 +650,7 @@ func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komod
 			{Path: envrepo.ConfigFile, Requires: "Redeploy"},
 			{Path: envrepo.SecretsFile, Requires: "Redeploy"},
 		},
-		RegistryProvider:  r.Endpoints.Registry,
+		RegistryProvider:  r.Internal.Registry,
 		RegistryAccount:   bootstrap.GiteaAdminUser,
 		ComposeCmdWrapper: ComposeWrapper,
 	}
@@ -664,14 +688,14 @@ func (r *Rollout) webStackConfig(t Target, svc manifest.Service) komodo.StackCon
 	}, "\n")
 	return komodo.StackConfig{
 		ServerID:           bootstrap.KomodoServerName,
-		GitProvider:        r.Endpoints.Registry,
+		GitProvider:        r.Internal.Registry,
 		GitHTTPS:           false,
 		GitAccount:         bootstrap.GiteaAdminUser,
 		Repo:               r.Org + "/" + bootstrap.GitOpsRepoName,
 		Branch:             bootstrap.TrunkBranch,
 		RunDirectory:       envrepo.ServiceDir(t.Env, t.Project, svc.Name),
 		AdditionalEnvFiles: []komodo.EnvFile{{Path: envrepo.VersionFile, Track: true}},
-		RegistryProvider:   r.Endpoints.Registry,
+		RegistryProvider:   r.Internal.Registry,
 		RegistryAccount:    bootstrap.GiteaAdminUser,
 		Environment:        env,
 	}

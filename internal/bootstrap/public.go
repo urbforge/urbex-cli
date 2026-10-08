@@ -80,7 +80,7 @@ func (o *Orchestrator) tunnelToken(ctx context.Context, clients Clients) (string
 // their DNS records at it. In that order: a protected service must never
 // be reachable before its Access application exists, so if Access can't
 // be set up nothing is published.
-func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients, ips map[string]string) error {
+func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) error {
 	cf := o.cloudflare(clients)
 	pub := PublicEndpointsFor(o.Config)
 
@@ -101,9 +101,10 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients, ips
 	if err != nil {
 		return err
 	}
-	keycloak := "http://" + ips[Hostname("keycloak")] + ":8080"
-	gitea := "http://" + ips[Hostname("gitea")] + ":3000"
-	komodo := "http://" + ips[Hostname("komodo")] + ":9120"
+	// cloudflared reaches the services by internal name (ADR-0027).
+	keycloak := "http://" + o.Config.InternalName("auth") + ":8080"
+	gitea := "http://" + o.Config.InternalName("git") + ":3000"
+	komodo := "http://" + o.Config.InternalName("komodo") + ":9120"
 	routes := []cloudflare.Route{
 		{Hostname: pub.Keycloak, Service: keycloak},
 		{Hostname: pub.Gitea, Service: gitea},

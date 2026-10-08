@@ -62,6 +62,30 @@ type Endpoints struct {
 	TechnitiumIP string
 }
 
+// InternalEndpointsFor computes the base services' endpoints by internal
+// DNS name - what services are configured with, so they reach each
+// other by name, never by IP (ADR-0027). EndpointsFor is the same by
+// LAN address: what the CLI uses from the operator's machine, which
+// needn't resolve the internal zone. TechnitiumIP stays an address: it
+// is the LXCs' resolver.
+func InternalEndpointsFor(cfg *platform.Config) (Endpoints, error) {
+	ep, err := EndpointsFor(cfg)
+	if err != nil {
+		return Endpoints{}, err
+	}
+	name := cfg.InternalName
+	return Endpoints{
+		GiteaURL:           "http://" + name("git") + ":3000",
+		Registry:           name("git") + ":3000",
+		KomodoURL:          "http://" + name("komodo") + ":9120",
+		LokiPushURL:        "http://" + name("loki") + ":3100/loki/api/v1/push",
+		PrometheusWriteURL: "http://" + name("prometheus") + ":9090/api/v1/write",
+		KeycloakURL:        "http://" + name("auth") + ":8080",
+		TechnitiumURL:      "http://" + name("dns") + ":5380",
+		TechnitiumIP:       ep.TechnitiumIP,
+	}, nil
+}
+
 // EndpointsFor computes the base services' endpoints for cfg.
 func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 	ips, _, err := allocateIPs(cfg)
@@ -105,6 +129,7 @@ type GiteaAPI interface {
 	EnsureOrg(ctx context.Context, org string) error
 	EnsureRepo(ctx context.Context, owner, name string) error
 	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branchFilter string) error
+	DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error
 }
 
 // KomodoAPI is the subset of the Komodo client bootstrap uses.
@@ -199,7 +224,13 @@ func ensureSecrets(creds *credentials.Credentials) error {
 // first push of the GitOps repo, and the webhook that makes every later
 // push deploy.
 func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitopsRepoPath string) error {
+	// ep is how urbex reaches the services from here; internal, how they
+	// reach each other - what Komodo and Gitea are configured with.
 	ep, err := EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
+	internal, err := InternalEndpointsFor(o.Config)
 	if err != nil {
 		return err
 	}
@@ -255,10 +286,10 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 			return fmt.Errorf("saving komodo onboarding key: %w", err)
 		}
 	}
-	if err := k.EnsureGitProviderAccount(ctx, ep.Registry, false, GiteaAdminUser, creds.GiteaToken); err != nil {
+	if err := k.EnsureGitProviderAccount(ctx, internal.Registry, false, GiteaAdminUser, creds.GiteaToken); err != nil {
 		return err
 	}
-	if err := k.EnsureDockerRegistryAccount(ctx, ep.Registry, GiteaAdminUser, creds.GiteaToken); err != nil {
+	if err := k.EnsureDockerRegistryAccount(ctx, internal.Registry, GiteaAdminUser, creds.GiteaToken); err != nil {
 		return err
 	}
 
@@ -270,7 +301,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		name, value string
 		secret      bool
 	}{
-		{"URBEX_GITEA_URL", ep.GiteaURL, false},
+		{"URBEX_GITEA_URL", internal.GiteaURL, false},
 		{"URBEX_GITEA_USER", GiteaAdminUser, false},
 		{"URBEX_GITEA_TOKEN", creds.GiteaToken, true},
 		{"URBEX_ORG", o.Config.Git.Org, false},
@@ -332,7 +363,14 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	fmt.Fprintf(o.Out, "GitOps repo pushed to %s.\n", ep.RepoURL(o.Config.Git.Org, GitOpsRepoName))
 
 	// From now on a push to the GitOps repo is what deploys.
-	hook := ep.ProcedureWebhook(GitOpsProcedure, TrunkBranch)
+	// Komodo is reached by name (ADR-0027): the webhook an older urbex
+	// set up to its address goes, or every push would deploy twice.
+	if lan := ep.ProcedureWebhook(GitOpsProcedure, TrunkBranch); lan != internal.ProcedureWebhook(GitOpsProcedure, TrunkBranch) {
+		if err := g.DeleteWebhook(ctx, o.Config.Git.Org, GitOpsRepoName, lan); err != nil {
+			return err
+		}
+	}
+	hook := internal.ProcedureWebhook(GitOpsProcedure, TrunkBranch)
 	if err := g.EnsureWebhook(ctx, o.Config.Git.Org, GitOpsRepoName, hook, creds.KomodoWebhookSecret, TrunkBranch); err != nil {
 		return err
 	}

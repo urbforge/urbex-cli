@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,7 @@ type fakePlatform struct {
 	tags            map[string][]string // "Kind name" -> tags
 	waitedServers   []string
 	hooks           []string
+	deletedHooks    []string
 	actions         map[string]komodo.ActionConfig
 	variables       map[string]string
 	procedures      map[string]komodo.ProcedureConfig
@@ -123,6 +125,10 @@ func (g *fakeGitea) EnsureRepo(ctx context.Context, owner, name string) error {
 }
 func (g *fakeGitea) EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, filter string) error {
 	g.f.hooks = append(g.f.hooks, owner+"/"+repo+" -> "+targetURL+" ("+filter+")")
+	return nil
+}
+func (g *fakeGitea) DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error {
+	g.f.deletedHooks = append(g.f.deletedHooks, owner+"/"+repo+" -> "+targetURL)
 	return nil
 }
 
@@ -434,11 +440,12 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if strings.Join(fp.repos, ",") != "urbex/gitops" {
 		t.Errorf("expected the gitops repo in the default org, got %v", fp.repos)
 	}
-	// Gitea is the first base service: .200 in validConfig's network.
-	if len(fp.regAccounts) != 1 || fp.regAccounts[0] != "192.168.1.200:3000|token-urbex-cli" {
+	// Komodo reaches Gitea by name (ADR-0027); urbex, from here, by
+	// address: .200 in validConfig's network.
+	if len(fp.regAccounts) != 1 || fp.regAccounts[0] != "git.urbex.example.com:3000|token-urbex-cli" {
 		t.Errorf("unexpected registry accounts %v", fp.regAccounts)
 	}
-	if len(fp.gitAccounts) != 1 || fp.gitAccounts[0] != "192.168.1.200:3000|token-urbex-cli" {
+	if len(fp.gitAccounts) != 1 || fp.gitAccounts[0] != "git.urbex.example.com:3000|token-urbex-cli" {
 		t.Errorf("unexpected git provider accounts %v", fp.gitAccounts)
 	}
 	if strings.Join(fp.synced, ",") != "http://192.168.1.200:3000/urbex/gitops.git" {
@@ -452,7 +459,7 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if !action.WebhookEnabled || !strings.Contains(action.FileContents, "refs") || !strings.Contains(action.FileContents, "RunBuild") {
 		t.Errorf("expected the release action with its script, got %+v", action)
 	}
-	if fp.variables["URBEX_GITEA_URL"] != "http://192.168.1.200:3000" || fp.variables["URBEX_GITEA_TOKEN"] != "secret:token-urbex-cli" ||
+	if fp.variables["URBEX_GITEA_URL"] != "http://git.urbex.example.com:3000" || fp.variables["URBEX_GITEA_TOKEN"] != "secret:token-urbex-cli" ||
 		fp.variables["URBEX_ORG"] != "urbex" || fp.variables["URBEX_GITEA_USER"] != "urbex-admin" {
 		t.Errorf("unexpected komodo variables for the release action: %v", fp.variables)
 	}
@@ -464,9 +471,14 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != "*" {
 		t.Errorf("expected the procedure to redeploy changed stacks, got %+v", exec)
 	}
-	const hook = "urbex/gitops -> http://192.168.1.201:9120/listener/github/procedure/urbex-gitops/main (main)"
+	const hook = "urbex/gitops -> http://komodo.urbex.example.com:9120/listener/github/procedure/urbex-gitops/main (main)"
 	if len(fp.hooks) != 1 || fp.hooks[0] != hook {
 		t.Errorf("unexpected webhooks %v", fp.hooks)
+	}
+	// The webhook an older urbex set up to Komodo's address goes.
+	const lanHook = "urbex/gitops -> http://192.168.1.201:9120/listener/github/procedure/urbex-gitops/main"
+	if len(fp.deletedHooks) != 1 || fp.deletedHooks[0] != lanHook {
+		t.Errorf("expected the LAN webhook removed, got %v", fp.deletedHooks)
 	}
 	sopsConfig, err := os.ReadFile(filepath.Join(dir, ".sops.yaml"))
 	if err != nil || !strings.Contains(string(sopsConfig), "age: age1") {
@@ -480,7 +492,13 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(inventory), "gitea_registry: 192.168.1.200:3000") {
+	ip := regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b`)
+	for _, line := range strings.Split(string(inventory), "\n") {
+		if !strings.Contains(line, "ansible_host:") && ip.MatchString(line) {
+			t.Errorf("inventory holds an address (ADR-0027): %q", line)
+		}
+	}
+	if !strings.Contains(string(inventory), "gitea_registry: git.urbex.example.com:3000") {
 		t.Errorf("expected gitea_registry in inventory vars:\n%s", inventory)
 	}
 	if strings.Contains(string(inventory), creds.GiteaAdminPassword) {

@@ -62,8 +62,8 @@ func (o *Orchestrator) Issuer(env string) string {
 }
 
 // keycloakEnv is what a service with auth.keycloak gets to validate
-// tokens: the issuer they carry, and where the signing keys are (on the
-// LAN).
+// tokens: the issuer they carry, and where the signing keys are (by
+// internal name).
 func (o *Orchestrator) keycloakEnv(env string) map[string]string {
 	if o.KeycloakURL == "" {
 		return nil
@@ -71,7 +71,7 @@ func (o *Orchestrator) keycloakEnv(env string) map[string]string {
 	return map[string]string{
 		"KEYCLOAK_REALM":    o.Realm(env),
 		"KEYCLOAK_ISSUER":   o.Issuer(env),
-		"KEYCLOAK_JWKS_URL": o.KeycloakURL + "/realms/" + o.Realm(env) + "/protocol/openid-connect/certs",
+		"KEYCLOAK_JWKS_URL": o.KeycloakInternalURL + "/realms/" + o.Realm(env) + "/protocol/openid-connect/certs",
 	}
 }
 

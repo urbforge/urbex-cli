@@ -47,8 +47,8 @@ func TestApply_PublishesPublicServicesOnly(t *testing.T) {
 	}
 	routes := fake.RoutesOf(tunnel)
 	want := map[string]string{
-		"api-staging-my-app-urbex.cubotto.net": "http://192.168.1.210:8080",
-		"api-my-app-urbex.cubotto.net":         "http://192.168.1.211:8080",
+		"api-staging-my-app-urbex.cubotto.net": "http://api.staging.my-app.urbex.cubotto.net:8080",
+		"api-my-app-urbex.cubotto.net":         "http://api.my-app.urbex.cubotto.net:8080",
 	}
 	if len(routes) != len(want) {
 		t.Errorf("routes = %v, want %v", routes, want)

@@ -8,12 +8,11 @@ services:
     environment:
       - USER_UID=1000
       - USER_GID=1000
-      - GITEA__server__DOMAIN={{ ansible_host }}
-      # TODO: point ROOT_URL at the real public URL once ingress
-      # (docs/decisions/0005-cloudflare-tunnel-ingress.md) is wired up.
-      # The container registry's token endpoint is derived from it, so it
-      # must stay reachable from every LXC that pulls images.
-      - GITEA__server__ROOT_URL=http://{{ ansible_host }}:3000/
+      # By internal name (docs/decisions/0027-service-conventions.md): the
+      # container registry's token endpoint is derived from ROOT_URL, so it
+      # must be reachable from every LXC that pulls images.
+      - GITEA__server__DOMAIN={{ gitea_url | urlsplit('hostname') }}
+      - GITEA__server__ROOT_URL={{ gitea_url }}/
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__service__DISABLE_REGISTRATION=true
       - GITEA__packages__ENABLED=true

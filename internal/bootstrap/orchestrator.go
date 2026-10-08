@@ -100,6 +100,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	// What the services are configured with: names, never IPs (ADR-0027).
+	internal, err := InternalEndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
 
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
@@ -111,7 +116,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	ansibleDir := filepath.Join(opts.GitOpsRepoPath, "ansible")
-	if err := writeInventory(ansibleDir, o.Config.Domain, ep, PublicEndpointsFor(o.Config), ips); err != nil {
+	if err := writeInventory(ansibleDir, o.Config.Domain, internal, PublicEndpointsFor(o.Config), ips); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
 
@@ -172,7 +177,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("connecting the base services to komodo: %w", err)
 	}
 	if o.Config.Cloudflare.Enabled() {
-		if err := o.publishPlatform(ctx, clients, ips); err != nil {
+		if err := o.publishPlatform(ctx, clients); err != nil {
 			return fmt.Errorf("publishing the platform on cloudflare: %w", err)
 		}
 	}

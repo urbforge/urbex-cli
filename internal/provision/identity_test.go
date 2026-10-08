@@ -67,7 +67,7 @@ func (m memStore) Write(_ context.Context, path string, values map[string]string
 func TestIdentity_RealmPerEnvironmentWithTestUsersInStaging(t *testing.T) {
 	o, _, _ := cloudflareOrchestrator(t)
 	kc, store := &fakeKeycloak{}, memStore{}
-	o.Keycloak, o.KeycloakURL, o.Secrets = kc, "http://192.168.1.203:8080", store
+	o.Keycloak, o.KeycloakURL, o.KeycloakInternalURL, o.Secrets = kc, "http://192.168.1.203:8080", "http://auth.urbex.cubotto.net:8080", store
 	o.Manifest.Frontend = &manifest.Frontend{Type: "web", Provider: "cloudflare-pages", BuildCommand: "b", OutputDir: "d"}
 	o.Manifest.Services[0].Auth = &manifest.Auth{Keycloak: true, Roles: []string{"member", "admin"}}
 	dir := t.TempDir()
@@ -121,7 +121,7 @@ func TestIdentity_RealmPerEnvironmentWithTestUsersInStaging(t *testing.T) {
 	// The service validating tokens learns its issuer and keys.
 	api := o.target("staging").Services[0]
 	if api.Extra["KEYCLOAK_ISSUER"] != "https://auth-urbex.cubotto.net/realms/my-app-staging" ||
-		api.Extra["KEYCLOAK_JWKS_URL"] != "http://192.168.1.203:8080/realms/my-app-staging/protocol/openid-connect/certs" {
+		api.Extra["KEYCLOAK_JWKS_URL"] != "http://auth.urbex.cubotto.net:8080/realms/my-app-staging/protocol/openid-connect/certs" {
 		t.Errorf("api env = %v", api.Extra)
 	}
 

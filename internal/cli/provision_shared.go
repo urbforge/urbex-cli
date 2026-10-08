@@ -105,6 +105,15 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	if err != nil {
 		return nil, err
 	}
+	// The addresses come from the config: check them against the
+	// services' internal names before using them (ADR-0027).
+	warning, err := bootstrap.CheckAddresses(cmd.Context(), cfg, bootstrap.TechnitiumLookup(ep.TechnitiumIP))
+	if err != nil {
+		return nil, err
+	}
+	if warning != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+warning+".")
+	}
 	o := &provision.Orchestrator{
 		Manifest:    m,
 		Config:      cfg,
@@ -122,6 +131,9 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	ro := newRollout(cfg, creds, ep, repoDir, out)
 	o.Rollout = ro
 	o.KeycloakURL = ep.KeycloakURL
+	if internal, err := bootstrap.InternalEndpointsFor(cfg); err == nil {
+		o.KeycloakInternalURL = internal.KeycloakURL
+	}
 	if creds.KeycloakAdminPassword != "" {
 		o.Keycloak = keycloak.New(ep.KeycloakURL, "admin", creds.KeycloakAdminPassword)
 	}
@@ -140,11 +152,13 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 // newRollout builds the Gitea+Komodo rollout driver for an already
 // bootstrapped platform.
 func newRollout(cfg *platform.Config, creds *credentials.Credentials, ep bootstrap.Endpoints, repoDir string, out io.Writer) *rollout.Rollout {
+	internal, _ := bootstrap.InternalEndpointsFor(cfg) // fails only where ep did
 	return &rollout.Rollout{
 		Gitea:         gitea.New(ep.GiteaURL, creds.GiteaToken),
 		Komodo:        komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
 		Git:           rollout.GitCLI{},
 		Endpoints:     ep,
+		Internal:      internal,
 		Org:           cfg.Git.Org,
 		Token:         creds.GiteaToken,
 		WebhookSecret: creds.KomodoWebhookSecret,
