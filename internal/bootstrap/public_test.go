@@ -53,10 +53,10 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	}
 	routes := fake.RoutesOf(tunnelID)
 	want := map[string]string{
-		"auth-urbex.cubotto.net":   "http://192.168.1.203:8080",
-		"git-urbex.cubotto.net":    "http://192.168.1.200:3000",
-		"komodo-urbex.cubotto.net": "http://192.168.1.201:9120",
-		"hooks-urbex.cubotto.net":  "http://192.168.1.201:9120 ^/listener/",
+		"auth-urbex.cubotto.net":   "http://auth.urbex.cubotto.net:8080",
+		"git-urbex.cubotto.net":    "http://git.urbex.cubotto.net:3000",
+		"komodo-urbex.cubotto.net": "http://komodo.urbex.cubotto.net:9120",
+		"hooks-urbex.cubotto.net":  "http://komodo.urbex.cubotto.net:9120 ^/listener/",
 	}
 	for h, svc := range want {
 		if routes[h] != svc {
@@ -203,8 +203,8 @@ func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
 	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
 	for _, want := range []string{
 		"urbex_kind: platform", "telemetry_compose_project: urbex",
-		"loki_push_url: http://192.168.1.204:3100/loki/api/v1/push",
-		"prometheus_write_url: http://192.168.1.204:9090/api/v1/write",
+		"loki_push_url: http://loki.urbex.example.com:3100/loki/api/v1/push",
+		"prometheus_write_url: http://prometheus.urbex.example.com:9090/api/v1/write",
 		"urbex_service: gitea", "urbex_service: observability",
 	} {
 		if !strings.Contains(string(inventory), want) {
@@ -239,7 +239,7 @@ func TestRun_ConnectsAndTagsThePlatformInKomodo(t *testing.T) {
 		}
 	}
 	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
-	if !strings.Contains(string(inventory), "komodo_core_address: http://192.168.1.201:9120") {
+	if !strings.Contains(string(inventory), "komodo_core_address: http://komodo.urbex.example.com:9120") {
 		t.Errorf("the inventory needs Komodo's address for Periphery:\n%s", inventory)
 	}
 }

@@ -32,6 +32,7 @@ machine() { # machine <hostname> <last-octet>: (re)create a fake LXC
   # container's own overlay root.
   podman run -d --name "$name" --hostname "$1" --privileged --systemd=always \
     --network "$NETWORK" --ip "$NET.$2" \
+    --dns "$NET.202" --dns "$NET.1" \
     -v "$name-docker:/var/lib/docker" -v "$name-containerd:/var/lib/containerd" \
     urbex-e2e-machine >/dev/null
 }
@@ -187,6 +188,8 @@ step "apply staging: it follows main, and runs main's head right away" '
   [ "$(keycloak_realm hello-staging)" = 200 ] || fail "no Keycloak realm for the project in staging"
   [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "no internal dns record for staging api"
   urbex status staging | grep -F "dns=api.staging.hello.urbex.urbex.test" | grep -qv "(missing)\|(points to" || fail "status should show the staging api internal dns name"
+  ! grep -rnE '([0-9]{1,3}\.){3}[0-9]{1,3}' /work/gitops/environments || fail "the gitops repo's environments hold addresses, not names"
+  grep -q "image: git.urbex.urbex.test:3000/urbex/hello-api" /work/gitops/environments/staging/hello/api/compose.yaml || fail "the image should come from the registry by name"
   urbex status | grep -F "Gitea" | grep -F "http://git.urbex.urbex.test:3000" | grep -F "http://$NET.200:3000" | grep -qv "(missing)\|(points to" || fail "status should show gitea by internal name and LAN address, with its record"
   echo "ok: staging follows main"'
 

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -169,6 +171,11 @@ func newRollout(g *fakeGitea, k *fakeKomodo, git *fakeGit) *Rollout {
 			Registry:  "10.0.0.200:3000",
 			KomodoURL: "http://10.0.0.201:9120",
 		},
+		Internal: bootstrap.Endpoints{
+			GiteaURL:  "http://git.urbex.example.com:3000",
+			Registry:  "git.urbex.example.com:3000",
+			KomodoURL: "http://komodo.urbex.example.com:9120",
+		},
 		Org:           "urbex",
 		Token:         "tok",
 		WebhookSecret: "hook-secret",
@@ -228,7 +235,7 @@ func TestSetupProject_DeclaresBuildsAndReleaseWebhook(t *testing.T) {
 		t.Errorf("expected one build per service, independent of environments, got %d", len(k.builds))
 	}
 
-	const hook = "http://10.0.0.201:9120/listener/github/action/urbex-release/__ANY__"
+	const hook = "http://komodo.urbex.example.com:9120/listener/github/action/urbex-release/__ANY__"
 	if g.hooks[hook] != "hook-secret|*" {
 		t.Errorf("expected a release webhook for every ref (tags included), got %v", g.hooks)
 	}
@@ -256,7 +263,7 @@ func TestSetupEnv_WritesFoldersAndDeclaresStacks(t *testing.T) {
 		t.Errorf("expected to wait for both servers, got %v", k.waited)
 	}
 	compose, err := os.ReadFile(filepath.Join(repo.Path, "environments/staging/my-app/api/compose.yaml"))
-	if err != nil || !strings.Contains(string(compose), "image: 10.0.0.200:3000/urbex/my-app-api:${VERSION}") {
+	if err != nil || !strings.Contains(string(compose), "image: git.urbex.example.com:3000/urbex/my-app-api:${VERSION}") {
 		t.Errorf("expected the api folder with its compose file (%v):\n%s", err, compose)
 	}
 
@@ -272,7 +279,7 @@ func TestSetupEnv_WritesFoldersAndDeclaresStacks(t *testing.T) {
 		stack.ConfigFiles[1] != (komodo.ConfigFile{Path: "secrets.sops.env", Requires: "Redeploy"}) {
 		t.Errorf("expected config and secrets tracked with redeploy, got %+v", stack.ConfigFiles)
 	}
-	if stack.ComposeCmdWrapper != ComposeWrapper || stack.RegistryProvider != "10.0.0.200:3000" || stack.WebhookEnabled {
+	if stack.ComposeCmdWrapper != ComposeWrapper || stack.RegistryProvider != "git.urbex.example.com:3000" || stack.WebhookEnabled {
 		t.Errorf("unexpected stack wrapper/registry/webhook %+v", stack)
 	}
 	if len(k.deployed) != 0 {
@@ -405,7 +412,7 @@ func TestDeploy_DeploysEveryStackAndExplainsFailures(t *testing.T) {
 }
 
 func TestRemove_EnvThenServersThenProject(t *testing.T) {
-	const hook = "http://10.0.0.201:9120/listener/github/action/urbex-release/__ANY__"
+	const hook = "http://komodo.urbex.example.com:9120/listener/github/action/urbex-release/__ANY__"
 	g := &fakeGitea{hooks: map[string]string{hook: "x"}}
 	k := &fakeKomodo{}
 	r := newRollout(g, k, &fakeGit{})
@@ -553,7 +560,7 @@ func TestSetupEnv_WebFrontendRunsOnTheBuilder(t *testing.T) {
 		}
 	}
 	compose, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/my-app/web/compose.yaml"))
-	for _, want := range []string{"image: 10.0.0.200:3000/urbex/my-app-web:${VERSION}", "CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}", "/tmp/deployed"} {
+	for _, want := range []string{"image: git.urbex.example.com:3000/urbex/my-app-web:${VERSION}", "CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}", "/tmp/deployed"} {
 		if !strings.Contains(string(compose), want) {
 			t.Errorf("web compose lacks %q:\n%s", want, compose)
 		}
@@ -593,5 +600,37 @@ func TestSetup_TagsProjectResources(t *testing.T) {
 		if got := strings.Join(k.tags[res], ","); got != want {
 			t.Errorf("%s tags = %s, want %s", res, got, want)
 		}
+	}
+}
+
+// Nothing Komodo or the GitOps repo are given holds an address: services
+// reach Gitea, its registry and Komodo by internal name (ADR-0027).
+func TestSetup_ConfiguresNamesNeverAddresses(t *testing.T) {
+	k, g := &fakeKomodo{}, &fakeGitea{}
+	repo := envrepo.Repo{Path: t.TempDir()}
+	r := newRollout(g, k, &fakeGit{})
+	if err := r.SetupProject(context.Background(), "my-app", services()); err != nil {
+		t.Fatalf("SetupProject: %v", err)
+	}
+	if err := r.SetupEnv(context.Background(), stagingTarget(), repo); err != nil {
+		t.Fatalf("SetupEnv: %v", err)
+	}
+	ip := regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b`)
+	configured := fmt.Sprintf("%+v %+v %v", k.builds, k.stacks, g.hooks)
+	if m := ip.FindString(configured); m != "" {
+		t.Errorf("komodo or gitea configured with address %s:\n%s", m, configured)
+	}
+	err := filepath.WalkDir(repo.Path, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if m := ip.FindString(string(data)); err == nil && m != "" {
+			t.Errorf("%s holds address %s", path, m)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

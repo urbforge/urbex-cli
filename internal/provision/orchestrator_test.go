@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -713,13 +714,21 @@ func TestApply_SetsUpProjectAndAnEmptyProdEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"gitea_registry: 192.168.1.200:3000",
-		"komodo_core_address: http://192.168.1.201:9120",
+		"gitea_registry: git.urbex.example.com:3000",
+		"komodo_core_address: http://komodo.urbex.example.com:9120",
 		"komodo_version: 2.2.0",
 		"ansible_host: 192.168.1.210",
 	} {
 		if !strings.Contains(string(inventory), want) {
 			t.Errorf("expected %q in inventory:\n%s", want, inventory)
+		}
+	}
+	// The LXCs reach the platform by name: the only addresses are the
+	// hosts Ansible connects to (ADR-0027).
+	ip := regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b`)
+	for _, line := range strings.Split(string(inventory), "\n") {
+		if !strings.Contains(line, "ansible_host:") && ip.MatchString(line) {
+			t.Errorf("inventory holds an address: %q", line)
 		}
 	}
 	if strings.Contains(string(inventory), "O_onboard_O") || strings.Contains(string(inventory), "AGE-SECRET-KEY") {

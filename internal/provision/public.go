@@ -6,7 +6,6 @@ import (
 	"github.com/urbforge/urbex-cli/internal/rollout"
 	"strconv"
 
-	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/cloudflare"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 )
@@ -52,7 +51,7 @@ func (o *Orchestrator) hostname(env string, svc manifest.Service) string {
 // publish routes the environment's public services through the
 // platform's tunnel and points their DNS records at it; services that
 // aren't (or no longer are) public lose theirs.
-func (o *Orchestrator) publish(ctx context.Context, env string, allocations map[string]allocation.Entry) error {
+func (o *Orchestrator) publish(ctx context.Context, env string) error {
 	if !o.Config.Cloudflare.Enabled() {
 		return nil
 	}
@@ -73,8 +72,8 @@ func (o *Orchestrator) publish(ctx context.Context, env string, allocations map[
 			private = append(private, host)
 			continue
 		}
-		entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
-		routes = append(routes, cloudflare.Route{Hostname: host, Service: "http://" + entry.IP + ":" + strconv.Itoa(svc.Port)})
+		// cloudflared reaches the service by internal name (ADR-0027).
+		routes = append(routes, cloudflare.Route{Hostname: host, Service: "http://" + o.InternalHostname(env, svc) + ":" + strconv.Itoa(svc.Port)})
 	}
 	if err := o.Cloudflare.SetRoutes(ctx, tunnel.ID, hostnames, routes); err != nil {
 		return err

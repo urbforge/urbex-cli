@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,7 +87,12 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 			} else if entry, ok := ledger.Lookup(provision.Hostname(d.Project, svc.Name, d.Env)); ok {
 				lan = fmt.Sprintf("http://%s:%d", entry.IP, repo.Port(d.Env, d.Project, svc.Name))
 				record = dns.Check(ctx, o.InternalHostname(d.Env, svc), entry.IP)
-				pub = public[strings.TrimPrefix(lan, "http://")]
+				// Routes go to the service's internal name (ADR-0027);
+				// ones set up before that, to its address.
+				pub = public[o.InternalHostname(d.Env, svc)+":"+strconv.Itoa(repo.Port(d.Env, d.Project, svc.Name))]
+				if pub == "" {
+					pub = public[strings.TrimPrefix(lan, "http://")]
+				}
 				if pub == "" && cfg.Cloudflare.QuickTunnel {
 					pub = quickTunnelRoute(ctx, entry.IP)
 				}
