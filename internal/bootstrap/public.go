@@ -26,9 +26,12 @@ type CloudflareAPI interface {
 	EnableOneTimePIN(ctx context.Context) error
 }
 
-// PublicEndpoints are the platform's public hostnames (ADR-0022).
+// PublicEndpoints are the platform's public hostnames (ADR-0022): the
+// services' public APIs and UIs, and - behind Cloudflare Access - their
+// admin and internal ones (ADR-0027).
 type PublicEndpoints struct {
 	Keycloak, Gitea, Komodo, Hooks string
+	DNS, Grafana, Prometheus, Loki string
 }
 
 // PublicEndpointsFor returns the platform's public hostnames, or the zero
@@ -43,11 +46,38 @@ func PublicEndpointsFor(cfg *platform.Config) PublicEndpoints {
 		Gitea:    cf.Hostname(cfg.Domain, "git"),
 		Komodo:   cf.Hostname(cfg.Domain, "komodo"),
 		Hooks:    cf.Hostname(cfg.Domain, "hooks"),
+
+		DNS:        cf.Hostname(cfg.Domain, "dns"),
+		Grafana:    cf.Hostname(cfg.Domain, "grafana"),
+		Prometheus: cf.Hostname(cfg.Domain, "prometheus"),
+		Loki:       cf.Hostname(cfg.Domain, "loki"),
 	}
 }
 
 func (p PublicEndpoints) all() []string {
-	return []string{p.Keycloak, p.Gitea, p.Komodo, p.Hooks}
+	return []string{p.Keycloak, p.Gitea, p.Komodo, p.Hooks, p.DNS, p.Grafana, p.Prometheus, p.Loki}
+}
+
+// accessApp is a Cloudflare Access application urbex creates: Name is
+// the suffix of its name, Domain the hostname - or hostname and path -
+// it protects.
+type accessApp struct{ Name, Domain string }
+
+// accessApps are the platform's admin and internal UIs and APIs, behind
+// Access (ADR-0027): Gitea's web, Komodo's UI, Technitium's console,
+// Grafana, Prometheus, Loki, and Keycloak's admin console and admin
+// realm - its other realms, the projects', stay public.
+func (p PublicEndpoints) accessApps() []accessApp {
+	return []accessApp{
+		{"git", p.Gitea},
+		{"komodo", p.Komodo},
+		{"dns", p.DNS},
+		{"grafana", p.Grafana},
+		{"prometheus", p.Prometheus},
+		{"loki", p.Loki},
+		{"auth-admin", p.Keycloak + "/admin"},
+		{"auth-master", p.Keycloak + "/realms/master"},
+	}
 }
 
 // Names of the Access objects Urbex creates (prefixed with the
@@ -75,7 +105,7 @@ func (o *Orchestrator) tunnelToken(ctx context.Context, clients Clients) (string
 	return cf.TunnelToken(ctx, tunnel.ID)
 }
 
-// publishPlatform puts Gitea and Komodo behind Cloudflare Access, then
+// publishPlatform puts the admin and internal UIs behind Cloudflare Access, then
 // routes the platform's public hostnames through its tunnel and points
 // their DNS records at it. In that order: a protected service must never
 // be reachable before its Access application exists, so if Access can't
@@ -91,8 +121,8 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 	if err != nil {
 		return accessPermission(err)
 	}
-	for service, host := range map[string]string{"git": pub.Gitea, "komodo": pub.Komodo} {
-		if err := cf.EnsureAccessApp(ctx, accessAppName(o.Config, service), host, policy); err != nil {
+	for _, app := range pub.accessApps() {
+		if err := cf.EnsureAccessApp(ctx, accessAppName(o.Config, app.Name), app.Domain, policy); err != nil {
 			return accessPermission(err)
 		}
 	}
@@ -105,12 +135,21 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 	keycloak := "http://" + o.Config.InternalName("auth") + ":8080"
 	gitea := "http://" + o.Config.InternalName("git") + ":3000"
 	komodo := "http://" + o.Config.InternalName("komodo") + ":9120"
+	notFound := "http_status:404"
 	routes := []cloudflare.Route{
 		{Hostname: pub.Keycloak, Service: keycloak},
 		{Hostname: pub.Gitea, Service: gitea},
 		{Hostname: pub.Komodo, Service: komodo},
 		// Only Komodo's webhook listener: every call is signed.
 		{Hostname: pub.Hooks, Path: "^/listener/", Service: komodo},
+		{Hostname: pub.DNS, Service: "http://" + o.Config.InternalName("dns") + ":5380"},
+		{Hostname: pub.Grafana, Service: "http://" + o.Config.InternalName("grafana") + ":3000"},
+		// The write paths stay internal (ADR-0027): only the agents use
+		// them, by internal name. The rules before a hostname's own win.
+		{Hostname: pub.Prometheus, Path: "^/api/v1/(write|otlp)", Service: notFound},
+		{Hostname: pub.Prometheus, Service: "http://" + o.Config.InternalName("prometheus") + ":9090"},
+		{Hostname: pub.Loki, Path: "^/(loki/api/v1/push|api/prom/push|otlp/)", Service: notFound},
+		{Hostname: pub.Loki, Service: "http://" + o.Config.InternalName("loki") + ":3100"},
 	}
 	if err := cf.SetRoutes(ctx, tunnel.ID, pub.all(), routes); err != nil {
 		return err
@@ -120,8 +159,9 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 			return err
 		}
 	}
-	fmt.Fprintf(o.Out, "Published on Cloudflare: Keycloak https://%s, Gitea https://%s and Komodo https://%s (behind Access), webhooks https://%s.\n",
-		pub.Keycloak, pub.Gitea, pub.Komodo, pub.Hooks)
+	fmt.Fprintf(o.Out, "Published on Cloudflare: Keycloak https://%s (its admin console behind Access), webhooks https://%s;\n", pub.Keycloak, pub.Hooks)
+	fmt.Fprintf(o.Out, "behind Access: Gitea https://%s, Komodo https://%s, Technitium https://%s, Grafana https://%s, Prometheus https://%s, Loki https://%s.\n",
+		pub.Gitea, pub.Komodo, pub.DNS, pub.Grafana, pub.Prometheus, pub.Loki)
 	return nil
 }
 
@@ -130,7 +170,7 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 func (o *Orchestrator) ensureOneTimePIN(ctx context.Context, cf CloudflareAPI) error {
 	ok, err := cf.HasOneTimePIN(ctx)
 	if cloudflare.Forbidden(err) {
-		fmt.Fprintln(o.Out, "Warning: the Cloudflare token can't read Zero Trust login methods; make sure One-time PIN is enabled (Zero Trust > Settings > Authentication), or nobody can log in to Gitea and Komodo through Access.")
+		fmt.Fprintln(o.Out, "Warning: the Cloudflare token can't read Zero Trust login methods; make sure One-time PIN is enabled (Zero Trust > Settings > Authentication), or nobody can log in through Access (Gitea, Komodo, Grafana, ...).")
 		return nil
 	}
 	if err != nil || ok {
@@ -150,8 +190,8 @@ func (o *Orchestrator) ensureOneTimePIN(ctx context.Context, cf CloudflareAPI) e
 func (o *Orchestrator) unpublishPlatform(ctx context.Context, clients Clients) error {
 	cf := o.cloudflare(clients)
 	pub := PublicEndpointsFor(o.Config)
-	for _, service := range []string{"git", "komodo"} {
-		if err := cf.DeleteAccessApp(ctx, accessAppName(o.Config, service)); err != nil {
+	for _, app := range pub.accessApps() {
+		if err := cf.DeleteAccessApp(ctx, accessAppName(o.Config, app.Name)); err != nil {
 			return err
 		}
 	}

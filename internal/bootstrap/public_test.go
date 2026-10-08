@@ -53,10 +53,14 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	}
 	routes := fake.RoutesOf(tunnelID)
 	want := map[string]string{
-		"auth-urbex.cubotto.net":   "http://auth.urbex.cubotto.net:8080",
-		"git-urbex.cubotto.net":    "http://git.urbex.cubotto.net:3000",
-		"komodo-urbex.cubotto.net": "http://komodo.urbex.cubotto.net:9120",
-		"hooks-urbex.cubotto.net":  "http://komodo.urbex.cubotto.net:9120 ^/listener/",
+		"auth-urbex.cubotto.net":       "http://auth.urbex.cubotto.net:8080",
+		"git-urbex.cubotto.net":        "http://git.urbex.cubotto.net:3000",
+		"komodo-urbex.cubotto.net":     "http://komodo.urbex.cubotto.net:9120",
+		"hooks-urbex.cubotto.net":      "http://komodo.urbex.cubotto.net:9120 ^/listener/",
+		"dns-urbex.cubotto.net":        "http://dns.urbex.cubotto.net:5380",
+		"grafana-urbex.cubotto.net":    "http://grafana.urbex.cubotto.net:3000",
+		"prometheus-urbex.cubotto.net": "http://prometheus.urbex.cubotto.net:9090",
+		"loki-urbex.cubotto.net":       "http://loki.urbex.cubotto.net:3100",
 	}
 	for h, svc := range want {
 		if routes[h] != svc {
@@ -65,7 +69,7 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	}
 	names := fake.RecordNames()
 	sort.Strings(names)
-	if strings.Join(names, ",") != "auth-urbex.cubotto.net,git-urbex.cubotto.net,hooks-urbex.cubotto.net,komodo-urbex.cubotto.net" {
+	if strings.Join(names, ",") != "auth-urbex.cubotto.net,dns-urbex.cubotto.net,git-urbex.cubotto.net,grafana-urbex.cubotto.net,hooks-urbex.cubotto.net,komodo-urbex.cubotto.net,loki-urbex.cubotto.net,prometheus-urbex.cubotto.net" {
 		t.Errorf("DNS records = %v", names)
 	}
 	var protected []string
@@ -73,8 +77,11 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 		protected = append(protected, app["domain"].(string))
 	}
 	sort.Strings(protected)
-	if strings.Join(protected, ",") != "git-urbex.cubotto.net,komodo-urbex.cubotto.net" {
-		t.Errorf("Access protects %v, want Gitea and Komodo only", protected)
+	// Admin and internal UIs behind Access (ADR-0027); Keycloak's realms
+	// and the webhooks stay public.
+	wantProtected := "auth-urbex.cubotto.net/admin,auth-urbex.cubotto.net/realms/master,dns-urbex.cubotto.net,git-urbex.cubotto.net,grafana-urbex.cubotto.net,komodo-urbex.cubotto.net,loki-urbex.cubotto.net,prometheus-urbex.cubotto.net"
+	if strings.Join(protected, ",") != wantProtected {
+		t.Errorf("Access protects %v, want %s", protected, wantProtected)
 	}
 	if fp.variables["URBEX_CLOUDFLARE_TOKEN"] != "secret:cf-token" || fp.variables["URBEX_CLOUDFLARE_ACCOUNT_ID"] != "acc" {
 		t.Errorf("Komodo needs the Cloudflare token and account for the web frontends, variables = %v", fp.variables)
@@ -241,5 +248,35 @@ func TestRun_ConnectsAndTagsThePlatformInKomodo(t *testing.T) {
 	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
 	if !strings.Contains(string(inventory), "komodo_core_address: http://komodo.urbex.example.com:9120") {
 		t.Errorf("the inventory needs Komodo's address for Periphery:\n%s", inventory)
+	}
+}
+
+// Prometheus' remote write and Loki's push stay internal (ADR-0027): on
+// their public hostnames those paths answer 404, and the rule comes
+// before the hostname's own, or cloudflared would never reach it.
+func TestRun_WritePathsStayInternal(t *testing.T) {
+	o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	fake := withCloudflare(t, o)
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var ingress []string
+	for id := range fake.Tunnels {
+		ingress = fake.IngressOf(id)
+	}
+	index := func(rule string) int {
+		for i, r := range ingress {
+			if r == rule {
+				return i
+			}
+		}
+		t.Fatalf("no rule %q in %v", rule, ingress)
+		return -1
+	}
+	if index("prometheus-urbex.cubotto.net ^/api/v1/(write|otlp) -> http_status:404") > index("prometheus-urbex.cubotto.net -> http://prometheus.urbex.cubotto.net:9090") {
+		t.Error("Prometheus' write block must come before its route")
+	}
+	if index("loki-urbex.cubotto.net ^/(loki/api/v1/push|api/prom/push|otlp/) -> http_status:404") > index("loki-urbex.cubotto.net -> http://loki.urbex.cubotto.net:3100") {
+		t.Error("Loki's push block must come before its route")
 	}
 }

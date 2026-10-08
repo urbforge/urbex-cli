@@ -88,6 +88,28 @@ func (s *Server) RoutesOf(tunnelID string) map[string]string {
 	return out
 }
 
+// IngressOf returns a tunnel's rules in order, without the catch-all, as
+// "hostname path -> service" ("hostname -> service" without a path).
+func (s *Server) IngressOf(tunnelID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	if t := s.Tunnels[tunnelID]; t != nil {
+		for _, r := range t.Ingress {
+			h, _ := r["hostname"].(string)
+			if h == "" {
+				continue
+			}
+			svc, _ := r["service"].(string)
+			if p, _ := r["path"].(string); p != "" {
+				h += " " + p
+			}
+			out = append(out, h+" -> "+svc)
+		}
+	}
+	return out
+}
+
 // RecordNames returns the names of the DNS records.
 func (s *Server) RecordNames() []string {
 	s.mu.Lock()
