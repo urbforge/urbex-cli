@@ -1,0 +1,50 @@
+# The tools urbex-cli is built, tested and run with, and their versions -
+# the only place they are pinned: the operator image (tools/operator) and
+# the e2e runner image install them from this file too.
+#
+# Setup: install mise (https://mise.jdx.dev), then `mise install` here.
+# Personal settings (e.g. URBEX_GITOPS_REPO) go in mise.local.toml, which
+# git ignores; credentials stay in ~/.urbex/credentials.yaml.
+#
+# min_version is also the mise the images install.
+min_version = "2026.10.3"
+
+[tools]
+go = "1.26.5"
+terraform = "1.13.3"
+sops = "3.13.3"
+age = "1.2.1"
+python = "3.12.15"
+uv = "0.12.23"
+"pipx:ansible-core" = "2.21.5"
+
+[settings]
+# Install Python tools (ansible-core) with uv.
+pipx.uvx = true
+
+[tasks.build]
+description = "Build the urbex binary"
+run = "go build -o urbex ./cmd/urbex"
+
+[tasks.test]
+description = "Run the unit tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "go vet, and check the code is gofmt-formatted"
+run = [
+  "go vet ./...",
+  'test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "not formatted - run: mise run fmt" >&2; exit 1; }',
+]
+
+[tasks.fmt]
+description = "Format the code with gofmt"
+run = "gofmt -w cmd internal"
+
+[tasks.e2e]
+description = "End-to-end test, needs podman (see e2e/README.md)"
+run = "e2e/run.sh"
+
+[tasks.operator-image]
+description = "Build the operator image used by tools/operator/urbex-op"
+run = "tools/operator/urbex-op build"

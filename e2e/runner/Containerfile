@@ -1,13 +1,23 @@
-# The operator's machine: everything `urbex` shells out to, for real,
-# except terraform - the "LXCs" are containers created by run.sh, so
-# terraform is a stub that only logs its arguments.
-FROM docker.io/library/python:3.12-slim
-ARG SOPS_VERSION=3.13.3
+# The operator's machine: everything `urbex` shells out to, for real, at
+# the versions pinned in mise.toml - except terraform: the "LXCs" are
+# containers created by run.sh, so terraform is a stub that only logs its
+# arguments. Built by run.sh from the repository root, with mise.toml's
+# mise version as MISE_VERSION.
+FROM docker.io/library/debian:13-slim
+ARG MISE_VERSION
+# The tools, from mise.toml, linked into /usr/local/bin; mise itself and
+# uv are only needed to install them, and are removed in the same layer.
+ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise/config MISE_CACHE_DIR=/tmp/mise-cache MISE_YES=1
+WORKDIR /opt/mise/tools
+COPY mise.toml ./
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl age \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir -q --root-user-action=ignore --disable-pip-version-check ansible-core \
- && curl -fsSL -o /usr/local/bin/sops \
-      "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.$(dpkg --print-architecture)" \
- && chmod +x /usr/local/bin/sops
-COPY terraform /usr/local/bin/terraform
+ && curl -fsSL -o /tmp/mise "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-x64" \
+ && chmod +x /tmp/mise \
+ && /tmp/mise trust \
+ && /tmp/mise install sops age python uv pipx:ansible-core \
+ && for d in $(/tmp/mise bin-paths sops age python pipx:ansible-core); do ln -sf "$d"/* /usr/local/bin/; done \
+ && rm -rf /tmp/mise /tmp/mise-cache "$MISE_DATA_DIR/installs/uv" "$MISE_DATA_DIR/shims"
+WORKDIR /
+COPY e2e/runner/terraform /usr/local/bin/terraform
