@@ -32,9 +32,12 @@ machine() { # machine <hostname> <last-octet>: (re)create a fake LXC
   # container's own overlay root.
   podman run -d --name "$name" --hostname "$1" --privileged --systemd=always \
     --network "$NETWORK" --ip "$NET.$2" \
-    --dns "$NET.202" --dns "$NET.1" \
     -v "$name-docker:/var/lib/docker" -v "$name-containerd:/var/lib/containerd" \
     urbex-e2e-machine >/dev/null
+  # Technitium first, then the network's resolver - as Terraform sets up
+  # a real LXC. Not with --dns: podman's resolver would forward to
+  # Technitium, which forwards back to it.
+  podman exec "$name" sh -c "printf 'nameserver $NET.202\nnameserver $NET.1\n' >/etc/resolv.conf"
 }
 
 teardown() {
