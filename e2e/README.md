@@ -38,7 +38,9 @@ runner and fails the test on the first assertion that doesn't hold:
 
 1. `urbex bootstrap` scaffolds the platform config; a second run
    provisions the five base services and sets up Gitea and Komodo, mints
-   a Technitium API token and creates its zone; a third changes nothing.
+   a Technitium API token and creates its zone (`urbex.urbex.test`) with
+   a name per platform service, resolved by Technitium along with
+   public names (through its forwarders); a third changes nothing.
 2. `urbex apply staging` for the sample app (`e2e/app`): the environment
    exists - folder in the GitOps repo, Build, Stack, internal DNS record
    in Technitium - follows `main`, and runs `main`'s head.

@@ -38,7 +38,9 @@ type tfVars struct {
 	DNSServers      []string               `json:"dns_servers"`
 }
 
-func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int) error {
+// writeTFVars renders the project's terraform.auto.tfvars.json;
+// nameservers are its LXCs' (Technitium, then its forwarders).
+func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int, nameservers []string) error {
 	svcVars := make(map[string]serviceVars, len(services))
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
@@ -75,7 +77,7 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 		PoolID:          cfg.Proxmox.Pool,
 		Keyctl:          cfg.Proxmox.KeyctlEnabled(),
 		NetworkBridge:   cfg.Proxmox.Network.Bridge,
-		DNSServers:      append([]string{}, cfg.Proxmox.Network.DNSServers...),
+		DNSServers:      nameservers,
 		Services:        svcVars,
 	}
 

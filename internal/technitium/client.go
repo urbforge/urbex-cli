@@ -1,7 +1,8 @@
 // Package technitium is a minimal client for the parts of Technitium DNS's
-// HTTP API Urbex uses: minting an API token, creating a zone, and
-// setting/reading/removing A records in it. See
-// docs/decisions/0026-technitium-internal-dns-records.md in urbforge/urbex.
+// HTTP API Urbex uses: minting an API token, creating and deleting zones,
+// setting/reading/removing A records in them, and setting the forwarders.
+// See docs/decisions/0026-technitium-internal-dns-records.md and
+// docs/decisions/0027-service-conventions.md in urbforge/urbex.
 //
 // Every call is a plain GET with query parameters, including the ones
 // named "delete" in Technitium's own docs - its API doesn't use the HTTP
@@ -50,9 +51,11 @@ func (e *APIError) Error() string { return "technitium: " + e.Message }
 // zone that already exists - fine to ignore.
 func AlreadyExists(err error) bool { return matches(err, "already exists") }
 
-// NotFound reports whether err is Technitium saying the record being
-// deleted doesn't exist - fine to ignore.
-func NotFound(err error) bool { return matches(err, "no such record", "zone does not exist") }
+// NotFound reports whether err is Technitium saying the record or zone
+// being deleted doesn't exist - fine to ignore.
+func NotFound(err error) bool {
+	return matches(err, "no such record", "no such zone", "zone does not exist")
+}
 
 func matches(err error, substrings ...string) bool {
 	var apiErr *APIError
@@ -85,6 +88,26 @@ func (c *Client) EnsureZone(ctx context.Context, zone string) error {
 	q := url.Values{"zone": {zone}, "type": {"Primary"}}
 	if err := c.do(ctx, "/api/zones/create", q, nil); err != nil && !AlreadyExists(err) {
 		return fmt.Errorf("creating zone %s: %w", zone, err)
+	}
+	return nil
+}
+
+// DeleteZone deletes a zone with all its records, tolerating one that
+// doesn't exist.
+func (c *Client) DeleteZone(ctx context.Context, zone string) error {
+	if err := c.do(ctx, "/api/zones/delete", url.Values{"zone": {zone}}, nil); err != nil && !NotFound(err) {
+		return fmt.Errorf("deleting zone %s: %w", zone, err)
+	}
+	return nil
+}
+
+// SetForwarders makes the server forward every name it isn't
+// authoritative for to servers (plain DNS over UDP), instead of resolving
+// them itself from the root servers.
+func (c *Client) SetForwarders(ctx context.Context, servers []string) error {
+	q := url.Values{"forwarders": {strings.Join(servers, ",")}, "forwarderProtocol": {"Udp"}}
+	if err := c.do(ctx, "/api/settings/set", q, nil); err != nil {
+		return fmt.Errorf("setting forwarders: %w", err)
 	}
 	return nil
 }

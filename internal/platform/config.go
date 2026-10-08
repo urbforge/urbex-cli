@@ -6,6 +6,7 @@ package platform
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -124,8 +125,101 @@ type NetworkConfig struct {
 	DNSServers []string `yaml:"dnsServers,omitempty"`
 }
 
+// DNSConfig is the platform's internal DNS, served by Technitium. See
+// docs/decisions/0027-service-conventions.md in urbforge/urbex.
 type DNSConfig struct {
 	TechnitiumURL string `yaml:"technitiumUrl"`
+	// Zone is the zone Technitium serves the services' internal names in
+	// (default "<cloudflare.name>.<domain>": the platform's own subdomain).
+	Zone string `yaml:"zone,omitempty"`
+	// Forwarders resolve every name outside Zone (default
+	// proxmox.network.dnsServers, or the gateway when that is empty).
+	Forwarders []string `yaml:"forwarders,omitempty"`
+}
+
+// InternalZone is the zone the services' internal names live in.
+func (c *Config) InternalZone() string {
+	if c.DNS.Zone != "" {
+		return strings.TrimSuffix(c.DNS.Zone, ".")
+	}
+	name := c.Cloudflare.Name
+	if name == "" {
+		name = "urbex"
+	}
+	return name + "." + c.Domain
+}
+
+// InternalName builds an internal name from labels, most specific first -
+// ("git") for Gitea, ("api", "staging", "hello") for a service: the
+// nested form of the public hostnames, under InternalZone.
+func (c *Config) InternalName(labels ...string) string {
+	return strings.Join(append(append([]string{}, labels...), c.InternalZone()), ".")
+}
+
+// ServiceInternalName is a project service's internal name:
+// <service>.<project>.<zone> in prod, <service>.<env>.<project>.<zone>
+// elsewhere.
+func (c *Config) ServiceInternalName(project, env, service string) string {
+	labels := []string{service}
+	if env != "prod" {
+		labels = append(labels, env)
+	}
+	return c.InternalName(append(labels, project)...)
+}
+
+// DNSForwarders are where Technitium sends every name outside its zone.
+func (c *Config) DNSForwarders() []string {
+	if len(c.DNS.Forwarders) > 0 {
+		return append([]string{}, c.DNS.Forwarders...)
+	}
+	if len(c.Proxmox.Network.DNSServers) > 0 {
+		return append([]string{}, c.Proxmox.Network.DNSServers...)
+	}
+	return []string{c.Proxmox.Network.Gateway}
+}
+
+// LXCNameservers are the nameservers of every LXC, given Technitium's
+// address: Technitium first, then its forwarders, so public names keep
+// resolving when Technitium is down.
+func (c *Config) LXCNameservers(technitiumIP string) []string {
+	servers := []string{technitiumIP}
+	for _, f := range c.DNSForwarders() {
+		if f != technitiumIP {
+			servers = append(servers, f)
+		}
+	}
+	return servers
+}
+
+// PlatformLabel is the internal name of one of the platform's services.
+type PlatformLabel struct {
+	Label   string // under InternalZone: "git", "auth", ...
+	Service string // the base service answering it: "gitea", "keycloak", ...
+}
+
+// PlatformLabels are the platform services' internal names - the labels
+// of their public hostnames where they have one. No project may take
+// one as its name.
+var PlatformLabels = []PlatformLabel{
+	{"dns", "technitium"},
+	{"git", "gitea"},
+	{"komodo", "komodo"},
+	{"hooks", "komodo"},
+	{"auth", "keycloak"},
+	{"grafana", "observability"},
+	{"prometheus", "observability"},
+	{"loki", "observability"},
+	{"tunnel", "tunnel"},
+}
+
+// ReservedLabel reports whether name is one of PlatformLabels.
+func ReservedLabel(name string) bool {
+	for _, l := range PlatformLabels {
+		if l.Label == name {
+			return true
+		}
+	}
+	return false
 }
 
 type KeycloakConfig struct {
@@ -209,6 +303,14 @@ func (c *Config) Validate() []string {
 	}
 	if cf.Enabled() && len(cf.Access.Emails) == 0 {
 		errs = append(errs, "cloudflare.access.emails is required: who may reach Gitea and Komodo through Cloudflare Access")
+	}
+	for _, f := range c.DNS.Forwarders {
+		if net.ParseIP(f) == nil {
+			errs = append(errs, "dns.forwarders: "+f+" is not an IP address")
+		}
+	}
+	if z := c.DNS.Zone; z != "" && (strings.Contains(z, "..") || strings.HasPrefix(z, ".") || !strings.Contains(z, ".")) {
+		errs = append(errs, "dns.zone: "+z+" is not a domain name")
 	}
 	if cf.QuickTunnel && cf.Enabled() {
 		errs = append(errs, "cloudflare.quickTunnel and cloudflare.accountId/zoneId are alternatives: set one, not both")

@@ -12,7 +12,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/technitium"
 )
 
-// dnsChecker reads the internal DNS records status reports (ADR-0026),
+// dnsChecker reads the internal DNS records status reports (ADR-0027),
 // from Technitium itself - not the name registration would use, which
 // would show one even where the record is missing.
 type dnsChecker struct {
@@ -31,7 +31,7 @@ func newDNSChecker(cfg *platform.Config, creds *credentials.Credentials) *dnsChe
 	if err != nil {
 		return nil
 	}
-	return &dnsChecker{client: technitium.New(ep.TechnitiumURL, creds.TechnitiumToken), zone: cfg.Domain}
+	return &dnsChecker{client: technitium.New(ep.TechnitiumURL, creds.TechnitiumToken), zone: cfg.InternalZone()}
 }
 
 // Check is how a service's internal name reads in status: the name when

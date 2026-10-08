@@ -28,8 +28,10 @@ scaffolds a starter one to be edited before running again.
 
 Then it sets up the platform: generates admin passwords (stored in
 ~/.urbex/credentials.yaml, never in the GitOps repo); mints a Technitium
-API token and creates a zone named after the platform's domain for
-internal DNS; creates a Gitea API token, the org and its "gitops" repo;
+API token, creates the internal DNS zone (<name>.<domain>, every LXC's
+resolver, forwarding other names) with a name per platform service, and
+moves a zone left by an older urbex named after the whole domain;
+creates a Gitea API token, the org and its "gitops" repo;
 a Komodo API key, the onboarding key project LXCs join Komodo with,
 Komodo's Gitea git and registry accounts and the variables its scripts
 use; the Komodo Action that builds main and releases, and the Procedure

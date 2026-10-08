@@ -40,6 +40,8 @@ proxmox:
 
 dns:
   technitiumUrl: http://urbex-technitium.example.internal:5380
+  # zone: urbex.example.com # the services' internal names; default: <cloudflare.name>.<domain>
+  # forwarders: [192.168.1.1] # resolve everything else; default: network.dnsServers, or the gateway
 
 keycloak:
   baseUrl: https://auth.example.com

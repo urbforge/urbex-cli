@@ -105,7 +105,7 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 	}
 	fmt.Fprintln(out, "\nEndpoints:")
 	for _, e := range endpoints {
-		fmt.Fprintf(out, "  %-28s %-38s %s", e.Name, e.LAN, e.Public)
+		fmt.Fprintf(out, "  %-28s %-44s %-38s %s", e.Name, e.Internal, e.LAN, e.Public)
 		if e.Note != "" {
 			fmt.Fprintf(out, "  (%s)", e.Note)
 		}

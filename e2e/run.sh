@@ -147,7 +147,11 @@ step "bootstrap: base services and platform setup" '
   [ "$(stat -c %a /work/home/.urbex/credentials.yaml)" = 600 ] || fail "credentials file is not mode 600"
   [ -n "$(cred komodoOnboardingKey)" ] || fail "no onboarding key was generated"
   [ -n "$(cred technitiumToken)" ] || fail "no technitium api token was generated"
-  curl -s "$TECHNITIUM/api/zones/list?token=$(cred technitiumToken)" | grep -q "urbex.test" || fail "technitium has no urbex.test zone"
+  curl -s "$TECHNITIUM/api/zones/list?token=$(cred technitiumToken)" | grep -q '"urbex.urbex.test"' || fail "technitium has no urbex.urbex.test zone"
+  [ "$(technitium_record git.urbex.urbex.test)" = "$NET.200" ] || fail "no internal dns record for gitea"
+  [ "$(technitium_record auth.urbex.urbex.test)" = "$NET.203" ] || fail "no internal dns record for keycloak"
+  [ "$(technitium_resolve loki.urbex.urbex.test)" = "$NET.204" ] || fail "technitium does not resolve loki by its internal name"
+  [ -n "$(technitium_resolve deb.debian.org)" ] || fail "technitium does not resolve public names through its forwarders"
   servers="urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium"
   [ "$(komodo_names Servers)" = "$servers" ] || fail "unexpected komodo servers: $(komodo_names Servers)"
   for name in $servers; do
@@ -179,8 +183,8 @@ step "apply staging: it follows main, and runs main's head right away" '
   [ "$(komodo_tags Stack hello-api-staging)" = "app hello staging" ] || fail "stack tags: $(komodo_tags Stack hello-api-staging)"
   [ "$(komodo_tags Build hello-api)" = "app hello" ] || fail "build tags: $(komodo_tags Build hello-api)"
   [ "$(keycloak_realm hello-staging)" = 200 ] || fail "no Keycloak realm for the project in staging"
-  [ "$(technitium_record api-staging-hello-urbex.urbex.test)" = "$NET.210" ] || fail "no internal dns record for staging api"
-  urbex status staging | grep -F "dns=api-staging-hello-urbex.urbex.test" | grep -qv "(missing)\|(points to" || fail "status should show the staging api internal dns name"
+  [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "no internal dns record for staging api"
+  urbex status staging | grep -F "dns=api.staging.hello.urbex.urbex.test" | grep -qv "(missing)\|(points to" || fail "status should show the staging api internal dns name"
   echo "ok: staging follows main"'
 
 step "a push to main is deployed to staging, with no command" '
@@ -257,7 +261,7 @@ step "apply prod: empty until promoted; promote: the release staging runs" '
   grep -q "^VERSION=0.2.0$" /work/gitops/environments/prod/hello/api/version.env || fail "prod should run release 0.2.0"
   if grep -q TRACK /work/gitops/environments/prod/hello/api/version.env; then fail "prod must not follow main"; fi
   [ "$(keycloak_realm hello-prod)" = 200 ] || fail "no Keycloak realm for prod"
-  [ "$(technitium_record api-hello-urbex.urbex.test)" = "$NET.211" ] || fail "no internal dns record for prod api"
+  [ "$(technitium_record api.hello.urbex.urbex.test)" = "$NET.211" ] || fail "no internal dns record for prod api"
   urbex users prod | grep -q "No test users in prod" || fail "prod must have no test users"
   urbex promote | grep "Nothing to promote" || fail "promote did not notice there is nothing left to promote"'
 
@@ -322,7 +326,7 @@ step "destroy staging: prod and the project Builds untouched" '
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
   test ! -e /work/gitops/environments/staging/hello || fail "the staging folder is still in the gitops repo"
   expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)"
-  [ -z "$(technitium_record api-staging-hello-urbex.urbex.test)" ] || fail "internal dns record for staging api was not removed"
+  [ -z "$(technitium_record api.staging.hello.urbex.urbex.test)" ] || fail "internal dns record for staging api was not removed"
   echo "ok: staging is gone from komodo, the gitops repo, and technitium"'
 
 # What terraform does for real: the destroyed LXC is gone, and the next
@@ -333,7 +337,7 @@ machine hello-api-staging 212
 step "apply staging again on a new machine: it rejoins Komodo and follows main" '
   urbex apply staging
   expect_http http://$NET.212:8080/ "hello v5 from urbex (staging)" 5
-  [ "$(technitium_record api-staging-hello-urbex.urbex.test)" = "$NET.212" ] || fail "internal dns record was not re-created at the new address"'
+  [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.212" ] || fail "internal dns record was not re-created at the new address"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then
