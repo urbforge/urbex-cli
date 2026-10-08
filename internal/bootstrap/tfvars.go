@@ -44,7 +44,7 @@ func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]s
 		PoolID:          cfg.Proxmox.Pool,
 		Keyctl:          cfg.Proxmox.KeyctlEnabled(),
 		NetworkBridge:   cfg.Proxmox.Network.Bridge,
-		DNSServers:      append([]string{}, cfg.Proxmox.Network.DNSServers...),
+		DNSServers:      cfg.LXCNameservers(serviceIPs[Hostname("technitium")]),
 		BaseServiceIPs:  serviceIPs,
 	}
 

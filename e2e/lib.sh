@@ -103,10 +103,24 @@ unchanged_http() {
   echo "ok: $1 still -> $_out"
 }
 
+# technitium_resolve <name>: the first address Technitium answers for
+# name - from its zone, or from its forwarders - or empty.
+technitium_resolve() {
+  curl -s "$TECHNITIUM/api/dnsClient/resolve?token=$(cred technitiumToken)&server=this-server&domain=$1&type=A" |
+    python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for a in data.get("response", {}).get("result", {}).get("Answer", []):
+    if a.get("Type") == "A":
+        print(a["RDATA"]["IPAddress"])
+        break
+'
+}
+
 # technitium_record <hostname>: the IP of its A record in Technitium,
 # or empty if there is none.
 technitium_record() {
-  curl -s "$TECHNITIUM/api/zones/records/get?token=$(cred technitiumToken)&domain=$1&zone=urbex.test" |
+  curl -s "$TECHNITIUM/api/zones/records/get?token=$(cred technitiumToken)&domain=$1&zone=urbex.urbex.test" |
     python3 -c '
 import json, sys
 host = sys.argv[1]

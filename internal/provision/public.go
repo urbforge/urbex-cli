@@ -34,11 +34,9 @@ func (o *Orchestrator) PublicHostname(env string, svc manifest.Service) string {
 	return o.hostname(env, svc)
 }
 
-// hostname builds a service's hostname: a web frontend is the project's
-// own name, a service is prefixed with its name. Shared by
-// PublicHostname (Cloudflare) and InternalHostname (Technitium,
-// unconditional - see dns.go), so the two always agree when both are
-// configured (ADR-0026's split-horizon).
+// hostname builds a service's public hostname: a web frontend is the
+// project's own name, a service is prefixed with its name. With nested
+// hostnames it equals the service's InternalHostname (ADR-0027).
 func (o *Orchestrator) hostname(env string, svc manifest.Service) string {
 	var labels []string
 	if !svc.IsWeb() {

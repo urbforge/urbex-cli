@@ -2,6 +2,7 @@ package technitium
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/technitium/technitiumtest"
@@ -112,5 +113,33 @@ func TestGetRecords(t *testing.T) {
 
 	if _, err := c.GetRecords(ctx, "nope.lab", "api.nope.lab"); err == nil {
 		t.Error("GetRecords in a zone that doesn't exist must fail")
+	}
+}
+
+func TestDeleteZone(t *testing.T) {
+	ctx := context.Background()
+	c, fake := newTestClient(t)
+	if err := c.EnsureZone(ctx, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteZone(ctx, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.HasZone("example.com") {
+		t.Fatal("zone should be gone")
+	}
+	// Re-running bootstrap after the migration finds it gone already.
+	if err := c.DeleteZone(ctx, "example.com"); err != nil {
+		t.Fatalf("a second DeleteZone must tolerate the zone being gone: %v", err)
+	}
+}
+
+func TestSetForwarders(t *testing.T) {
+	c, fake := newTestClient(t)
+	if err := c.SetForwarders(context.Background(), []string{"192.168.1.1", "1.1.1.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fake.Forwarders, ","); got != "192.168.1.1,1.1.1.1" {
+		t.Errorf("forwarders = %q", got)
 	}
 }

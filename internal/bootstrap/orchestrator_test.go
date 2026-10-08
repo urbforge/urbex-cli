@@ -82,6 +82,9 @@ type fakePlatform struct {
 	variables       map[string]string
 	procedures      map[string]komodo.ProcedureConfig
 	technitiumZones []string
+	deletedZones    []string
+	forwarders      []string
+	records         map[string]string // zone/name -> ip
 }
 
 func (f *fakePlatform) clients() Clients {
@@ -130,6 +133,21 @@ func (d *fakeTechnitium) CreateToken(ctx context.Context, user, pass, name strin
 }
 func (d *fakeTechnitium) EnsureZone(ctx context.Context, zone string) error {
 	d.f.technitiumZones = append(d.f.technitiumZones, zone)
+	return nil
+}
+func (d *fakeTechnitium) DeleteZone(ctx context.Context, zone string) error {
+	d.f.deletedZones = append(d.f.deletedZones, zone)
+	return nil
+}
+func (d *fakeTechnitium) SetForwarders(ctx context.Context, servers []string) error {
+	d.f.forwarders = servers
+	return nil
+}
+func (d *fakeTechnitium) SetRecord(ctx context.Context, zone, name, ip string) error {
+	if d.f.records == nil {
+		d.f.records = map[string]string{}
+	}
+	d.f.records[zone+"/"+name] = ip
 	return nil
 }
 
@@ -378,8 +396,20 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if creds.TechnitiumToken != "technitium-token" {
 		t.Errorf("expected the technitium token to be minted and stored, got %q", creds.TechnitiumToken)
 	}
-	if len(fp.technitiumZones) != 1 || fp.technitiumZones[0] != "example.com" {
-		t.Errorf("expected the platform's domain as the internal DNS zone, got %v", fp.technitiumZones)
+	if len(fp.technitiumZones) != 1 || fp.technitiumZones[0] != "urbex.example.com" {
+		t.Errorf("expected the platform's subdomain as the internal DNS zone, got %v", fp.technitiumZones)
+	}
+	ips, _, _ := allocateIPs(o.Config)
+	for name, host := range map[string]string{"git": "urbex-gitea", "dns": "urbex-technitium", "auth": "urbex-keycloak", "hooks": "urbex-komodo", "loki": "urbex-observability"} {
+		if got := fp.records["urbex.example.com/"+name+".urbex.example.com"]; got != ips[host] {
+			t.Errorf("record %s = %q, want %s's address %q", name, got, host, ips[host])
+		}
+	}
+	if len(fp.forwarders) == 0 {
+		t.Error("expected technitium's forwarders to be set")
+	}
+	if len(fp.deletedZones) != 1 || fp.deletedZones[0] != "example.com" {
+		t.Errorf("expected the old domain-named zone to be deleted, got %v", fp.deletedZones)
 	}
 	ansible := runner.calls[2]
 	env := strings.Join(ansible.Env, "\n")

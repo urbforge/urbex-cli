@@ -19,9 +19,10 @@ func TestDNSState(t *testing.T) {
 	}
 }
 
-func TestDNSChecker_NilSaysNothing(t *testing.T) {
+// Without a Technitium token the name is still shown, unchecked.
+func TestDNSChecker_NilShowsTheNameUnchecked(t *testing.T) {
 	var d *dnsChecker
-	if got := d.Check(nil, "api.urbex.lab", "10.0.0.5"); got != "" {
-		t.Errorf("nil checker = %q, want empty", got)
+	if got := d.Check(nil, "api.urbex.lab", "10.0.0.5"); got != "dns=api.urbex.lab (not checked: no technitium token)" {
+		t.Errorf("nil checker = %q", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 )
 
@@ -19,6 +20,8 @@ type Server struct {
 	// Token is what CreateToken returns; empty refuses with a bad
 	// username/password error.
 	Token string
+	// Forwarders are the servers set with SetForwarders.
+	Forwarders []string
 }
 
 // NewServer starts a fake Technitium DNS server.
@@ -63,6 +66,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.Zones[zone] = true
 		s.Records[zone] = map[string]string{}
 		ok(w, map[string]any{"domain": zone})
+	case "/api/zones/delete":
+		zone := q.Get("zone")
+		if !s.Zones[zone] {
+			fail(w, "No such zone was found: "+zone)
+			return
+		}
+		delete(s.Zones, zone)
+		delete(s.Records, zone)
+		ok(w, nil)
+	case "/api/settings/set":
+		s.Forwarders = nil
+		if f := q.Get("forwarders"); f != "" {
+			s.Forwarders = strings.Split(f, ",")
+		}
+		ok(w, map[string]any{"forwarders": s.Forwarders})
 	case "/api/zones/records/add":
 		zone, domain, ip := q.Get("zone"), q.Get("domain"), q.Get("ipAddress")
 		if !s.Zones[zone] {
@@ -100,4 +118,11 @@ func (s *Server) RecordIP(zone, domain string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Records[zone][domain]
+}
+
+// HasZone reports whether zone exists.
+func (s *Server) HasZone(zone string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Zones[zone]
 }

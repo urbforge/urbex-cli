@@ -5,6 +5,14 @@
   roles:
     - common
 
+# First: every LXC resolves through Technitium (ADR-0027), falling back
+# to its forwarders until it answers.
+- name: Deploy Technitium DNS
+  hosts: urbex_technitium
+  become: true
+  roles:
+    - technitium
+
 - name: Deploy Gitea
   hosts: urbex_gitea
   become: true
@@ -16,12 +24,6 @@
   become: true
   roles:
     - komodo
-
-- name: Deploy Technitium DNS
-  hosts: urbex_technitium
-  become: true
-  roles:
-    - technitium
 
 - name: Deploy Keycloak
   hosts: urbex_keycloak

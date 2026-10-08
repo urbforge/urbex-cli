@@ -58,6 +58,8 @@ type Endpoints struct {
 	// TechnitiumURL is Technitium's API on the LAN, e.g.
 	// http://192.168.1.202:5380.
 	TechnitiumURL string
+	// TechnitiumIP is Technitium's address: every LXC's first nameserver.
+	TechnitiumIP string
 }
 
 // EndpointsFor computes the base services' endpoints for cfg.
@@ -75,6 +77,7 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		PrometheusWriteURL: "http://" + ips[Hostname("observability")] + ":9090/api/v1/write",
 		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
 		TechnitiumURL:      "http://" + ips[Hostname("technitium")] + ":5380",
+		TechnitiumIP:       ips[Hostname("technitium")],
 	}, nil
 }
 

@@ -80,7 +80,7 @@ type Orchestrator struct {
 	// as Cloudflare disables the named tunnel.
 	QuickTunnel QuickTunnelLookup
 	// Technitium gives the environment's services internal DNS records
-	// (ADR-0026), unconditionally - unlike Cloudflare, nil just means it
+	// (ADR-0027), unconditionally - unlike Cloudflare, nil just means it
 	// wasn't wired up (no credentials yet), not that it is disabled.
 	Technitium TechnitiumAPI
 	Out        io.Writer
@@ -743,7 +743,11 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	}
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "projects", o.Manifest.Project, opts.Env)
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen); err != nil {
+	nameservers, err := o.nameservers()
+	if err != nil {
+		return err
+	}
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen, nameservers); err != nil {
 		return fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -848,6 +852,9 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	if errs := o.Config.Validate(); len(errs) > 0 {
 		return "", fmt.Errorf("invalid platform config: %v", errs)
 	}
+	if platform.ReservedLabel(o.Manifest.Project) {
+		return "", fmt.Errorf("project name %q is taken by a platform service's internal DNS name (%s.%s): rename the project", o.Manifest.Project, o.Manifest.Project, o.Config.InternalZone())
+	}
 	if len(o.Manifest.Services) == 0 {
 		return "", fmt.Errorf("urbex.yaml declares no services - nothing to provision (frontend deploys, e.g. Cloudflare Pages/Firebase, are not handled by urbex plan/apply)")
 	}
@@ -887,7 +894,11 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	}
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "projects", o.Manifest.Project, opts.Env)
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen); err != nil {
+	nameservers, err := o.nameservers()
+	if err != nil {
+		return "", err
+	}
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers); err != nil {
 		return "", fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -896,6 +907,16 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 
 // Hostname is the LXC hostname for one service in one environment, e.g.
 // ("my-app", "api", "staging") -> "my-app-api-staging".
+// nameservers are the project LXCs' nameservers: Technitium, then its
+// forwarders (ADR-0027).
+func (o *Orchestrator) nameservers() ([]string, error) {
+	ep, err := bootstrap.EndpointsFor(o.Config)
+	if err != nil {
+		return nil, err
+	}
+	return o.Config.LXCNameservers(ep.TechnitiumIP), nil
+}
+
 func Hostname(project, service, env string) string {
 	return rollout.ResourceName(project, service, env)
 }
