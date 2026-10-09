@@ -153,8 +153,8 @@ type KomodoAPI interface {
 // are tagged PlatformTag, the projects' AppTag plus the project's name
 // and, for an environment's, the environment.
 const (
-	PlatformTag = "platform"
-	AppTag      = "app"
+	PlatformTag = string(platform.KindPlatform) // the kinds of the service catalog
+	AppTag      = string(platform.KindApp)
 )
 
 // Clients builds API clients and syncs repos; replaced by fakes in tests.

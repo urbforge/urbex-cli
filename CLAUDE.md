@@ -59,6 +59,14 @@ e2e/run.sh                              # end to end, needs podman - see e2e/REA
 - `internal/manifest/schema/urbex.schema.json` is a copy of
   `urbex/schemas/urbex.schema.json`: change the schema there, then copy
   it here.
+- Every service - the platform's, an agent, a project's - follows the
+  conventions of ADR-0027 (`urbforge/urbex`): deployed and monitored by
+  Komodo, an internal DNS name and references only by name, logs and
+  resources in Grafana, public / behind Access / internal exposure, one
+  kind (`platform`, `app`, `agent`) on Komodo and Grafana. A new or
+  changed service starts from its entry in the service catalog,
+  `internal/platform/catalog.go`; its containers carry the labels
+  `urbex.kind` and `urbex.service`. `TestCatalog_*` fails otherwise.
 - `tools/operator/urbex-op` runs the CLI from a container against a
   workspace with the credentials - the way to test on a real Proxmox
   node. Every LXC, VM and resource urbex creates on Proxmox must be in

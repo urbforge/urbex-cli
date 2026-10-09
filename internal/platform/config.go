@@ -198,19 +198,9 @@ type PlatformLabel struct {
 }
 
 // PlatformLabels are the platform services' internal names - the labels
-// of their public hostnames where they have one. No project may take
-// one as its name.
-var PlatformLabels = []PlatformLabel{
-	{"dns", "technitium"},
-	{"git", "gitea"},
-	{"komodo", "komodo"},
-	{"hooks", "komodo"},
-	{"auth", "keycloak"},
-	{"grafana", "observability"},
-	{"prometheus", "observability"},
-	{"loki", "observability"},
-	{"tunnel", "tunnel"},
-}
+// of their public hostnames where they have one - from the service
+// catalog. No project may take one as its name.
+var PlatformLabels = labels() // from the service catalog
 
 // ReservedLabel reports whether name is one of PlatformLabels.
 func ReservedLabel(name string) bool {

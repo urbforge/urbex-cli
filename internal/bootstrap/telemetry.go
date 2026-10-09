@@ -12,11 +12,12 @@ import (
 	assets "github.com/urbforge/urbex-cli/platform"
 
 	"github.com/urbforge/urbex-cli/internal/komodo"
+	"github.com/urbforge/urbex-cli/internal/platform"
 )
 
 // AgentTag is the Komodo tag of the agents running next to the services:
 // the telemetry agent's Stacks (ADR-0027).
-const AgentTag = "agent"
+const AgentTag = string(platform.KindAgent)
 
 // TelemetryDir is the GitOps repo's folder of the telemetry agents' Stacks,
 // one subfolder per LXC.
