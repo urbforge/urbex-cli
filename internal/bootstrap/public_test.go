@@ -338,8 +338,26 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
 		}
 	}
-	if strings.Join(fp.deployed, ",") != "urbex-keycloak,urbex-observability,urbex-tunnel" {
+	want := "urbex-keycloak,urbex-observability,urbex-tunnel," +
+		"urbex-telemetry-urbex-gitea,urbex-telemetry-urbex-komodo,urbex-telemetry-urbex-technitium," +
+		"urbex-telemetry-urbex-keycloak,urbex-telemetry-urbex-observability,urbex-telemetry-urbex-tunnel"
+	if strings.Join(fp.deployed, ",") != want {
 		t.Errorf("deployed %v", fp.deployed)
+	}
+	// Every LXC's telemetry agent: a Stack of its own, kind agent, its
+	// config labelled with the LXC's main service.
+	cfg := fp.stacks["urbex-telemetry-urbex-gitea"]
+	if cfg.ServerID != "urbex-gitea" || cfg.RunDirectory != "platform/telemetry/urbex-gitea" || cfg.ProjectName != "telemetry" {
+		t.Errorf("telemetry stack = %+v", cfg)
+	}
+	if strings.Join(fp.tags["Stack urbex-telemetry-urbex-gitea"], ",") != "agent" {
+		t.Errorf("telemetry stack tags = %v", fp.tags["Stack urbex-telemetry-urbex-gitea"])
+	}
+	alloy, _ := os.ReadFile(filepath.Join(dir, "platform/telemetry/urbex-gitea/config.alloy"))
+	for _, want := range []string{`replacement  = "platform"`, `replacement  = "gitea"`, "http://loki.urbex.cubotto.net:3100/loki/api/v1/push", `host = "urbex-gitea"`} {
+		if !strings.Contains(string(alloy), want) {
+			t.Errorf("config.alloy lacks %q:\n%s", want, alloy)
+		}
 	}
 	for _, call := range runner.calls {
 		for _, e := range call.Env {

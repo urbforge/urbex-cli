@@ -84,6 +84,7 @@ func validCredentials() *credentials.Credentials {
 // fakeRollout stands in for internal/rollout: it writes the environment
 // folders like the real one, and "runs" whatever the GitOps repo asks.
 type fakeRollout struct {
+	telemetry                    []string
 	projects, envSetups, deploys int
 	reconciles                   int
 	missing                      []string // images MissingImages reports
@@ -123,6 +124,10 @@ func (f *fakeRollout) MissingImages(ctx context.Context, project string, service
 	return f.missing, nil
 }
 
+func (f *fakeRollout) DeployTelemetry(ctx context.Context, t rollout.Target) error {
+	f.telemetry = append(f.telemetry, t.TelemetryHosts()...)
+	return nil
+}
 func (f *fakeRollout) Deploy(ctx context.Context, t rollout.Target) error {
 	f.deploys++
 	return nil

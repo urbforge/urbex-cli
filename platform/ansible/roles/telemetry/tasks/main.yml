@@ -1,52 +1,14 @@
 ---
-# The telemetry agent of every LXC - base services and project services:
-# Grafana Alloy, sending the LXC's resource metrics (CPU, memory, disk,
-# network) and each container's CPU and memory to the platform's
-# Prometheus, and every container's logs to Loki. Everything has one
-# kind - platform (Gitea, Komodo, ...), app (a project's service) or agent
-# (Periphery, Alloy) - from the containers' urbex.* Docker labels, with
-# the service, the host and, for apps, the project and environment. A
-# project's logs are off when its manifest says observability.logs:
-# false; its agents' still ship. See docs/decisions/0023-service-logs-to-loki.md
-# and 0027-service-conventions.md in urbforge/urbex.
-- name: Create the telemetry agent's directory
+# The telemetry agent is a Komodo Stack per LXC, urbex-telemetry-<host>,
+# deployed from the GitOps repo (platform/telemetry/<host>/, ADR-0027),
+# no longer by Ansible. On an LXC Ansible set it up on before, this
+# removes the files it ran from - the running agent is left to the Stack,
+# which takes it over (compose project "telemetry", same volume) when
+# Komodo deploys it. Also the agent of earlier versions (logs only).
+- name: Remove the files Ansible deployed the telemetry agent from
   file:
-    path: /opt/urbex/telemetry
-    state: directory
-    mode: "0755"
-
-- name: Template the telemetry agent's configuration
-  template:
-    src: config.alloy.j2
-    dest: /opt/urbex/telemetry/config.alloy
-    mode: "0644"
-  register: alloy_config
-
-- name: Template the telemetry agent's docker-compose.yml
-  template:
-    src: docker-compose.yml.j2
-    dest: /opt/urbex/telemetry/docker-compose.yml
-    mode: "0644"
-
-- name: Start the telemetry agent
-  command: docker compose up -d
-  args:
-    chdir: /opt/urbex/telemetry
-  register: compose_up
-  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
-
-# compose up doesn't notice a changed bind-mounted file.
-- name: Restart the telemetry agent on a new configuration
-  command: docker compose restart alloy
-  args:
-    chdir: /opt/urbex/telemetry
-  when: alloy_config is changed
-
-# The agent of earlier versions (logs only), replaced by this one.
-- name: Remove the previous log agent
-  shell: |
-    if [ -f /opt/urbex/logs/docker-compose.yml ]; then
-      cd /opt/urbex/logs && docker compose down && cd / && rm -rf /opt/urbex/logs && echo removed
-    fi
-  register: old_agent
-  changed_when: "'removed' in old_agent.stdout"
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/urbex/telemetry
+    - /opt/urbex/logs

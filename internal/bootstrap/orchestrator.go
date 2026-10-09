@@ -179,6 +179,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
 		return err
 	}
+	if err := o.writeTelemetryAgents(opts.GitOpsRepoPath); err != nil {
+		return err
+	}
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
 	}

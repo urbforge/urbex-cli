@@ -420,10 +420,10 @@ func TestRemove_EnvThenServersThenProject(t *testing.T) {
 	if err := r.RemoveEnv(context.Background(), stagingTarget()); err != nil {
 		t.Fatalf("RemoveEnv: %v", err)
 	}
-	if strings.Join(k.destroyed, ",") != "my-app-api-staging,my-app-worker-staging" {
+	if strings.Join(k.destroyed, ",") != "my-app-api-staging,my-app-worker-staging,urbex-telemetry-my-app-api-staging,urbex-telemetry-my-app-worker-staging" {
 		t.Errorf("expected the stacks to be taken down first, got %v", k.destroyed)
 	}
-	if strings.Join(k.deleted, ",") != "Stack my-app-api-staging,Stack my-app-worker-staging" {
+	if strings.Join(k.deleted, ",") != "Stack my-app-api-staging,Stack my-app-worker-staging,Stack urbex-telemetry-my-app-api-staging,Stack urbex-telemetry-my-app-worker-staging" {
 		t.Errorf("unexpected deletions (servers and builds must outlive RemoveEnv): %v", k.deleted)
 	}
 	if len(g.hooks) != 1 {
@@ -632,5 +632,35 @@ func TestSetup_ConfiguresNamesNeverAddresses(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A project's LXCs get their telemetry agents from the GitOps repo too
+// (ADR-0027): a folder each, labelled app with the project and env, and a
+// Stack tagged agent, project and env; no agent for a web frontend.
+func TestSetupEnv_TelemetryAgentPerLXC(t *testing.T) {
+	k := &fakeKomodo{}
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	repo := envrepo.Repo{Path: t.TempDir()}
+	target := stagingTarget()
+	target.Logs = false
+	if err := r.SetupEnv(context.Background(), target, repo); err != nil {
+		t.Fatalf("SetupEnv: %v", err)
+	}
+	alloy, err := os.ReadFile(filepath.Join(repo.Path, "platform/telemetry/my-app-api-staging/config.alloy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`replacement  = "app"`, `replacement  = "my-app"`, `replacement  = "staging"`, `regex         = "app"`} {
+		if !strings.Contains(string(alloy), want) {
+			t.Errorf("config.alloy lacks %q (logs off drops the app's lines):\n%s", want, alloy)
+		}
+	}
+	compose, _ := os.ReadFile(filepath.Join(repo.Path, "platform/telemetry/my-app-api-staging/compose.yaml"))
+	if !strings.Contains(string(compose), `urbex.project: "my-app"`) {
+		t.Errorf("the agent's own labels lack the project:\n%s", compose)
+	}
+	if got := strings.Join(k.tags["Stack urbex-telemetry-my-app-api-staging"], ","); got != "agent,my-app,staging" {
+		t.Errorf("telemetry stack tags = %q", got)
 	}
 }
