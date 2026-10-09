@@ -164,6 +164,21 @@ step "bootstrap: base services and platform setup" '
     [ "$(komodo_tags Server $name)" = platform ] || fail "komodo server $name should be tagged platform, has: $(komodo_tags Server $name)"
   done
   git -C /work/gitops log --oneline | grep -q "urbex bootstrap" || fail "gitops repo was not committed"
+  # Komodo adopted the bootstrap services as Stacks with their compose
+  # files on the servers (ADR-0027); copies for review in the GitOps repo,
+  # without secrets.
+  for svc in technitium gitea komodo; do
+    state=""
+    for _ in $(seq 1 12); do
+      state=$(komodo_stack_state urbex-$svc)
+      [ "$state" = running ] && break
+      sleep 5
+    done
+    [ "$state" = running ] || fail "komodo stack urbex-$svc should be running, is: ${state:-missing}"
+    [ "$(komodo_tags Stack urbex-$svc)" = platform ] || fail "stack urbex-$svc tags: $(komodo_tags Stack urbex-$svc)"
+    [ -f /work/gitops/platform/$svc/compose.yaml ] || fail "no copy of $svc compose file in the gitops repo"
+  done
+  ! grep -rq "ADMIN_PASSWORD=\|PASSWORD=[^$]" /work/gitops/platform || fail "a secret in the gitops copies: $(grep -rl PASSWORD= /work/gitops/platform)"
   echo "ok: platform is up"'
 
 # From here on Proxmox "has" the base services, as after a real apply.

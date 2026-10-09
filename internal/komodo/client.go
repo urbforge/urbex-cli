@@ -212,6 +212,15 @@ type StackConfig struct {
 	// Environment is written to .env in the run directory and passed to
 	// compose; [[VARIABLE]]s are interpolated by Komodo.
 	Environment string `json:"environment,omitempty"`
+	// FilesOnHost: the compose files are on the server, in RunDirectory
+	// (a path inside Periphery's container), not in a repo.
+	FilesOnHost bool `json:"files_on_host,omitempty"`
+	// ProjectName is the compose project; empty, the Stack's name. Set to
+	// an existing project's, the Stack adopts its running containers.
+	ProjectName string `json:"project_name,omitempty"`
+	// FilePaths are the compose files in RunDirectory; empty, compose's
+	// default names.
+	FilePaths []string `json:"file_paths,omitempty"`
 }
 
 // EnvFile is a compose --env-file, tracked for changes.

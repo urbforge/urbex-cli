@@ -46,3 +46,11 @@
     chdir: /opt/urbex
   when: gitea_admin_username not in gitea_admins.stdout
   no_log: true
+
+# A copy of the compose file Komodo deploys, for review in the GitOps repo
+# (ADR-0027): bootstrap commits and pushes it. No secret is in it.
+- name: Copy the compose file to the GitOps repo
+  fetch:
+    src: /opt/urbex/docker-compose.yml
+    dest: "{{ playbook_dir }}/../platform/gitea/compose.yaml"
+    flat: true

@@ -156,6 +156,20 @@ prom_series() {
 }
 
 # komodo_tags <Kind> <name>: the names of a Komodo resource's tags, sorted.
+# komodo_stack_state <name>: a Komodo Stack's state (running, down, ...),
+# or nothing when there is no such Stack.
+komodo_stack_state() {
+  python3 - "$1" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+import json, sys, urllib.request
+name, url, key, secret = sys.argv[1:]
+req = urllib.request.Request(f"{url}/read/ListStacks", b"{}",
+    {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
+for s in json.load(urllib.request.urlopen(req)):
+    if s["name"] == name:
+        print(s["info"].get("state", ""))
+PY
+}
+
 komodo_tags() {
   python3 - "$1" "$2" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
 import json, sys, urllib.request

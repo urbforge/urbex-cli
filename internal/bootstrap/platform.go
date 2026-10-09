@@ -145,6 +145,7 @@ type KomodoAPI interface {
 	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
 	WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error)
 	TagResource(ctx context.Context, kind, name string, tags ...string) error
+	EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error
 }
 
 // Komodo tags (as on Grafana's labels, kind): the platform's resources
@@ -340,7 +341,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		Schedule:        "0 */15 * * * *",
 		ScheduleEnabled: true,
 		Stages: []komodo.Stage{
-			komodo.NewStage("Deploy changed stacks", "BatchDeployStackIfChanged", "pattern", []string{"*"}),
+			komodo.NewStage("Deploy changed stacks", "BatchDeployStackIfChanged", "pattern", []string{ProjectStacksPattern}),
 		},
 	}
 	if err := k.EnsureProcedure(ctx, GitOpsProcedure, gitops); err != nil {
@@ -427,6 +428,9 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 			return err
 		}
 	}
+	if err := adoptBootstrapServices(ctx, k); err != nil {
+		return err
+	}
 	// The builder (ADR-0027: every Komodo resource has a kind).
 	if err := k.TagResource(ctx, "Builder", KomodoServerName, PlatformTag); err != nil {
 		return err
@@ -435,4 +439,48 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 		return err
 	}
 	return k.TagResource(ctx, "Procedure", GitOpsProcedure, PlatformTag)
+}
+
+// ProjectStacksPattern selects the Stacks deployed from the GitOps repo's
+// environments - <project>-<service>-<env>, env staging or prod - for the
+// GitOps Procedure: never the bootstrap services' files-on-host Stacks,
+// which Komodo has never deployed and so would count as changed, and
+// would redeploy - Komodo itself among them, from inside.
+const ProjectStacksPattern = `\^.+-(staging|prod)$\`
+
+// BootstrapServices are the base services Komodo can't depend on to
+// deploy themselves (ADR-0027): Technitium (every LXC resolves through
+// it), Gitea (it holds the GitOps repo) and Komodo itself. Ansible
+// installs them; Komodo adopts them as Stacks whose compose files are on
+// their servers, so a broken redeploy is repaired by re-running
+// urbex bootstrap, without Komodo or DNS.
+var BootstrapServices = []string{"technitium", "gitea", "komodo"}
+
+// BootstrapComposeDir is where Ansible writes a base service's compose
+// project ("urbex") on its LXC - and where Periphery reads it, mounted at
+// the same path.
+const BootstrapComposeDir = "/opt/urbex"
+
+// adoptBootstrapServices has Komodo manage the bootstrap services as
+// files-on-host Stacks named after their LXCs: with the existing compose
+// project's name, Komodo takes over the running containers without
+// redeploying them.
+func adoptBootstrapServices(ctx context.Context, k KomodoAPI) error {
+	for _, svc := range BootstrapServices {
+		name := Hostname(svc)
+		cfg := komodo.StackConfig{
+			ServerID:     name,
+			FilesOnHost:  true,
+			RunDirectory: BootstrapComposeDir,
+			ProjectName:  "urbex",
+			FilePaths:    []string{"docker-compose.yml"},
+		}
+		if err := k.EnsureStack(ctx, name, cfg); err != nil {
+			return fmt.Errorf("adopting %s as a komodo stack: %w", svc, err)
+		}
+		if err := k.TagResource(ctx, "Stack", name, PlatformTag); err != nil {
+			return err
+		}
+	}
+	return nil
 }
