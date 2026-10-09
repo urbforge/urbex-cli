@@ -33,7 +33,7 @@ func withCloudflare(t *testing.T, o *Orchestrator) *cloudflaretest.Server {
 
 func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 	dir := t.TempDir()
-	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
+	o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
 	fake := withCloudflare(t, o)
 	fake.IdPs = nil // a new Zero Trust organization: no login method yet
 
@@ -90,15 +90,7 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 		t.Errorf("expected the one-time PIN login to be enabled, got %v", fake.IdPs)
 	}
 
-	// The connector's token reaches Ansible through the environment only.
-	ansible := runner.calls[2] // playbook.yml: the base services
-	found := false
-	for _, e := range ansible.Env {
-		found = found || e == "URBEX_CLOUDFLARE_TUNNEL_TOKEN=token-of-"+tunnelID
-	}
-	if !found {
-		t.Error("ansible-playbook should get the tunnel's token in its environment")
-	}
+	// The connector's token is its Stack's secret now, not Ansible's.
 	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
 	for _, want := range []string{"urbex_tunnel", "192.168.1.205", "keycloak_public_url: https://auth-urbex.cubotto.net"} {
 		if !strings.Contains(string(inventory), want) {
@@ -302,7 +294,58 @@ func TestRun_KomodoAdoptsTheBootstrapServices(t *testing.T) {
 			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
 		}
 	}
-	if _, ok := fp.stacks["urbex-keycloak"]; ok {
+	if cfg := fp.stacks["urbex-keycloak"]; cfg.FilesOnHost {
 		t.Error("Keycloak isn't a bootstrap service: it comes from the GitOps repo")
+	}
+}
+
+// Keycloak, the observability stack and the tunnel are Komodo Stacks from
+// the GitOps repo's platform/ folder (ADR-0027): files, configuration
+// and encrypted secrets written by bootstrap, deployed by Komodo, the
+// secrets never in the plain configuration nor in Ansible's environment.
+func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
+	dir := t.TempDir()
+	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
+	withCloudflare(t, o)
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, f := range []string{
+		"platform/keycloak/compose.yaml", "platform/keycloak/config.env", "platform/keycloak/secrets.sops.env",
+		"platform/observability/compose.yaml", "platform/observability/prometheus.yml",
+		"platform/observability/grafana/dashboards/urbex-resources.json",
+		"platform/observability/grafana/provisioning/datasources/urbex.yml",
+		"platform/tunnel/compose.yaml", "platform/tunnel/secrets.sops.env",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("missing %s in the gitops repo", f)
+		}
+	}
+	config, _ := os.ReadFile(filepath.Join(dir, "platform/keycloak/config.env"))
+	if !strings.Contains(string(config), "KC_HOSTNAME=https://auth-urbex.cubotto.net") || o.Credentials.KeycloakAdminPassword == "" || strings.Contains(string(config), o.Credentials.KeycloakAdminPassword) {
+		t.Errorf("keycloak config.env: public hostname expected, no password:\n%s", config)
+	}
+	sec, _ := os.ReadFile(filepath.Join(dir, "platform/tunnel/secrets.sops.env"))
+	if !strings.Contains(string(sec), "TUNNEL_TOKEN=token-of-") {
+		t.Errorf("the tunnel's token should be its stack's secret:\n%s", sec)
+	}
+	for _, name := range []string{"urbex-keycloak", "urbex-observability", "urbex-tunnel"} {
+		cfg := fp.stacks[name]
+		if cfg.ServerID != name || cfg.RunDirectory != "platform/"+name[len("urbex-"):] || cfg.Repo != "urbex/gitops" || cfg.ProjectName != "urbex" || cfg.ComposeCmdWrapper != ComposeWrapper {
+			t.Errorf("stack %s = %+v", name, cfg)
+		}
+		if strings.Join(fp.tags["Stack "+name], ",") != "platform" {
+			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
+		}
+	}
+	if strings.Join(fp.deployed, ",") != "urbex-keycloak,urbex-observability,urbex-tunnel" {
+		t.Errorf("deployed %v", fp.deployed)
+	}
+	for _, call := range runner.calls {
+		for _, e := range call.Env {
+			if strings.HasPrefix(e, "URBEX_KEYCLOAK_ADMIN_PASSWORD=") || strings.HasPrefix(e, "URBEX_GRAFANA_ADMIN_PASSWORD=") || strings.HasPrefix(e, "URBEX_CLOUDFLARE_TUNNEL_TOKEN=") {
+				t.Errorf("%s %v gets %s: these are the Stacks' secrets now", call.Name, call.Args, strings.SplitN(e, "=", 2)[0])
+			}
+		}
 	}
 }

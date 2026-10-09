@@ -53,6 +53,9 @@ type Orchestrator struct {
 	// Clients builds the Gitea/Komodo API clients used after provisioning;
 	// zero value means DefaultClients().
 	Clients Clients
+	// Secrets encrypts the platform Stacks' secrets; nil means a sops
+	// store for the platform's age key.
+	Secrets SecretWriter
 }
 
 // Options controls a single Run.
@@ -153,14 +156,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 
 	ansibleArgs := []string{"-i", "inventory.yml", "playbook.yml"}
 	ansibleEnv := o.Credentials.Env(ansibleSecretEnv...)
+	tunnelToken := ""
 	if o.Config.Cloudflare.Enabled() {
-		// The tunnel's connector token reaches its LXC through Ansible's
-		// environment only.
-		token, err := o.tunnelToken(ctx, clients)
-		if err != nil {
+		// The tunnel's connector token reaches its LXC as a secret of its
+		// Stack, encrypted in the GitOps repo.
+		var err error
+		if tunnelToken, err = o.tunnelToken(ctx, clients); err != nil {
 			return fmt.Errorf("setting up the cloudflare tunnel: %w", err)
 		}
-		ansibleEnv = append(ansibleEnv, "URBEX_CLOUDFLARE_TUNNEL_TOKEN="+token)
 	}
 	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: ansibleArgs, Env: ansibleEnv}); err != nil {
 		return fmt.Errorf("ansible-playbook: %w", err)
@@ -170,10 +173,16 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := o.setupDNS(ctx, clients, ep, ips, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up technitium: %w", err)
 	}
+	// The platform services Komodo deploys from the GitOps repo: their
+	// folders go in before setupPlatform pushes it.
+	stacks := o.platformStacks(tunnelToken)
+	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
+		return err
+	}
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
 	}
-	if err := o.connectPlatformServers(ctx, clients, ansibleDir); err != nil {
+	if err := o.connectPlatformServers(ctx, clients, ansibleDir, stacks); err != nil {
 		return fmt.Errorf("connecting the base services to komodo: %w", err)
 	}
 	if o.Config.Cloudflare.Enabled() {
