@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -35,7 +36,12 @@ func TestPlatformEndpoints(t *testing.T) {
 	if e := byName["Komodo webhooks"]; e.Public != "https://hooks-urbex.cubotto.net/listener/" {
 		t.Errorf("webhooks = %+v", e)
 	}
-	if e := byName["Keycloak"]; e.Public != "https://auth-urbex.cubotto.net" {
+	if e := byName["Keycloak"]; e.Public != "https://auth-urbex.cubotto.net" || !strings.Contains(e.Note, "admin console behind Cloudflare Access") {
 		t.Errorf("Keycloak = %+v", e)
+	}
+	for name, host := range map[string]string{"Technitium DNS console": "dns", "Grafana": "grafana", "Prometheus": "prometheus", "Loki": "loki"} {
+		if e := byName[name]; e.Public != "https://"+host+"-urbex.cubotto.net" || !strings.Contains(e.Note, "behind Cloudflare Access") {
+			t.Errorf("%s = %+v", name, e)
+		}
 	}
 }
