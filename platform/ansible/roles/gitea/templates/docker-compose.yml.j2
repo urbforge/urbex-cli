@@ -4,6 +4,9 @@
 services:
   gitea:
     image: gitea/gitea:1.24
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "gitea"
     restart: unless-stopped
     environment:
       - USER_UID=1000

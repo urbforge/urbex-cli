@@ -427,6 +427,10 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 			return err
 		}
 	}
+	// The builder (ADR-0027: every Komodo resource has a kind).
+	if err := k.TagResource(ctx, "Builder", KomodoServerName, PlatformTag); err != nil {
+		return err
+	}
 	if err := k.TagResource(ctx, "Action", ReleaseAction, PlatformTag); err != nil {
 		return err
 	}

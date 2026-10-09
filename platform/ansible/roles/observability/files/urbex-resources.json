@@ -24,11 +24,11 @@
           "uid": "urbex-prometheus"
         },
         "query": {
-          "query": "label_values(node_memory_MemTotal_bytes, kind)",
+          "query": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\"}, kind)",
           "refId": "var",
           "qryType": 1
         },
-        "definition": "label_values(node_memory_MemTotal_bytes, kind)",
+        "definition": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\"}, kind)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -48,11 +48,11 @@
           "uid": "urbex-prometheus"
         },
         "query": {
-          "query": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\"}, project)",
+          "query": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\"}, project)",
           "refId": "var",
           "qryType": 1
         },
-        "definition": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\"}, project)",
+        "definition": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\"}, project)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -72,11 +72,11 @@
           "uid": "urbex-prometheus"
         },
         "query": {
-          "query": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\"}, env)",
+          "query": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\"}, env)",
           "refId": "var",
           "qryType": 1
         },
-        "definition": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\"}, env)",
+        "definition": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\"}, env)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -96,11 +96,11 @@
           "uid": "urbex-prometheus"
         },
         "query": {
-          "query": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
+          "query": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
           "refId": "var",
           "qryType": 1
         },
-        "definition": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
+        "definition": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\", env=~\"$env\"}, service)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -120,11 +120,11 @@
           "uid": "urbex-prometheus"
         },
         "query": {
-          "query": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"}, host)",
+          "query": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"}, host)",
           "refId": "var",
           "qryType": 1
         },
-        "definition": "label_values(node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"}, host)",
+        "definition": "label_values({__name__=~\"node_memory_MemTotal_bytes|container_memory_working_set_bytes\", kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\"}, host)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -206,7 +206,10 @@
               "Time": true,
               "__name__": true,
               "instance": true,
-              "job": true
+              "job": true,
+              "device": true,
+              "fstype": true,
+              "mountpoint": true
             },
             "renameByName": {
               "Value #CPU": "CPU %",
@@ -439,6 +442,153 @@
           },
           "expr": "sum by (kind, project, service, env, host) (rate(node_network_transmit_bytes_total{device!=\"lo\", kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}[$__rate_interval]))",
           "legendFormat": "{{kind}} {{service}} {{project}} {{env}} ({{host}})"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Now, per container",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "CPU",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "100 * sum by (kind, project, service, env, host, container) (rate(container_cpu_usage_seconds_total{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}[$__rate_interval]))",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "Memory",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "sum by (kind, project, service, env, host, container) (container_memory_working_set_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "device": true,
+              "fstype": true,
+              "mountpoint": true
+            },
+            "renameByName": {
+              "Value #CPU": "CPU % (of a core)",
+              "Value #Memory": "Memory"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Each container's CPU (% of one core) and memory, labelled with its own kind: the services, and the agents (Periphery, Alloy) next to them."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Container CPU (% of a core)",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "100 * sum by (kind, project, service, env, host, container) (rate(container_cpu_usage_seconds_total{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}} {{service}} {{project}} {{env}} {{container}} ({{host}})"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Container memory",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "sum by (kind, project, service, env, host, container) (container_memory_working_set_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
+          "legendFormat": "{{kind}} {{service}} {{project}} {{env}} {{container}} ({{host}})"
         }
       ]
     }

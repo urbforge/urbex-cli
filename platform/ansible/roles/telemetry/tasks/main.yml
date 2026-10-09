@@ -1,12 +1,14 @@
 ---
 # The telemetry agent of every LXC - base services and project services:
 # Grafana Alloy, sending the LXC's resource metrics (CPU, memory, disk,
-# network) to the platform's Prometheus and its service's container logs
-# to Loki. Everything is labelled kind="platform" (Gitea, Komodo, ...) or
-# kind="app" (a project's service), with the service, the host and, for
-# apps, the project and environment. Logs are off for a project whose
-# manifest says observability.logs: false. See
-# docs/decisions/0023-service-logs-to-loki.md in urbforge/urbex.
+# network) and each container's CPU and memory to the platform's
+# Prometheus, and every container's logs to Loki. Everything has one
+# kind - platform (Gitea, Komodo, ...), app (a project's service) or agent
+# (Periphery, Alloy) - from the containers' urbex.* Docker labels, with
+# the service, the host and, for apps, the project and environment. A
+# project's logs are off when its manifest says observability.logs:
+# false; its agents' still ship. See docs/decisions/0023-service-logs-to-loki.md
+# and 0027-service-conventions.md in urbforge/urbex.
 - name: Create the telemetry agent's directory
   file:
     path: /opt/urbex/telemetry
