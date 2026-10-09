@@ -1,17 +1,33 @@
 # Managed by urbex (role telemetry): this LXC's telemetry agent. It reads
-# the containers' logs through Docker, and the LXC's resource usage from
-# /proc, /sys and the root filesystem, all read-only.
+# the containers' logs and labels through Docker, their CPU and memory
+# from the cgroups (cAdvisor, which finds Docker's containers through
+# containerd), and the LXC's resource usage from /proc, /sys and the root
+# filesystem, all read-only.
 services:
   alloy:
     image: docker.io/grafana/alloy:v1.20.1
+    labels:
+      urbex.kind: "agent"
+      urbex.service: "alloy"
+{% if urbex_project | default('') %}
+      urbex.project: "{{ urbex_project }}"
+{% endif %}
+{% if urbex_env | default('') %}
+      urbex.env: "{{ urbex_env }}"
+{% endif %}
     restart: unless-stopped
     command: run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    # The LXC's cgroup tree, where Docker's containers are.
+    cgroup: host
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro
+      - /sys:/sys:ro
+      - /run/containerd:/run/containerd:ro
+      - /var/lib/docker:/var/lib/docker:ro
       - alloy-data:/var/lib/alloy/data
 
 volumes:

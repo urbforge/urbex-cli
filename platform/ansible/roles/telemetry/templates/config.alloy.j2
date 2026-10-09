@@ -1,11 +1,33 @@
 // Managed by urbex (role telemetry): what this LXC sends to the
-// platform's observability stack, and how it is labelled.
-{% set labels = {'kind': urbex_kind, 'host': inventory_hostname} %}
-{% if urbex_service | default('') %}{% set _ = labels.update({'service': urbex_service}) %}{% endif %}
-{% if urbex_project | default('') %}{% set _ = labels.update({'project': urbex_project}) %}{% endif %}
-{% if urbex_env | default('') %}{% set _ = labels.update({'env': urbex_env}) %}{% endif %}
+// platform's observability stack, and how it is labelled (ADR-0023,
+// ADR-0027). Every log stream and metric series gets one kind -
+// platform, app or agent - with its service and, for a project's, its
+// project and environment: a container's from its Docker labels
+// (urbex.kind, urbex.service, urbex.project, urbex.env), this LXC's own
+// (its main service's) otherwise.
+{% set lxc = {'kind': urbex_kind} %}
+{% if urbex_service | default('') %}{% set _ = lxc.update({'service': urbex_service}) %}{% endif %}
+{% if urbex_project | default('') %}{% set _ = lxc.update({'project': urbex_project}) %}{% endif %}
+{% if urbex_env | default('') %}{% set _ = lxc.update({'env': urbex_env}) %}{% endif %}
+{% macro lxc_labels() %}
+{% for k, v in lxc | dictsort %}
+  rule {
+    target_label = "{{ k }}"
+    replacement  = "{{ v }}"
+  }
+{% endfor %}
+{% endmacro %}
+{% macro container_labels(prefix) %}
+{% for k in ['kind', 'service', 'project', 'env'] %}
+  rule {
+    source_labels = ["{{ prefix }}urbex_{{ k }}"]
+    regex         = "(.+)"
+    target_label  = "{{ k }}"
+  }
+{% endfor %}
+{% endmacro %}
 
-// --- resource metrics: the LXC's CPU, memory, disk and network ---------
+// --- resources: the LXC's CPU, memory, disk and network ----------------
 
 prometheus.exporter.unix "lxc" {
   procfs_path = "/host/proc"
@@ -16,7 +38,54 @@ prometheus.exporter.unix "lxc" {
 prometheus.scrape "lxc" {
   targets         = prometheus.exporter.unix.lxc.targets
   scrape_interval = "30s"
-  forward_to      = [prometheus.remote_write.platform.receiver]
+  forward_to      = [prometheus.relabel.lxc.receiver]
+}
+
+// The LXC's metrics keep its main service's kind.
+prometheus.relabel "lxc" {
+  forward_to = [prometheus.remote_write.platform.receiver]
+{{ lxc_labels() }}}
+
+// --- resources: each container's CPU and memory -------------------------
+
+prometheus.exporter.cadvisor "containers" {
+  docker_host                  = "unix:///var/run/docker.sock"
+  docker_only                  = true
+  store_container_labels       = false
+  allowlisted_container_labels = ["urbex.kind", "urbex.service", "urbex.project", "urbex.env"]
+  enabled_metrics              = ["cpu", "memory"]
+}
+
+prometheus.scrape "containers" {
+  targets         = prometheus.exporter.cadvisor.containers.targets
+  scrape_interval = "30s"
+  forward_to      = [prometheus.relabel.containers.receiver]
+}
+
+prometheus.relabel "containers" {
+  forward_to = [prometheus.remote_write.platform.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes)"
+    action        = "keep"
+  }
+  // Only the containers: cAdvisor also reports the LXC's own cgroup,
+  // with no container name - the LXC's metrics already cover it.
+  rule {
+    source_labels = ["name"]
+    regex         = ""
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["name"]
+    target_label  = "container"
+  }
+{{ lxc_labels() }}{{ container_labels('container_label_') }}
+  rule {
+    regex  = "container_label_.*|id|image|name|cpu"
+    action = "labeldrop"
+  }
 }
 
 prometheus.remote_write "platform" {
@@ -24,41 +93,40 @@ prometheus.remote_write "platform" {
     url = "{{ prometheus_write_url }}"
   }
   external_labels = {
-{% for k, v in labels | dictsort %}
-    {{ k }} = "{{ v }}",
-{% endfor %}
+    host = "{{ inventory_hostname }}",
   }
 }
-{% if urbex_logs | default('true') | bool %}
 
-// --- logs: the containers of this LXC's service ------------------------
+// --- logs: every container of this LXC, agents included -----------------
 
 discovery.docker "local" {
   host = "unix:///var/run/docker.sock"
 }
 
-// Only the service's containers - its compose project: the Komodo Stack
-// of a project LXC, /opt/urbex on a base-service LXC - not Periphery's of
-// a project LXC, nor this agent's. Filtered here, at discovery:
-// relabel_rules on loki.source.docker don't drop targets.
-discovery.relabel "service" {
+// Filtered and labelled here, at discovery: relabel_rules on
+// loki.source.docker don't drop targets.
+discovery.relabel "containers" {
   targets = discovery.docker.local.targets
+{% if not (urbex_logs | default('true') | bool) %}
 
+  // The project's manifest says observability.logs: false - its
+  // service's logs stay here; the agents' are shipped.
   rule {
-    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
-    regex         = "{{ telemetry_compose_project | default(inventory_hostname) }}"
-    action        = "keep"
+    source_labels = ["__meta_docker_container_label_urbex_kind"]
+    regex         = "app"
+    action        = "drop"
   }
+{% endif %}
   rule {
     source_labels = ["__meta_docker_container_name"]
     regex         = "/(.*)"
     target_label  = "container"
   }
-}
+{{ lxc_labels() }}{{ container_labels('__meta_docker_container_label_') }}}
 
-loki.source.docker "service" {
+loki.source.docker "containers" {
   host       = "unix:///var/run/docker.sock"
-  targets    = discovery.relabel.service.output
+  targets    = discovery.relabel.containers.output
   forward_to = [loki.write.platform.receiver]
 }
 
@@ -67,9 +135,6 @@ loki.write "platform" {
     url = "{{ loki_push_url }}"
   }
   external_labels = {
-{% for k, v in labels | dictsort %}
-    {{ k }} = "{{ v }}",
-{% endfor %}
+    host = "{{ inventory_hostname }}",
   }
 }
-{% endif %}

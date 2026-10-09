@@ -38,10 +38,9 @@ type inventoryVars struct {
 	// the issuer the apps' users see.
 	KeycloakPublicURL string `yaml:"keycloak_public_url,omitempty"`
 	// The telemetry agents' destinations and labels (role telemetry).
-	LokiPushURL             string `yaml:"loki_push_url"`
-	PrometheusWriteURL      string `yaml:"prometheus_write_url"`
-	Kind                    string `yaml:"urbex_kind"`
-	TelemetryComposeProject string `yaml:"telemetry_compose_project"`
+	LokiPushURL        string `yaml:"loki_push_url"`
+	PrometheusWriteURL string `yaml:"prometheus_write_url"`
+	Kind               string `yaml:"urbex_kind"`
 }
 
 type inventoryAll struct {
@@ -89,7 +88,6 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 				PrometheusWriteURL:   ep.PrometheusWriteURL,
 				Kind:                 "platform",
 				// Every base service is a compose project in /opt/urbex.
-				TelemetryComposeProject: "urbex",
 			},
 			Children: map[string]inventoryGroup{},
 		},

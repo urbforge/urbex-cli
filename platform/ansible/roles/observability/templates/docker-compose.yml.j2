@@ -8,6 +8,9 @@
 services:
   prometheus:
     image: docker.io/prom/prometheus:v3.15.0
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "prometheus"
     restart: unless-stopped
     # The LXCs' telemetry agents push their metrics (remote write).
     command:
@@ -22,6 +25,9 @@ services:
 
   loki:
     image: docker.io/grafana/loki:3.7.8
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "loki"
     restart: unless-stopped
     volumes:
       - loki-data:/loki
@@ -30,6 +36,9 @@ services:
 
   grafana:
     image: docker.io/grafana/grafana:13.2.3
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "grafana"
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD={{ lookup('env', 'URBEX_GRAFANA_ADMIN_PASSWORD') }}

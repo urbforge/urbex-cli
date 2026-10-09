@@ -204,7 +204,7 @@ step "a push to main is deployed to staging, with no command" '
   git -C /work/gitops pull -q "$(gitops_remote)" main 2>/dev/null
   git -C /work/gitops log -1 --format=%s | grep -q "hello main@" || fail "the deploy is not a commit to the gitops repo"'
 
-step "logs and resource metrics reach the observability stack, tagged platform or app" '
+step "logs and resource metrics reach the observability stack, tagged platform, app or agent" '
   for _ in $(seq 1 30); do
     curl -s -o /dev/null http://$NET.210:8080/
     found=$(loki_lines "{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}" hello-app)
@@ -212,24 +212,32 @@ step "logs and resource metrics reach the observability stack, tagged platform o
     sleep 5
   done
   [ "$found" -gt 0 ] || fail "no log line of hello api (staging) in Loki"
-  others=$(loki_lines "{host=\"hello-api-staging\", container!~\"hello-api-staging-.*\"}")
-  [ "$others" = 0 ] || fail "only the Stack containers should be shipped, found $others other lines"
-  for svc in gitea komodo keycloak observability; do
+  others=$(loki_lines "{host=\"hello-api-staging\", kind=\"app\", container!~\"hello-api-staging-.*\"}")
+  [ "$others" = 0 ] || fail "only the Stack containers are the app, found $others app lines from others"
+  agents=$(loki_lines "{host=\"hello-api-staging\", kind=\"agent\"}")
+  [ "$agents" -gt 0 ] || fail "no log line of the agents (Periphery, Alloy) of hello api (staging), as agent"
+  for svc in gitea komodo keycloak grafana; do
     [ "$(loki_lines "{kind=\"platform\", service=\"$svc\"}")" -gt 0 ] || fail "no log line of the platform service $svc in Loki"
   done
   for _ in $(seq 1 12); do
     app=$(prom_series "node_memory_MemTotal_bytes{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}")
     platform=$(prom_series "node_memory_MemTotal_bytes{kind=\"platform\"}")
-    [ "$app" -gt 0 ] && [ "$platform" -ge 5 ] && break
+    container=$(prom_series "container_memory_working_set_bytes{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}")
+    agent=$(prom_series "container_memory_working_set_bytes{kind=\"agent\", host=\"hello-api-staging\"}")
+    [ "$app" -gt 0 ] && [ "$platform" -ge 5 ] && [ "$container" -gt 0 ] && [ "$agent" -gt 0 ] && break
     sleep 5
   done
   [ "$app" -gt 0 ] || fail "no resource metrics of hello api (staging) in Prometheus"
   [ "$platform" -ge 5 ] || fail "resource metrics of only $platform platform LXCs in Prometheus"
+  [ "$container" -gt 0 ] || fail "no per-container metrics of hello api (staging), as app"
+  [ "$agent" -gt 0 ] || fail "no per-container metrics of the agents of hello api (staging), as agent"
+  nameless=$(prom_series "container_memory_working_set_bytes{container=\"\"}")
+  [ "$nameless" = 0 ] || fail "$nameless per-container series without a container: the LXC'"'"'s own cgroup must be dropped"
   pass=$(cred grafanaAdminPassword)
   for uid in datasources/uid/urbex-loki datasources/uid/urbex-prometheus dashboards/uid/urbex-logs dashboards/uid/urbex-resources; do
     curl -sf -u "admin:$pass" http://$NET.204:3000/api/$uid >/dev/null || fail "Grafana lacks $uid"
   done
-  echo "ok: $found app log lines, platform logs and metrics of $platform base LXCs; Grafana has both dashboards"'
+  echo "ok: $found app log lines, $agents agent lines, platform logs and metrics of $platform base LXCs, per-container metrics; Grafana has both dashboards"'
 
 step "Keycloak: a realm per environment, a test user per role, an endpoint for members only" '
   urbex users staging | tee /tmp/users.log

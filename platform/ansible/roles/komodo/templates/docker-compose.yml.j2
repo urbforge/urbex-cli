@@ -12,6 +12,8 @@ services:
     image: ghcr.io/ferretdb/postgres-documentdb:17-0.106.0-ferretdb-2.5.0
     labels:
       komodo.skip:
+      urbex.kind: "platform"
+      urbex.service: "komodo"
     restart: unless-stopped
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -24,6 +26,8 @@ services:
     image: ghcr.io/ferretdb/ferretdb:2.5.0
     labels:
       komodo.skip:
+      urbex.kind: "platform"
+      urbex.service: "komodo"
     restart: unless-stopped
     depends_on:
       - postgres
@@ -34,6 +38,9 @@ services:
 
   core:
     image: ghcr.io/moghtech/komodo-core:{{ komodo_version }}
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "komodo"
     init: true
     restart: unless-stopped
     depends_on:
@@ -49,6 +56,15 @@ services:
 
   periphery:
     image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    labels:
+      urbex.kind: "agent"
+      urbex.service: "periphery"
+{% if urbex_project | default('') %}
+      urbex.project: "{{ urbex_project }}"
+{% endif %}
+{% if urbex_env | default('') %}
+      urbex.env: "{{ urbex_env }}"
+{% endif %}
     init: true
     restart: unless-stopped
     depends_on:

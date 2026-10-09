@@ -4,6 +4,15 @@
 services:
   quicktunnel:
     image: docker.io/cloudflare/cloudflared:2026.9.3
+    labels:
+      urbex.kind: "agent"
+      urbex.service: "quicktunnel"
+{% if urbex_project | default('') %}
+      urbex.project: "{{ urbex_project }}"
+{% endif %}
+{% if urbex_env | default('') %}
+      urbex.env: "{{ urbex_env }}"
+{% endif %}
     restart: unless-stopped
     network_mode: host
     command: tunnel --no-autoupdate --url http://localhost:{{ urbex_app_port }} --metrics 0.0.0.0:49399

@@ -209,7 +209,7 @@ func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
 	}
 	inventory, _ := os.ReadFile(filepath.Join(dir, "ansible", "inventory.yml"))
 	for _, want := range []string{
-		"urbex_kind: platform", "telemetry_compose_project: urbex",
+		"urbex_kind: platform",
 		"loki_push_url: http://loki.urbex.example.com:3100/loki/api/v1/push",
 		"prometheus_write_url: http://prometheus.urbex.example.com:9090/api/v1/write",
 		"urbex_service: gitea", "urbex_service: observability",
@@ -240,7 +240,7 @@ func TestRun_ConnectsAndTagsThePlatformInKomodo(t *testing.T) {
 	if strings.Join(fp.waitedServers, ",") != "urbex-gitea,urbex-technitium,urbex-keycloak,urbex-observability" {
 		t.Errorf("waited for %v", fp.waitedServers)
 	}
-	for _, r := range []string{"Server urbex-gitea", "Server urbex-komodo", "Server urbex-observability", "Action urbex-release", "Procedure urbex-gitops"} {
+	for _, r := range []string{"Server urbex-gitea", "Server urbex-komodo", "Server urbex-observability", "Builder urbex-komodo", "Action urbex-release", "Procedure urbex-gitops"} {
 		if strings.Join(fp.tags[r], ",") != "platform" {
 			t.Errorf("%s tags = %v, want platform", r, fp.tags[r])
 		}

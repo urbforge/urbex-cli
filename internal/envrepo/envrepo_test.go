@@ -208,3 +208,22 @@ func TestCompose_ExtraEnvironment(t *testing.T) {
 		t.Errorf("compose lacks the extra environment:\n%s", data)
 	}
 }
+
+// A project's containers carry the labels the telemetry agent tags their
+// logs and metrics with (ADR-0027) - the web frontend's too, which runs
+// on the platform's builder.
+func TestCompose_KindLabels(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	api := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
+	web := manifest.Service{Name: manifest.WebService, Runtime: manifest.WebRuntime}
+	for _, svc := range []manifest.Service{api, web} {
+		if err := repo.WriteService("staging", "hello", svc, "reg/hello-"+svc.Name, true); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/hello", svc.Name, "compose.yaml"))
+		want := "    labels:\n      urbex.kind: \"app\"\n      urbex.service: \"" + svc.Name + "\"\n      urbex.project: \"hello\"\n      urbex.env: \"staging\"\n"
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s's compose lacks the kind labels:\n%s", svc.Name, data)
+		}
+	}
+}

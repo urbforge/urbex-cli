@@ -3,6 +3,9 @@
 services:
   technitium:
     image: technitium/dns-server:latest
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "technitium"
     restart: unless-stopped
     environment:
       - DNS_SERVER_DOMAIN={{ inventory_hostname }}

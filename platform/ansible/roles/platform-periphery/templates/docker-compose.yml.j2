@@ -3,6 +3,15 @@
 services:
   periphery:
     image: ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}
+    labels:
+      urbex.kind: "agent"
+      urbex.service: "periphery"
+{% if urbex_project | default('') %}
+      urbex.project: "{{ urbex_project }}"
+{% endif %}
+{% if urbex_env | default('') %}
+      urbex.env: "{{ urbex_env }}"
+{% endif %}
     init: true
     restart: unless-stopped
     env_file: ./periphery.env
