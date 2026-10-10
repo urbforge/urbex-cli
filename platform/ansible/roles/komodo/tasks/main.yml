@@ -44,3 +44,11 @@
   until: komodo_core.status == 200
   retries: 30
   delay: 2
+
+# A copy of the compose file Komodo deploys, for review in the GitOps repo
+# (ADR-0027): bootstrap commits and pushes it. No secret is in it.
+- name: Copy the compose file to the GitOps repo
+  fetch:
+    src: /opt/urbex/docker-compose.yml
+    dest: "{{ playbook_dir }}/../platform/komodo/compose.yaml"
+    flat: true

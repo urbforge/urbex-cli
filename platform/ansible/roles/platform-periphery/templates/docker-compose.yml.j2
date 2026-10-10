@@ -20,6 +20,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/proc
       - /etc/komodo:/etc/komodo
+      # The bootstrap services' compose files, which Komodo deploys as
+      # files-on-host Stacks (ADR-0027): Periphery reads them here.
+      - /opt/urbex:/opt/urbex
 
 volumes:
   keys:

@@ -1,4 +1,11 @@
 ---
+- name: Template Technitium's admin password
+  template:
+    src: technitium.env.j2
+    dest: /opt/urbex/technitium.env
+    mode: "0600"
+  no_log: true
+
 - name: Template Technitium DNS docker-compose.yml
   template:
     src: docker-compose.yml.j2
@@ -15,3 +22,11 @@
   # down on the next run. up is a no-op when nothing changed, and pulls
   # images that aren't present yet (e.g. a newly deployed tag).
   changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+
+# A copy of the compose file Komodo deploys, for review in the GitOps repo
+# (ADR-0027): bootstrap commits and pushes it. No secret is in it.
+- name: Copy the compose file to the GitOps repo
+  fetch:
+    src: /opt/urbex/docker-compose.yml
+    dest: "{{ playbook_dir }}/../platform/technitium/compose.yaml"
+    flat: true

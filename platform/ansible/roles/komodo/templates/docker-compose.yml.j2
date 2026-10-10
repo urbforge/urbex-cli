@@ -1,3 +1,7 @@
+# Deployed by Komodo as the Stack "urbex-komodo", from this file on the
+# server (/opt/urbex; ADR-0027); written - and, when Komodo can't, restored
+# - by urbex bootstrap. A copy is in the GitOps repo, platform/komodo/, for
+# review: change the template in urbex-cli, not the copy.
 # Managed by urbex bootstrap - see docs/decisions/0004-gitops-gitea-komodo.md
 # and docs/decisions/0018-image-build-komodo-gitea-registry.md in
 # urbforge/urbex. Based on upstream's ferretdb.compose.yaml
@@ -75,6 +79,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/proc
       - /etc/komodo:/etc/komodo
+      # The bootstrap services' compose files, which Komodo deploys as
+      # files-on-host Stacks (ADR-0027): Periphery reads them here.
+      - /opt/urbex:/opt/urbex
 
 volumes:
   postgres-data:

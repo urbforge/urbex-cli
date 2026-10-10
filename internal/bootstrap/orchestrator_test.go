@@ -77,6 +77,7 @@ type fakePlatform struct {
 	synced          []string            // remote URLs
 	pulled          []string            // remote URLs
 	tags            map[string][]string // "Kind name" -> tags
+	stacks          map[string]komodo.StackConfig
 	waitedServers   []string
 	hooks           []string
 	deletedHooks    []string
@@ -468,7 +469,7 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 		t.Fatalf("unexpected gitops procedure %+v", proc)
 	}
 	exec := proc.Stages[0].Executions[0].Execution
-	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != "*" {
+	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != ProjectStacksPattern {
 		t.Errorf("expected the procedure to redeploy changed stacks, got %+v", exec)
 	}
 	const hook = "urbex/gitops -> http://komodo.urbex.example.com:9120/listener/github/procedure/urbex-gitops/main (main)"
@@ -543,6 +544,13 @@ func TestRun_RejectsAMalformedAgeKeyBeforeProvisioning(t *testing.T) {
 func (k *fakeKomodo) WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error) {
 	k.f.waitedServers = append(k.f.waitedServers, names...)
 	return nil, nil
+}
+func (k *fakeKomodo) EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error {
+	if k.f.stacks == nil {
+		k.f.stacks = map[string]komodo.StackConfig{}
+	}
+	k.f.stacks[name] = cfg
+	return nil
 }
 func (k *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
 	if k.f.tags == nil {

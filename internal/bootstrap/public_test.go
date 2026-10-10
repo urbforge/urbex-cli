@@ -280,3 +280,29 @@ func TestRun_WritePathsStayInternal(t *testing.T) {
 		t.Error("Loki's push block must come before its route")
 	}
 }
+
+// Technitium, Gitea and Komodo become Komodo Stacks with their compose
+// files on their servers (ADR-0027), adopting the running compose project
+// "urbex" rather than redeploying it, tagged platform.
+func TestRun_KomodoAdoptsTheBootstrapServices(t *testing.T) {
+	o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, name := range []string{"urbex-technitium", "urbex-gitea", "urbex-komodo"} {
+		cfg, ok := fp.stacks[name]
+		if !ok {
+			t.Errorf("no stack %s, stacks: %v", name, fp.stacks)
+			continue
+		}
+		if cfg.ServerID != name || !cfg.FilesOnHost || cfg.RunDirectory != "/opt/urbex" || cfg.ProjectName != "urbex" || cfg.Repo != "" {
+			t.Errorf("stack %s = %+v, want files on host in /opt/urbex, project urbex, on server %s", name, cfg, name)
+		}
+		if strings.Join(fp.tags["Stack "+name], ",") != "platform" {
+			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
+		}
+	}
+	if _, ok := fp.stacks["urbex-keycloak"]; ok {
+		t.Error("Keycloak isn't a bootstrap service: it comes from the GitOps repo")
+	}
+}
