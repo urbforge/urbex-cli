@@ -1,0 +1,36 @@
+---
+# urbex's prepared LXC template (redemptor#18): after the common and
+# sops-tools roles, pull the images every LXC runs - Periphery and the
+# telemetry agent - then make the LXC a clean source for clones: each
+# clone must get its own SSH host keys and machine id.
+- name: Pull the images every LXC runs
+  command: docker pull {{ item }}
+  loop:
+    - "ghcr.io/moghtech/komodo-periphery:{{ komodo_version }}"
+    - "{{ alloy_image }}"
+  register: pulled
+  changed_when: "'Downloaded newer image' in pulled.stdout"
+
+- name: Install the unit that gives each clone its own SSH host keys
+  copy:
+    src: urbex-ssh-host-keys.service
+    dest: /etc/systemd/system/urbex-ssh-host-keys.service
+    mode: "0644"
+
+- name: Enable it
+  systemd:
+    name: urbex-ssh-host-keys.service
+    enabled: true
+    daemon_reload: true
+
+- name: Clean the apt cache
+  command: apt-get clean
+  changed_when: false
+
+# Last: the SSH connection Ansible uses doesn't need them any more.
+- name: Remove what must be unique to each clone
+  shell: |
+    rm -f /etc/ssh/ssh_host_*
+    truncate -s 0 /etc/machine-id
+    rm -f /var/lib/dbus/machine-id /var/lib/docker/engine-id
+  changed_when: true

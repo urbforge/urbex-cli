@@ -26,8 +26,13 @@ resource "proxmox_virtual_environment_container" "this" {
       }
     }
 
-    user_account {
-      keys = [var.ssh_public_key]
+    # Proxmox only takes SSH keys when it creates an LXC from a container
+    # template: a clone has them already, from urbex's template.
+    dynamic "user_account" {
+      for_each = var.clone_vm_id > 0 ? [] : [1]
+      content {
+        keys = [var.ssh_public_key]
+      }
     }
 
     # Without servers, the LXC copies the Proxmox host's resolv.conf - which
@@ -59,9 +64,25 @@ resource "proxmox_virtual_environment_container" "this" {
     bridge = var.network_bridge
   }
 
-  operating_system {
-    template_file_id = var.template_file_id
-    type             = "debian"
+  # From urbex's prepared template when there is one, Docker and the
+  # agents' tools already installed (redemptor#18) - a linked clone, made
+  # in seconds; the template can't be deleted while clones of it exist,
+  # so a newer template gets a VMID of its own. Else from the Debian
+  # container template.
+  dynamic "clone" {
+    for_each = var.clone_vm_id > 0 ? [1] : []
+    content {
+      vm_id = var.clone_vm_id
+      full  = false
+    }
+  }
+
+  dynamic "operating_system" {
+    for_each = var.clone_vm_id > 0 ? [] : [1]
+    content {
+      template_file_id = var.template_file_id
+      type             = "debian"
+    }
   }
 
   # nesting is required for Docker (and docker compose) to run inside the
@@ -72,5 +93,11 @@ resource "proxmox_virtual_environment_container" "this" {
   features {
     nesting = true
     keyctl  = var.keyctl
+  }
+
+  # Where an LXC came from only matters when it is created: a new template
+  # (or none) must never replace the LXCs that exist.
+  lifecycle {
+    ignore_changes = [clone, operating_system, initialization[0].user_account]
   }
 }

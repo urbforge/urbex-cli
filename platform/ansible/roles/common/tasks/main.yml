@@ -3,6 +3,14 @@
 # per docs/decisions/0003-terraform-ansible-provisioning.md in
 # urbforge/urbex.
 
+# An LXC cloned from urbex's prepared template (redemptor#18) has Docker
+# already: then nothing is downloaded or installed here. One created from
+# the plain Debian template gets it all.
+- name: Check whether Docker is installed
+  stat:
+    path: /usr/bin/docker
+  register: docker_binary
+
 - name: Install prerequisite packages
   apt:
     name:
@@ -12,6 +20,7 @@
       - python3-debian # needed by deb822_repository
     state: present
     update_cache: true
+  when: not docker_binary.stat.exists
 
 - name: Add the Docker apt repository
   deb822_repository:
@@ -21,6 +30,7 @@
     suites: ["{{ ansible_facts['distribution_release'] }}"]
     components: [stable]
     signed_by: https://download.docker.com/linux/debian/gpg
+  when: not docker_binary.stat.exists
 
 - name: Install Docker Engine and the Compose plugin
   apt:
@@ -31,6 +41,7 @@
       - docker-compose-plugin
     state: present
     update_cache: true
+  when: not docker_binary.stat.exists
 
 - name: Ensure Docker is enabled and running
   systemd:

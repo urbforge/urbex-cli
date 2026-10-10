@@ -1,0 +1,12 @@
+---
+# urbex's prepared LXC template (redemptor#18), built by the platform
+# phase when missing or outdated: Docker, sops and the compose wrapper,
+# and the agents' images, so that a new LXC cloned from it downloads
+# nothing of that again.
+- name: Prepare urbex's LXC template
+  hosts: urbex_template
+  become: true
+  roles:
+    - common
+    - sops-tools
+    - template

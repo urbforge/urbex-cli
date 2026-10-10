@@ -24,7 +24,7 @@ func TestWriteTFVars_DNSServers(t *testing.T) {
 		cfg := &platform.Config{}
 		cfg.Proxmox.Network.Gateway = "192.168.1.1"
 		cfg.Proxmox.Network.DNSServers = tc.servers
-		if err := writeTFVars(dir, cfg, map[string]string{"urbex-technitium": "192.168.1.202"}, 24); err != nil {
+		if err := writeTFVars(dir, cfg, map[string]string{"urbex-technitium": "192.168.1.202"}, 24, 0); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(dir, "terraform.auto.tfvars.json"))

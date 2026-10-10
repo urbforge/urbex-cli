@@ -10,6 +10,7 @@ module "gitea" {
   vm_id            = var.vm_id_base + 0
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 2
   memory_mb        = 2048
@@ -31,6 +32,7 @@ module "komodo" {
   vm_id            = var.vm_id_base + 1
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 2
   memory_mb        = 2048
@@ -52,6 +54,7 @@ module "technitium" {
   vm_id            = var.vm_id_base + 2
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 1
   memory_mb        = 1024
@@ -73,6 +76,7 @@ module "keycloak" {
   vm_id            = var.vm_id_base + 3
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 2
   memory_mb        = 2048
@@ -94,6 +98,7 @@ module "observability" {
   vm_id            = var.vm_id_base + 4
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 2
   memory_mb        = 4096
@@ -118,6 +123,7 @@ module "tunnel" {
   vm_id            = var.vm_id_base + 5
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = 1
   memory_mb        = 512
