@@ -621,7 +621,7 @@ func (r *Rollout) buildConfig(project string, svc manifest.Service) (komodo.Buil
 // through: a script on the LXC (see the periphery Ansible role) that
 // decrypts the service's secrets, if it has any, for the duration of the
 // command.
-const ComposeWrapper = "/opt/urbex/bin/urbex-compose [[COMPOSE_COMMAND]]"
+const ComposeWrapper = bootstrap.ComposeWrapper
 
 // stackConfig is the Komodo Stack of one service in one environment: the
 // compose project in the service's folder of the GitOps repo, on the

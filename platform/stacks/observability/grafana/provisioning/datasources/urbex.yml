@@ -1,4 +1,4 @@
-# Managed by urbex bootstrap (role observability).
+# Managed by urbex bootstrap (Stack urbex-observability, ADR-0027).
 apiVersion: 1
 datasources:
   - name: Loki

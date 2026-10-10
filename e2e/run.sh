@@ -167,7 +167,7 @@ step "bootstrap: base services and platform setup" '
   # Komodo adopted the bootstrap services as Stacks with their compose
   # files on the servers (ADR-0027); copies for review in the GitOps repo,
   # without secrets.
-  for svc in technitium gitea komodo; do
+  for svc in technitium gitea komodo keycloak observability; do
     state=""
     for _ in $(seq 1 12); do
       state=$(komodo_stack_state urbex-$svc)
@@ -176,9 +176,19 @@ step "bootstrap: base services and platform setup" '
     done
     [ "$state" = running ] || fail "komodo stack urbex-$svc should be running, is: ${state:-missing}"
     [ "$(komodo_tags Stack urbex-$svc)" = platform ] || fail "stack urbex-$svc tags: $(komodo_tags Stack urbex-$svc)"
-    [ -f /work/gitops/platform/$svc/compose.yaml ] || fail "no copy of $svc compose file in the gitops repo"
+    [ -f /work/gitops/platform/$svc/compose.yaml ] || fail "no $svc compose file in the gitops repo"
   done
-  ! grep -rq "ADMIN_PASSWORD=\|PASSWORD=[^$]" /work/gitops/platform || fail "a secret in the gitops copies: $(grep -rl PASSWORD= /work/gitops/platform)"
+  # Keycloak and the observability stack come from the GitOps repo, their
+  # secrets encrypted there.
+  for svc in keycloak observability; do
+    grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
+  done
+  # No generated secret is in plaintext anywhere under platform/.
+  for name in keycloakAdminPassword grafanaAdminPassword technitiumAdminPassword komodoDbPassword komodoAdminPassword giteaAdminPassword; do
+    value=$(cred $name)
+    [ -n "$value" ] || fail "no $name in the credentials"
+    ! grep -rqF "$value" /work/gitops/platform || fail "$name in plaintext in the gitops repo: $(grep -rlF "$value" /work/gitops/platform)"
+  done
   echo "ok: platform is up"'
 
 # From here on Proxmox "has" the base services, as after a real apply.
@@ -356,7 +366,7 @@ step "rollback: deploying an older release" '
 
 step "destroy staging: prod and the project Builds untouched" '
   urbex destroy staging
-  [ "$(komodo_names Stacks)" = "hello-api-prod" ] || fail "unexpected stacks left: $(komodo_names Stacks)"
+  [ "$(komodo_names Stacks)" = "hello-api-prod urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
   test ! -e /work/gitops/environments/staging/hello || fail "the staging folder is still in the gitops repo"
   expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)"

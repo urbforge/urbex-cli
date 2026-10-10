@@ -146,6 +146,7 @@ type KomodoAPI interface {
 	WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error)
 	TagResource(ctx context.Context, kind, name string, tags ...string) error
 	EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error
+	DeployStack(ctx context.Context, name string) (*komodo.Update, error)
 }
 
 // Komodo tags (as on Grafana's labels, kind): the platform's resources
@@ -189,16 +190,23 @@ var ansibleSecretEnv = []string{
 	"URBEX_KOMODO_DB_PASSWORD",
 	"URBEX_KOMODO_JWT_SECRET",
 	"URBEX_KOMODO_WEBHOOK_SECRET",
-	"URBEX_KEYCLOAK_ADMIN_PASSWORD",
-	"URBEX_GRAFANA_ADMIN_PASSWORD",
 	"URBEX_TECHNITIUM_ADMIN_PASSWORD",
 }
 
-// ensureSecrets generates any missing platform secret the base-service
-// Ansible roles need, persisting them to ~/.urbex/credentials.yaml.
+// stackSecretEnv are the secrets of the platform's Stacks from the
+// GitOps repo (ADR-0027), encrypted there with SOPS - never passed to
+// Ansible. ensureSecrets generates them too.
+var stackSecretEnv = []string{
+	"URBEX_KEYCLOAK_ADMIN_PASSWORD",
+	"URBEX_GRAFANA_ADMIN_PASSWORD",
+}
+
+// ensureSecrets generates any missing platform secret - the base-service
+// Ansible roles' and the platform Stacks' - persisting them to
+// ~/.urbex/credentials.yaml.
 func ensureSecrets(creds *credentials.Credentials) error {
 	generated := map[string]string{}
-	for _, name := range ansibleSecretEnv {
+	for _, name := range append(append([]string{}, ansibleSecretEnv...), stackSecretEnv...) {
 		if creds.Get(name) != "" {
 			continue
 		}
@@ -341,7 +349,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		Schedule:        "0 */15 * * * *",
 		ScheduleEnabled: true,
 		Stages: []komodo.Stage{
-			komodo.NewStage("Deploy changed stacks", "BatchDeployStackIfChanged", "pattern", []string{ProjectStacksPattern}),
+			komodo.NewStage("Deploy changed stacks", "BatchDeployStackIfChanged", "pattern", []string{GitOpsStacksPattern}),
 		},
 	}
 	if err := k.EnsureProcedure(ctx, GitOpsProcedure, gitops); err != nil {
@@ -403,8 +411,9 @@ func PullRepo(ctx context.Context, dir, remoteURL, token string) error {
 // Servers - Periphery on each, but Komodo's own, which already runs it -
 // so Komodo monitors their containers, and tags the platform's Komodo
 // resources "platform".
-func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clients, ansibleDir string) error {
-	env := o.Credentials.Env("URBEX_KOMODO_ONBOARDING_KEY")
+func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clients, ansibleDir string, stacks []PlatformStack) error {
+	// The age key: Periphery decrypts the platform Stacks' secrets with it.
+	env := o.Credentials.Env("URBEX_KOMODO_ONBOARDING_KEY", "URBEX_AGE_KEY")
 	args := []string{"-i", "inventory.yml", "platform-periphery.yml"}
 	if err := o.Runner.Run(ctx, Command{Dir: ansibleDir, Name: "ansible-playbook", Args: args, Env: env}); err != nil {
 		return fmt.Errorf("ansible-playbook platform-periphery.yml: %w", err)
@@ -431,6 +440,9 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	if err := adoptBootstrapServices(ctx, k); err != nil {
 		return err
 	}
+	if err := o.deployPlatformStacks(ctx, k, stacks); err != nil {
+		return err
+	}
 	// The builder (ADR-0027: every Komodo resource has a kind).
 	if err := k.TagResource(ctx, "Builder", KomodoServerName, PlatformTag); err != nil {
 		return err
@@ -441,12 +453,13 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	return k.TagResource(ctx, "Procedure", GitOpsProcedure, PlatformTag)
 }
 
-// ProjectStacksPattern selects the Stacks deployed from the GitOps repo's
-// environments - <project>-<service>-<env>, env staging or prod - for the
-// GitOps Procedure: never the bootstrap services' files-on-host Stacks,
+// GitOpsStacksPattern selects the Stacks deployed from the GitOps repo -
+// the environments' <project>-<service>-<env> (staging or prod) and the
+// platform's Keycloak, observability and tunnel - for the GitOps
+// Procedure: never the bootstrap services' files-on-host Stacks,
 // which Komodo has never deployed and so would count as changed, and
 // would redeploy - Komodo itself among them, from inside.
-const ProjectStacksPattern = `\^.+-(staging|prod)$\`
+const GitOpsStacksPattern = `\^(.+-(staging|prod)|urbex-(keycloak|observability|tunnel))$\`
 
 // BootstrapServices are the base services Komodo can't depend on to
 // deploy themselves (ADR-0027): Technitium (every LXC resolves through

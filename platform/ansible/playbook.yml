@@ -25,19 +25,19 @@
   roles:
     - komodo
 
-- name: Deploy Keycloak
+- name: Keycloak - deployed by Komodo from the GitOps repo; clean up what Ansible ran it from
   hosts: urbex_keycloak
   become: true
   roles:
     - keycloak
 
-- name: Deploy the observability stack (Prometheus, Grafana, Loki)
+- name: The observability stack - deployed by Komodo from the GitOps repo; clean up
   hosts: urbex_observability
   become: true
   roles:
     - observability
 
-- name: Deploy the Cloudflare Tunnel connector
+- name: The Cloudflare Tunnel connector - deployed by Komodo from the GitOps repo; clean up
   hosts: urbex_tunnel
   become: true
   roles:

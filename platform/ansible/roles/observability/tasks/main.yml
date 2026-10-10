@@ -1,67 +1,14 @@
 ---
-# World-readable: Prometheus runs as an unprivileged user inside its
-# container and the file is bind-mounted. It holds no secrets.
-- name: Template Prometheus configuration
-  template:
-    src: prometheus.yml.j2
-    dest: /opt/urbex/prometheus.yml
-    mode: "0644"
-  register: prometheus_config
-
-# Grafana's data sources and dashboards, provisioned from files: Loki
-# (the services' logs) and Prometheus, and the "Urbex logs" dashboard.
-- name: Create Grafana's provisioning directories
+# The observability stack is a Komodo Stack deployed from the GitOps repo
+# (platform/, ADR-0027), no longer by Ansible. On a platform Ansible
+# set up before, this removes the files it ran from - the running
+# containers are left to the Stack, which takes them over (same compose
+# project, "urbex", same volumes) when Komodo deploys it.
+- name: Remove the files Ansible deployed the observability stack from
   file:
-    path: "/opt/urbex/grafana/{{ item }}"
-    state: directory
-    mode: "0755"
+    path: "{{ item }}"
+    state: absent
   loop:
-    - provisioning/datasources
-    - provisioning/dashboards
-    - dashboards
-
-- name: Provision Grafana's data sources and dashboards
-  copy:
-    src: "{{ item.src }}"
-    dest: "/opt/urbex/grafana/{{ item.dest }}"
-    mode: "0644"
-  loop:
-    - { src: datasources.yml, dest: provisioning/datasources/urbex.yml }
-    - { src: dashboards.yml, dest: provisioning/dashboards/urbex.yml }
-    - { src: urbex-logs.json, dest: dashboards/urbex-logs.json }
-    - { src: urbex-resources.json, dest: dashboards/urbex-resources.json }
-  register: grafana_provisioning
-
-# The Grafana admin password comes from the environment of the machine
-# running urbex bootstrap (generated once, kept in
-# ~/.urbex/credentials.yaml) - never from a file in the GitOps repo.
-- name: Template observability docker-compose.yml
-  template:
-    src: docker-compose.yml.j2
-    dest: /opt/urbex/docker-compose.yml
-    mode: "0640"
-  no_log: true
-  register: compose_file
-
-- name: Start the observability stack via docker compose
-  command: docker compose up -d
-  args:
-    chdir: /opt/urbex
-  register: compose_up
-  # Always run: a failure after templating must not leave the service
-  # down on the next run. up is a no-op when nothing changed, and pulls
-  # images that aren't present yet (e.g. a newly deployed tag).
-  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
-
-# compose up doesn't notice a changed bind-mounted file.
-- name: Restart Prometheus to pick up its new configuration
-  command: docker compose restart prometheus
-  args:
-    chdir: /opt/urbex
-  when: prometheus_config is changed
-
-- name: Restart Grafana to pick up its provisioning
-  command: docker compose restart grafana
-  args:
-    chdir: /opt/urbex
-  when: grafana_provisioning is changed
+    - /opt/urbex/docker-compose.yml
+    - /opt/urbex/prometheus.yml
+    - /opt/urbex/grafana

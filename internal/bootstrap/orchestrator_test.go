@@ -78,6 +78,7 @@ type fakePlatform struct {
 	pulled          []string            // remote URLs
 	tags            map[string][]string // "Kind name" -> tags
 	stacks          map[string]komodo.StackConfig
+	deployed        []string
 	waitedServers   []string
 	hooks           []string
 	deletedHooks    []string
@@ -220,7 +221,16 @@ func newRunOrchestrator(t *testing.T, proxmox *fakeProxmox) (*Orchestrator, *fak
 		Runner:      runner,
 		Out:         &bytes.Buffer{},
 		Clients:     fp.clients(),
+		Secrets:     plainSecrets{},
 	}, runner, fp
+}
+
+// plainSecrets writes "secrets" as KEY=value, in plaintext: tests have no
+// sops.
+type plainSecrets struct{}
+
+func (plainSecrets) Write(_ context.Context, path string, values map[string]string) error {
+	return os.WriteFile(path, []byte(renderEnv(values)), 0o600)
 }
 
 func TestRun_DryRun_MaterializesAssetsWithoutExecuting(t *testing.T) {
@@ -469,7 +479,7 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 		t.Fatalf("unexpected gitops procedure %+v", proc)
 	}
 	exec := proc.Stages[0].Executions[0].Execution
-	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != ProjectStacksPattern {
+	if exec.Type != "BatchDeployStackIfChanged" || exec.Params["pattern"] != GitOpsStacksPattern {
 		t.Errorf("expected the procedure to redeploy changed stacks, got %+v", exec)
 	}
 	const hook = "urbex/gitops -> http://komodo.urbex.example.com:9120/listener/github/procedure/urbex-gitops/main (main)"
@@ -551,6 +561,10 @@ func (k *fakeKomodo) EnsureStack(ctx context.Context, name string, cfg komodo.St
 	}
 	k.f.stacks[name] = cfg
 	return nil
+}
+func (k *fakeKomodo) DeployStack(ctx context.Context, name string) (*komodo.Update, error) {
+	k.f.deployed = append(k.f.deployed, name)
+	return &komodo.Update{Success: true}, nil
 }
 func (k *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
 	if k.f.tags == nil {

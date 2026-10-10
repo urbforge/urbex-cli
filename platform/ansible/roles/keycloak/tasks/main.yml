@@ -1,24 +1,12 @@
 ---
-- name: Template Keycloak docker-compose.yml
-  template:
-    src: docker-compose.yml.j2
-    dest: /opt/urbex/docker-compose.yml
-    mode: "0640"
-  register: compose_file
-  no_log: true
-  vars:
-    # Generated once by urbex bootstrap and kept in
-    # ~/.urbex/credentials.yaml, passed via the environment - never from a
-    # file in the GitOps repo. TODO: move platform secrets to SOPS+age
-    # (docs/decisions/0011-secrets-sops-age.md).
-    keycloak_admin_password: "{{ lookup('env', 'URBEX_KEYCLOAK_ADMIN_PASSWORD') }}"
-
-- name: Start Keycloak via docker compose
-  command: docker compose up -d
-  args:
-    chdir: /opt/urbex
-  register: compose_up
-  # Always run: a failure after templating must not leave the service
-  # down on the next run. up is a no-op when nothing changed, and pulls
-  # images that aren't present yet (e.g. a newly deployed tag).
-  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+# Keycloak is a Komodo Stack deployed from the GitOps repo
+# (platform/, ADR-0027), no longer by Ansible. On a platform Ansible
+# set up before, this removes the files it ran from - the running
+# containers are left to the Stack, which takes them over (same compose
+# project, "urbex", same volumes) when Komodo deploys it.
+- name: Remove the files Ansible deployed Keycloak from
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/urbex/docker-compose.yml

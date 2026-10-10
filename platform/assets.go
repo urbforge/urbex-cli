@@ -28,3 +28,11 @@ var Dockerfiles embed.FS
 //
 //go:embed komodo
 var Komodo embed.FS
+
+// Stacks holds the compose files and configuration of the platform
+// services Komodo deploys from the GitOps repo - Keycloak, the
+// observability stack, the tunnel (ADR-0027): urbex bootstrap copies
+// them into platform/<service>/ there.
+//
+//go:embed all:stacks
+var Stacks embed.FS
