@@ -32,6 +32,7 @@ type CloudflareAPI interface {
 type PublicEndpoints struct {
 	Keycloak, Gitea, Komodo, Hooks string
 	DNS, Grafana, Prometheus, Loki string
+	hosts                          []string
 }
 
 // PublicEndpointsFor returns the platform's public hostnames, or the zero
@@ -51,11 +52,28 @@ func PublicEndpointsFor(cfg *platform.Config) PublicEndpoints {
 		Grafana:    cf.Hostname(cfg.Domain, "grafana"),
 		Prometheus: cf.Hostname(cfg.Domain, "prometheus"),
 		Loki:       cf.Hostname(cfg.Domain, "loki"),
+		hosts:      publishedHosts(cfg),
 	}
 }
 
+// all are the platform's public hostnames: those of the service
+// catalog's published endpoints, public or behind Access.
 func (p PublicEndpoints) all() []string {
-	return []string{p.Keycloak, p.Gitea, p.Komodo, p.Hooks, p.DNS, p.Grafana, p.Prometheus, p.Loki}
+	return p.hosts
+}
+
+// publishedHosts are the hostnames of the catalog's published labels, in
+// catalog order.
+func publishedHosts(cfg *platform.Config) []string {
+	var hosts []string
+	seen := map[string]bool{}
+	for _, e := range platform.Published() {
+		if !seen[e.Label] {
+			seen[e.Label] = true
+			hosts = append(hosts, cfg.Cloudflare.Hostname(cfg.Domain, e.Label))
+		}
+	}
+	return hosts
 }
 
 // accessApp is a Cloudflare Access application urbex creates: Name is
@@ -63,21 +81,46 @@ func (p PublicEndpoints) all() []string {
 // it protects.
 type accessApp struct{ Name, Domain string }
 
-// accessApps are the platform's admin and internal UIs and APIs, behind
-// Access (ADR-0027): Gitea's web, Komodo's UI, Technitium's console,
-// Grafana, Prometheus, Loki, and Keycloak's admin console and admin
-// realm - its other realms, the projects', stay public.
-func (p PublicEndpoints) accessApps() []accessApp {
-	return []accessApp{
-		{"git", p.Gitea},
-		{"komodo", p.Komodo},
-		{"dns", p.DNS},
-		{"grafana", p.Grafana},
-		{"prometheus", p.Prometheus},
-		{"loki", p.Loki},
-		{"auth-admin", p.Keycloak + "/admin"},
-		{"auth-master", p.Keycloak + "/realms/master"},
+// accessApps are the catalog's endpoints behind Access (ADR-0027) - the
+// admin and internal UIs and APIs - each an Access application on its
+// hostname, and path for a part of a service (Keycloak's /admin).
+func accessApps(cfg *platform.Config) []accessApp {
+	var apps []accessApp
+	for _, e := range platform.Published() {
+		if e.Exposure == platform.ExposureAccess {
+			apps = append(apps, accessApp{e.AccessAppSuffix(), cfg.Cloudflare.Hostname(cfg.Domain, e.Label) + e.Path})
+		}
 	}
+	return apps
+}
+
+// tunnelRoutes are the catalog's routes through the platform's tunnel, to
+// the services' internal names: first the paths that stay internal on a
+// published hostname - answering 404, only the agents use them, inside -
+// so that they win over the hostname's own route; then every public
+// endpoint, and every Access one that is a whole hostname.
+func tunnelRoutes(cfg *platform.Config) []cloudflare.Route {
+	published := map[string]bool{}
+	for _, e := range platform.Published() {
+		published[e.Label] = true
+	}
+	var blocked, routes []cloudflare.Route
+	for _, s := range platform.Catalog {
+		for _, e := range s.Endpoints {
+			host := cfg.Cloudflare.Hostname(cfg.Domain, e.Label)
+			switch {
+			case e.Exposure == platform.ExposureInternal && e.Path != "" && published[e.Label]:
+				blocked = append(blocked, cloudflare.Route{Hostname: host, Path: e.Path, Service: "http_status:404"})
+			case e.Exposure == platform.ExposurePublic || (e.Exposure == platform.ExposureAccess && e.Path == ""):
+				route := cloudflare.Route{Hostname: host, Service: fmt.Sprintf("http://%s:%d", cfg.InternalName(e.Label), e.Port)}
+				if e.Exposure == platform.ExposurePublic {
+					route.Path = e.Path
+				}
+				routes = append(routes, route)
+			}
+		}
+	}
+	return append(blocked, routes...)
 }
 
 // Names of the Access objects Urbex creates (prefixed with the
@@ -121,7 +164,7 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 	if err != nil {
 		return accessPermission(err)
 	}
-	for _, app := range pub.accessApps() {
+	for _, app := range accessApps(o.Config) {
 		if err := cf.EnsureAccessApp(ctx, accessAppName(o.Config, app.Name), app.Domain, policy); err != nil {
 			return accessPermission(err)
 		}
@@ -132,25 +175,7 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 		return err
 	}
 	// cloudflared reaches the services by internal name (ADR-0027).
-	keycloak := "http://" + o.Config.InternalName("auth") + ":8080"
-	gitea := "http://" + o.Config.InternalName("git") + ":3000"
-	komodo := "http://" + o.Config.InternalName("komodo") + ":9120"
-	notFound := "http_status:404"
-	routes := []cloudflare.Route{
-		{Hostname: pub.Keycloak, Service: keycloak},
-		{Hostname: pub.Gitea, Service: gitea},
-		{Hostname: pub.Komodo, Service: komodo},
-		// Only Komodo's webhook listener: every call is signed.
-		{Hostname: pub.Hooks, Path: "^/listener/", Service: komodo},
-		{Hostname: pub.DNS, Service: "http://" + o.Config.InternalName("dns") + ":5380"},
-		{Hostname: pub.Grafana, Service: "http://" + o.Config.InternalName("grafana") + ":3000"},
-		// The write paths stay internal (ADR-0027): only the agents use
-		// them, by internal name. The rules before a hostname's own win.
-		{Hostname: pub.Prometheus, Path: "^/api/v1/(write|otlp)", Service: notFound},
-		{Hostname: pub.Prometheus, Service: "http://" + o.Config.InternalName("prometheus") + ":9090"},
-		{Hostname: pub.Loki, Path: "^/(loki/api/v1/push|api/prom/push|otlp/)", Service: notFound},
-		{Hostname: pub.Loki, Service: "http://" + o.Config.InternalName("loki") + ":3100"},
-	}
+	routes := tunnelRoutes(o.Config)
 	if err := cf.SetRoutes(ctx, tunnel.ID, pub.all(), routes); err != nil {
 		return err
 	}
@@ -190,7 +215,7 @@ func (o *Orchestrator) ensureOneTimePIN(ctx context.Context, cf CloudflareAPI) e
 func (o *Orchestrator) unpublishPlatform(ctx context.Context, clients Clients) error {
 	cf := o.cloudflare(clients)
 	pub := PublicEndpointsFor(o.Config)
-	for _, app := range pub.accessApps() {
+	for _, app := range accessApps(o.Config) {
 		if err := cf.DeleteAccessApp(ctx, accessAppName(o.Config, app.Name)); err != nil {
 			return err
 		}

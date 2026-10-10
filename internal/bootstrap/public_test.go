@@ -56,7 +56,7 @@ func TestRun_PublishesThePlatformOnCloudflare(t *testing.T) {
 		"auth-urbex.cubotto.net":       "http://auth.urbex.cubotto.net:8080",
 		"git-urbex.cubotto.net":        "http://git.urbex.cubotto.net:3000",
 		"komodo-urbex.cubotto.net":     "http://komodo.urbex.cubotto.net:9120",
-		"hooks-urbex.cubotto.net":      "http://komodo.urbex.cubotto.net:9120 ^/listener/",
+		"hooks-urbex.cubotto.net":      "http://hooks.urbex.cubotto.net:9120 ^/listener/",
 		"dns-urbex.cubotto.net":        "http://dns.urbex.cubotto.net:5380",
 		"grafana-urbex.cubotto.net":    "http://grafana.urbex.cubotto.net:3000",
 		"prometheus-urbex.cubotto.net": "http://prometheus.urbex.cubotto.net:9090",
@@ -364,6 +364,22 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 			if strings.HasPrefix(e, "URBEX_KEYCLOAK_ADMIN_PASSWORD=") || strings.HasPrefix(e, "URBEX_GRAFANA_ADMIN_PASSWORD=") || strings.HasPrefix(e, "URBEX_CLOUDFLARE_TUNNEL_TOKEN=") {
 				t.Errorf("%s %v gets %s: these are the Stacks' secrets now", call.Name, call.Args, strings.SplitN(e, "=", 2)[0])
 			}
+		}
+	}
+}
+
+// Every base service's LXC runs services of the catalog (ADR-0027): a new
+// base service needs its catalog entries.
+func TestBaseServicesAreInTheCatalog(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare = platform.CloudflareConfig{AccountID: "a", ZoneID: "z", Name: "urbex"}
+	for _, svc := range BaseServicesFor(cfg) {
+		found := false
+		for _, s := range platform.Catalog {
+			found = found || s.LXC == svc.Name
+		}
+		if !found {
+			t.Errorf("base service %s has no entry in the service catalog (internal/platform/catalog.go)", svc.Name)
 		}
 	}
 }
