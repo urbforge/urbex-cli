@@ -126,6 +126,27 @@ type Target struct {
 	// Hostnames are the public hostnames of the services that have one,
 	// by service name; a web frontend is deployed to its own.
 	Hostnames map[string]string
+	// Logs: the telemetry agents ship the services' logs
+	// (the manifest's observability.logs).
+	Logs bool
+}
+
+// lxcs are the target's services that run on an LXC of their own - all
+// but a web frontend, whose Stack runs on the builder - and their LXCs.
+func (t Target) lxcs() (services []manifest.Service, hosts []string) {
+	for _, svc := range t.Services {
+		if !svc.IsWeb() {
+			services = append(services, svc)
+			hosts = append(hosts, ResourceName(t.Project, svc.Name, t.Env))
+		}
+	}
+	return services, hosts
+}
+
+// TelemetryHosts are the LXCs whose telemetry agents the target has.
+func (t Target) TelemetryHosts() []string {
+	_, hosts := t.lxcs()
+	return hosts
 }
 
 // FollowsMainByDefault reports whether a new environment follows main:
@@ -254,6 +275,14 @@ func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 			return fmt.Errorf("writing %s: %w", envrepo.ServiceDir(t.Env, t.Project, svc.Name), err)
 		}
 	}
+	// Each LXC's telemetry agent, a Stack of its own (ADR-0027).
+	services, hosts := t.lxcs()
+	for i, svc := range services {
+		agent := bootstrap.TelemetryAgent{Host: hosts[i], Kind: bootstrap.AppTag, Service: svc.Name, Project: t.Project, Env: t.Env, Logs: t.Logs}
+		if err := bootstrap.WriteTelemetryAgent(repo.Path, agent, r.Internal); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -293,6 +322,31 @@ func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) err
 		}
 		if err := r.Komodo.TagResource(ctx, "Stack", names[i], tags...); err != nil {
 			return err
+		}
+	}
+	for _, host := range servers {
+		name := bootstrap.TelemetryStackName(host)
+		if err := r.Komodo.EnsureStack(ctx, name, bootstrap.TelemetryStackConfig(host, r.Internal, r.Org)); err != nil {
+			return err
+		}
+		if err := r.Komodo.TagResource(ctx, "Stack", name, bootstrap.AgentTag, t.Project, t.Env); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeployTelemetry has Komodo deploy the target's telemetry agents, from
+// the GitOps repo as pushed.
+func (r *Rollout) DeployTelemetry(ctx context.Context, t Target) error {
+	for _, host := range t.TelemetryHosts() {
+		name := bootstrap.TelemetryStackName(host)
+		done, err := r.Komodo.DeployStack(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !done.Success {
+			return fmt.Errorf("komodo could not deploy stack %s - %s", name, r.Komodo.ExplainFailure(ctx, done))
 		}
 	}
 	return nil
@@ -516,8 +570,14 @@ func (r *Rollout) Status(ctx context.Context, t Target, repo envrepo.Repo) ([]De
 // before destroying the LXCs, while their agents can still do it, and
 // RemoveServers after.
 func (r *Rollout) RemoveEnv(ctx context.Context, t Target) error {
+	names := make([]string, 0, len(t.Services)*2)
 	for _, svc := range t.Services {
-		name := ResourceName(t.Project, svc.Name, t.Env)
+		names = append(names, ResourceName(t.Project, svc.Name, t.Env))
+	}
+	for _, host := range t.TelemetryHosts() {
+		names = append(names, bootstrap.TelemetryStackName(host))
+	}
+	for _, name := range names {
 		if err := r.Komodo.DestroyStack(ctx, name); err != nil {
 			return err
 		}

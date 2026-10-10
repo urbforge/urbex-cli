@@ -46,6 +46,7 @@ type Rollouter interface {
 	SetupEnv(ctx context.Context, t rollout.Target, repo envrepo.Repo) error
 	WriteEnv(t rollout.Target, repo envrepo.Repo) error
 	Deploy(ctx context.Context, t rollout.Target) error
+	DeployTelemetry(ctx context.Context, t rollout.Target) error
 	Reconcile(ctx context.Context) error
 	BuildMain(ctx context.Context, project string) error
 	Releases(ctx context.Context, project string) ([]gitea.Tag, error)
@@ -210,6 +211,10 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	if err := o.sync(ctx, opts, "apply"); err != nil {
+		return err
+	}
+	// The LXCs' telemetry agents, from the folders just pushed (ADR-0027).
+	if err := o.Rollout.DeployTelemetry(ctx, target); err != nil {
 		return err
 	}
 	if err := o.publish(ctx, opts.Env); err != nil {
@@ -630,7 +635,7 @@ func (o *Orchestrator) target(env string) rollout.Target {
 			services[i].Extra = o.keycloakEnv(env)
 		}
 	}
-	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: services, Hostnames: hostnames}
+	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: services, Hostnames: hostnames, Logs: o.Manifest.ShipsLogs()}
 }
 
 func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
@@ -797,6 +802,11 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	}
 	if err := repo.RemoveProject(opts.Env, o.Manifest.Project); err != nil {
 		return err
+	}
+	for _, host := range o.target(opts.Env).TelemetryHosts() {
+		if err := bootstrap.RemoveTelemetryAgent(opts.GitOpsRepoPath, host); err != nil {
+			return err
+		}
 	}
 	// Terraform's state of the destroyed LXCs is empty now; it and the
 	// environment's inventory are of no further use.

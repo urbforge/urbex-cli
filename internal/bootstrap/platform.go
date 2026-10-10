@@ -443,6 +443,9 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	if err := o.deployPlatformStacks(ctx, k, stacks); err != nil {
 		return err
 	}
+	if err := o.deployTelemetryAgents(ctx, k); err != nil {
+		return err
+	}
 	// The builder (ADR-0027: every Komodo resource has a kind).
 	if err := k.TagResource(ctx, "Builder", KomodoServerName, PlatformTag); err != nil {
 		return err
@@ -454,12 +457,13 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 }
 
 // GitOpsStacksPattern selects the Stacks deployed from the GitOps repo -
-// the environments' <project>-<service>-<env> (staging or prod) and the
-// platform's Keycloak, observability and tunnel - for the GitOps
+// the environments' <project>-<service>-<env> (staging or prod), the
+// platform's Keycloak, observability and tunnel, and every LXC's
+// telemetry agent - for the GitOps
 // Procedure: never the bootstrap services' files-on-host Stacks,
 // which Komodo has never deployed and so would count as changed, and
 // would redeploy - Komodo itself among them, from inside.
-const GitOpsStacksPattern = `\^(.+-(staging|prod)|urbex-(keycloak|observability|tunnel))$\`
+const GitOpsStacksPattern = `\^(.+-(staging|prod)|urbex-(keycloak|observability|tunnel|telemetry-.+))$\`
 
 // BootstrapServices are the base services Komodo can't depend on to
 // deploy themselves (ADR-0027): Technitium (every LXC resolves through
