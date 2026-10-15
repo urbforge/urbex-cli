@@ -25,3 +25,13 @@ func TerraformChange(ctx context.Context, r CommandRunner, out io.Writer, dir, v
 	}
 	return nil
 }
+
+// TerraformGrowClones runs `terraform apply` once more after LXCs were
+// created as linked clones of urbex's template: Proxmox gives a clone the
+// template's disk, and the bpg provider grows it to disk_gb only on an
+// update, not when it creates the clone. The second apply resizes the
+// disks in place, and changes nothing when they have their size already.
+func TerraformGrowClones(ctx context.Context, r CommandRunner, out io.Writer, dir string, env []string) error {
+	fmt.Fprintln(out, "Growing the cloned LXCs' disks to their sizes...")
+	return TerraformChange(ctx, r, out, dir, "apply", env)
+}

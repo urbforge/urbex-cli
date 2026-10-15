@@ -145,6 +145,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", tfEnv); err != nil {
 		return err
 	}
+	if cloneVMID > 0 {
+		if err := runner.TerraformGrowClones(ctx, o.Runner, o.Out, tfDir, tfEnv); err != nil {
+			return err
+		}
+	}
 	// The LXCs just created have new host keys at addresses that may have
 	// served others before (a teardown, an LXC deleted by hand).
 	var created []string

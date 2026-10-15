@@ -97,6 +97,10 @@ type Orchestrator struct {
 	// where Komodo also commits (an environment following main); nil
 	// skips it.
 	RefreshGitOps func(ctx context.Context, gitopsRepoPath string) error
+
+	// cloneVMID is the template the environment's new LXCs are cloned
+	// from, or 0 (see templateVMID).
+	cloneVMID int
 }
 
 // Options controls a single run.
@@ -166,6 +170,11 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
 		return err
+	}
+	if o.cloneVMID > 0 {
+		if err := runner.TerraformGrowClones(ctx, o.Runner, o.Out, tfDir, env); err != nil {
+			return err
+		}
 	}
 
 	ledger, err := o.loadLedger(opts)
@@ -912,7 +921,8 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers, o.templateVMID()); err != nil {
+	o.cloneVMID = o.templateVMID()
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers, o.cloneVMID); err != nil {
 		return "", fmt.Errorf("writing terraform vars: %w", err)
 	}
 

@@ -77,6 +77,17 @@ func (p *templateProxmox) DeleteContainer(ctx context.Context, node string, vmid
 	return p.step("delete", vmid)
 }
 
+// terraformApplies counts the `terraform apply` runs.
+func terraformApplies(calls []Command) int {
+	n := 0
+	for _, c := range calls {
+		if c.Name == "terraform" && len(c.Args) > 0 && c.Args[0] == "apply" {
+			n++
+		}
+	}
+	return n
+}
+
 func cloneVMIDOf(t *testing.T, dir string) string {
 	t.Helper()
 	data, _ := os.ReadFile(filepath.Join(dir, "terraform", "base", "terraform.auto.tfvars.json"))
@@ -107,6 +118,10 @@ func TestRun_BuildsTheTemplateAndClonesFromIt(t *testing.T) {
 	}
 	if v := cloneVMIDOf(t, dir); v != "9090" {
 		t.Errorf("clone_vm_id = %q, want 9090", v)
+	}
+	// A clone gets the template's disk; a second apply grows it to disk_gb.
+	if n := terraformApplies(runner.calls); n != 2 {
+		t.Errorf("terraform apply ran %d times, want 2", n)
 	}
 	if !strings.Contains(p.cts[9090].Description, "version "+TemplateVersion(o.Config)) {
 		t.Errorf("description %q lacks the version", p.cts[9090].Description)
@@ -164,7 +179,7 @@ func TestRun_ReusesACurrentTemplateBuildsANewVersionAlongside(t *testing.T) {
 // Debian template, with a warning, and bootstrap goes on.
 func TestRun_WithoutTheTemplateFallsBackToDebian(t *testing.T) {
 	dir := t.TempDir()
-	o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	o, runner, _ := newRunOrchestrator(t, &fakeProxmox{})
 	p := &templateProxmox{failing: "create"}
 	o.Proxmox = p
 	o.Config.Proxmox.Pool = "urbex"
@@ -173,6 +188,9 @@ func TestRun_WithoutTheTemplateFallsBackToDebian(t *testing.T) {
 	}
 	if v := cloneVMIDOf(t, dir); v != "0" {
 		t.Errorf("clone_vm_id = %q, want 0", v)
+	}
+	if n := terraformApplies(runner.calls); n != 1 {
+		t.Errorf("terraform apply ran %d times, want 1", n)
 	}
 	if !strings.Contains(o.Out.(interface{ String() string }).String(), "couldn't prepare the LXC template") {
 		t.Error("expected a warning")
