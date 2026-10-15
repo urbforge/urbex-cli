@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	assets "github.com/urbforge/urbex-cli/platform"
 
@@ -139,17 +141,25 @@ func renderEnv(vars map[string]string) string {
 	return b.String()
 }
 
-// deployPlatformStacks has Komodo deploy each platform Stack from the
-// GitOps repo, on the Server of the same name, tagged platform. Their
-// compose project is "urbex", as when Ansible ran them: an existing
-// platform keeps its volumes, and so its data.
-func (o *Orchestrator) deployPlatformStacks(ctx context.Context, k KomodoAPI, stacks []PlatformStack) error {
+// stackDeploy is a Stack Komodo deploys, with its config and kind tag.
+type stackDeploy struct {
+	name string
+	cfg  komodo.StackConfig
+	tag  string
+}
+
+// platformStackDeploys are the platform's Stacks, deployed from the GitOps
+// repo on the Server of the same name, tagged platform. Their compose
+// project is "urbex", as when Ansible ran them: an existing platform
+// keeps its volumes, and so its data.
+func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDeploy, error) {
 	internal, err := InternalEndpointsFor(o.Config)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var deploys []stackDeploy
 	for _, st := range stacks {
-		cfg := komodo.StackConfig{
+		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: komodo.StackConfig{
 			ServerID:     st.Name,
 			GitProvider:  internal.Registry,
 			GitAccount:   GiteaAdminUser,
@@ -162,21 +172,46 @@ func (o *Orchestrator) deployPlatformStacks(ctx context.Context, k KomodoAPI, st
 				{Path: "secrets.sops.env", Requires: "Redeploy"},
 			},
 			ComposeCmdWrapper: ComposeWrapper,
+		}})
+	}
+	return deploys, nil
+}
+
+// deployStacks has Komodo create, tag and deploy the Stacks. They don't
+// depend on each other - each on its own Server, or an agent next to a
+// service - so they are deployed all at once (urbforge/urbex-cli#30):
+// the time of the slowest, not of all of them. Every deploy runs to its
+// end; the error names each Stack that failed.
+func (o *Orchestrator) deployStacks(ctx context.Context, k KomodoAPI, deploys []stackDeploy) error {
+	for _, d := range deploys {
+		if err := k.EnsureStack(ctx, d.name, d.cfg); err != nil {
+			return fmt.Errorf("komodo stack %s: %w", d.name, err)
 		}
-		if err := k.EnsureStack(ctx, st.Name, cfg); err != nil {
-			return fmt.Errorf("komodo stack %s: %w", st.Name, err)
-		}
-		if err := k.TagResource(ctx, "Stack", st.Name, PlatformTag); err != nil {
+		if err := k.TagResource(ctx, "Stack", d.name, d.tag); err != nil {
 			return err
 		}
-		done, err := k.DeployStack(ctx, st.Name)
-		if err != nil {
-			return err
-		}
-		if !done.Success {
-			return fmt.Errorf("komodo could not deploy stack %s - see its last update in Komodo", st.Name)
-		}
-		fmt.Fprintf(o.Out, "Deployed %s with Komodo.\n", st.Name)
+	}
+	errs := make([]error, len(deploys))
+	var wg sync.WaitGroup
+	for i, d := range deploys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			done, err := k.DeployStack(ctx, d.name)
+			switch {
+			case err != nil:
+				errs[i] = fmt.Errorf("komodo stack %s: %w", d.name, err)
+			case !done.Success:
+				errs[i] = fmt.Errorf("komodo could not deploy stack %s - see its last update in Komodo", d.name)
+			}
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	for _, d := range deploys {
+		fmt.Fprintf(o.Out, "Deployed %s with Komodo.\n", d.name)
 	}
 	return nil
 }

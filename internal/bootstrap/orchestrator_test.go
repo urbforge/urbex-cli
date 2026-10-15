@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +80,8 @@ type fakePlatform struct {
 	tags            map[string][]string // "Kind name" -> tags
 	stacks          map[string]komodo.StackConfig
 	deployed        []string
+	deployFails     map[string]bool // Stacks whose deploy fails
+	mu              sync.Mutex      // Stacks are deployed concurrently
 	waitedServers   []string
 	hooks           []string
 	deletedHooks    []string
@@ -563,8 +566,10 @@ func (k *fakeKomodo) EnsureStack(ctx context.Context, name string, cfg komodo.St
 	return nil
 }
 func (k *fakeKomodo) DeployStack(ctx context.Context, name string) (*komodo.Update, error) {
+	k.f.mu.Lock()
+	defer k.f.mu.Unlock()
 	k.f.deployed = append(k.f.deployed, name)
-	return &komodo.Update{Success: true}, nil
+	return &komodo.Update{Success: !k.f.deployFails[name]}, nil
 }
 func (k *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
 	if k.f.tags == nil {

@@ -69,6 +69,20 @@ func alloyImage() string {
 	return ""
 }
 
+// stackImages are the images of the platform Stack in platform/stacks/<dir>
+// (none if there is no such Stack).
+func stackImages(dir string) []string {
+	data, err := assets.Stacks.ReadFile("stacks/" + dir + "/compose.yaml")
+	if err != nil {
+		return nil
+	}
+	var images []string
+	for _, m := range composeImage.FindAllSubmatch(data, -1) {
+		images = append(images, string(m[1]))
+	}
+	return images
+}
+
 // TemplateVersion identifies what a template built now would hold: the
 // Debian template it starts from, the Komodo and agent versions, and the
 // files that build it.

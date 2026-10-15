@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,29 +118,17 @@ func (o *Orchestrator) writeTelemetryAgents(gitopsRepoPath string) error {
 	return nil
 }
 
-// deployTelemetryAgents has Komodo deploy the base LXCs' telemetry
-// agents, tagged agent.
-func (o *Orchestrator) deployTelemetryAgents(ctx context.Context, k KomodoAPI) error {
+// telemetryStackDeploys are the base LXCs' telemetry agents, tagged
+// agent.
+func (o *Orchestrator) telemetryStackDeploys() ([]stackDeploy, error) {
 	internal, err := InternalEndpointsFor(o.Config)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var deploys []stackDeploy
 	for _, a := range o.baseTelemetryAgents() {
-		name := TelemetryStackName(a.Host)
-		if err := k.EnsureStack(ctx, name, TelemetryStackConfig(a.Host, internal, o.Config.Git.Org)); err != nil {
-			return fmt.Errorf("komodo stack %s: %w", name, err)
-		}
-		if err := k.TagResource(ctx, "Stack", name, AgentTag); err != nil {
-			return err
-		}
-		done, err := k.DeployStack(ctx, name)
-		if err != nil {
-			return err
-		}
-		if !done.Success {
-			return fmt.Errorf("komodo could not deploy stack %s - see its last update in Komodo", name)
-		}
+		deploys = append(deploys, stackDeploy{name: TelemetryStackName(a.Host), tag: AgentTag,
+			cfg: TelemetryStackConfig(a.Host, internal, o.Config.Git.Org)})
 	}
-	fmt.Fprintln(o.Out, "Deployed the telemetry agents with Komodo.")
-	return nil
+	return deploys, nil
 }
