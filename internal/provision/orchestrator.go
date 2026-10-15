@@ -97,6 +97,10 @@ type Orchestrator struct {
 	// where Komodo also commits (an environment following main); nil
 	// skips it.
 	RefreshGitOps func(ctx context.Context, gitopsRepoPath string) error
+
+	// cloneVMID is the template the environment's new LXCs are cloned
+	// from, or 0 (see templateVMID).
+	cloneVMID int
 }
 
 // Options controls a single run.
@@ -166,6 +170,11 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
 		return err
+	}
+	if o.cloneVMID > 0 {
+		if err := runner.TerraformGrowClones(ctx, o.Runner, o.Out, tfDir, env); err != nil {
+			return err
+		}
 	}
 
 	ledger, err := o.loadLedger(opts)
@@ -756,7 +765,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen, nameservers); err != nil {
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen, nameservers, 0); err != nil {
 		return fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -912,7 +921,8 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers); err != nil {
+	o.cloneVMID = o.templateVMID()
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers, o.cloneVMID); err != nil {
 		return "", fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -964,4 +974,20 @@ func (o *Orchestrator) address(env string, svc manifest.Service, allocations map
 	}
 	entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
 	return fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+}
+
+// templateVMID is urbex's LXC template new LXCs are cloned from, when it
+// exists and is current (the platform phase builds it, redemptor#18), or
+// 0: create them from the Debian template.
+func (o *Orchestrator) templateVMID() int {
+	p, ok := o.Proxmox.(bootstrap.TemplateProxmox)
+	if !ok {
+		return 0
+	}
+	vmid, err := bootstrap.CurrentTemplate(context.Background(), p, o.Config)
+	if err != nil {
+		fmt.Fprintf(o.Out, "Warning: couldn't check urbex's LXC template (%v): new LXCs are created from %s.\n", err, o.Config.Proxmox.LXCTemplate)
+		return 0
+	}
+	return vmid
 }

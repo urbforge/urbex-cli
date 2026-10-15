@@ -114,7 +114,13 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "base")
-	if err := writeTFVars(tfDir, o.Config, ips, prefixLen); err != nil {
+	// New LXCs are cloned from urbex's prepared template, built first when
+	// missing or outdated (redemptor#18).
+	cloneVMID := 0
+	if !opts.DryRun {
+		cloneVMID = o.ensureTemplate(ctx, opts.GitOpsRepoPath)
+	}
+	if err := writeTFVars(tfDir, o.Config, ips, prefixLen, cloneVMID); err != nil {
 		return fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -138,6 +144,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", tfEnv); err != nil {
 		return err
+	}
+	if cloneVMID > 0 {
+		if err := runner.TerraformGrowClones(ctx, o.Runner, o.Out, tfDir, tfEnv); err != nil {
+			return err
+		}
 	}
 	// The LXCs just created have new host keys at addresses that may have
 	// served others before (a teardown, an LXC deleted by hand).

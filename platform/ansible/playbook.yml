@@ -13,35 +13,19 @@
   roles:
     - technitium
 
-- name: Deploy Gitea
-  hosts: urbex_gitea
+# Then every other base service at once, each on its LXC (redemptor#18):
+# they don't depend on each other. "free" lets each host run its own role
+# at its own pace instead of in lockstep.
+- name: Deploy the other base services in parallel
+  hosts: all:!urbex_technitium
   become: true
-  roles:
-    - gitea
-
-- name: Deploy Komodo
-  hosts: urbex_komodo
-  become: true
-  roles:
-    - komodo
-
-- name: Keycloak - deployed by Komodo from the GitOps repo; clean up what Ansible ran it from
-  hosts: urbex_keycloak
-  become: true
-  roles:
-    - keycloak
-
-- name: The observability stack - deployed by Komodo from the GitOps repo; clean up
-  hosts: urbex_observability
-  become: true
-  roles:
-    - observability
-
-- name: The Cloudflare Tunnel connector - deployed by Komodo from the GitOps repo; clean up
-  hosts: urbex_tunnel
-  become: true
-  roles:
-    - cloudflared
+  strategy: free
+  tasks:
+    - name: Deploy this LXC's service
+      include_role:
+        # Gitea and Komodo; Keycloak's, the observability stack's and the
+        # tunnel's roles only clean up - Komodo deploys them (ADR-0027).
+        name: "{{ {'tunnel': 'cloudflared'}.get(urbex_service, urbex_service) }}"
 
 - name: Send every base service's logs and resource metrics to the observability stack
   hosts: all

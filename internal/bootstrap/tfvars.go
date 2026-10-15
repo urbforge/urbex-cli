@@ -26,11 +26,13 @@ type tfVars struct {
 	Keyctl          bool              `json:"keyctl"`
 	NetworkBridge   string            `json:"network_bridge"`
 	DNSServers      []string          `json:"dns_servers"`
+	CloneVMID       int               `json:"clone_vm_id"`
 }
 
 // writeTFVars renders terraform.auto.tfvars.json into the base Terraform
 // working directory so `terraform apply` picks it up without extra flags.
-func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]string, prefixLen int) error {
+// cloneVMID is urbex's LXC template to clone new LXCs from, or 0.
+func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]string, prefixLen, cloneVMID int) error {
 	vars := tfVars{
 		ProxmoxAPIURL:   cfg.Proxmox.APIURL,
 		ProxmoxInsecure: cfg.Proxmox.Insecure,
@@ -46,6 +48,7 @@ func writeTFVars(tfBaseDir string, cfg *platform.Config, serviceIPs map[string]s
 		NetworkBridge:   cfg.Proxmox.Network.Bridge,
 		DNSServers:      cfg.LXCNameservers(serviceIPs[Hostname("technitium")]),
 		BaseServiceIPs:  serviceIPs,
+		CloneVMID:       cloneVMID,
 	}
 
 	data, err := json.MarshalIndent(vars, "", "  ")

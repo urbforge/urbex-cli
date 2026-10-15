@@ -80,3 +80,9 @@ variable "dns_servers" {
   nullable    = false
   description = "Nameservers of the LXCs; empty copies the Proxmox host's."
 }
+
+variable "clone_vm_id" {
+  type        = number
+  default     = 0
+  description = "VMID of urbex's prepared LXC template to clone new containers from; 0 creates them from template_file_id."
+}

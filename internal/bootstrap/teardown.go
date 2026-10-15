@@ -108,7 +108,7 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	if err != nil {
 		return fmt.Errorf("allocating static IPs: %w", err)
 	}
-	if err := writeTFVars(tfDir, o.Config, ips, prefixLen); err != nil {
+	if err := writeTFVars(tfDir, o.Config, ips, prefixLen, 0); err != nil {
 		return fmt.Errorf("writing terraform vars: %w", err)
 	}
 	tfEnv := []string{"TF_VAR_proxmox_api_token=" + o.Credentials.ProxmoxToken}
@@ -122,6 +122,9 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "destroy", tfEnv); err != nil {
 		return err
+	}
+	if err := o.removeTemplate(ctx); err != nil {
+		return fmt.Errorf("removing the LXC template: %w", err)
 	}
 
 	var addrs []string

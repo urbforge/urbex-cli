@@ -14,6 +14,7 @@ module "service" {
   vm_id            = each.value.vm_id
   storage_pool     = var.storage_pool
   template_file_id = var.template_file_id
+  clone_vm_id      = var.clone_vm_id
   ssh_public_key   = var.ssh_public_key
   cores            = each.value.cores
   memory_mb        = each.value.memory_mb
