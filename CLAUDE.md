@@ -42,17 +42,26 @@ What it means for an agent, in practice:
 
 ## This repository
 
+The tools and their versions are pinned in `mise.toml`; the tasks run
+them:
+
 ```sh
-go build -o urbex ./cmd/urbex
-go test ./...
-go vet ./... && gofmt -l internal cmd   # none of the files you changed may be listed
-e2e/run.sh                              # end to end, needs podman - see e2e/README.md
+mise install              # first, and after mise.toml changes
+mise run build            # the urbex binary
+mise run test             # unit tests
+mise run lint             # go vet, and every file gofmt-formatted
+mise run fmt              # format the code
+mise run e2e              # end to end, needs podman - see e2e/README.md
+mise run operator-image   # the image tools/operator/urbex-op runs
 ```
 
-- Run `go test ./...` before every commit, and `e2e/run.sh` (about ten
-  minutes) when a change touches the commands' behaviour, the platform
-  assets (`platform/`: Terraform, Ansible, Dockerfiles) or the GitOps
-  layout.
+Without mise activated in the shell, run a single command with
+`mise exec -- <cmd>` (e.g. `mise exec -- go test ./internal/manifest`).
+
+- Run `mise run test` and `mise run lint` before every commit, and
+  `mise run e2e` (about ten minutes) when a change touches the commands'
+  behaviour, the platform assets (`platform/`: Terraform, Ansible,
+  Dockerfiles) or the GitOps layout.
 - Changes users can see need their docs in `urbforge/urbex` (reference,
   cookbook, `docs/status.md`, `docs/known-limitations.md`), in a
   companion PR; a design decision needs an ADR there first.
