@@ -29,6 +29,9 @@
       command: docker pull --quiet {{ item }}
       loop: "{{ urbex_images | default([]) }}"
       changed_when: false
+      # One LXC at a time: the node's disk is shared, and Gitea's and
+      # Komodo's first starts are slowed by every concurrent write.
+      throttle: 1
 
     - name: Deploy this LXC's service
       include_role:

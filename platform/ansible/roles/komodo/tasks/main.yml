@@ -42,8 +42,10 @@
     status_code: 200
   register: komodo_core
   until: komodo_core.status == 200
-  retries: 30
-  delay: 2
+  # Up to 5 minutes: the first start, on a disk shared with every other
+  # LXC installing at the same time.
+  retries: 100
+  delay: 3
 
 # A copy of the compose file Komodo deploys, for review in the GitOps repo
 # (ADR-0027): bootstrap commits and pushes it. No secret is in it.
