@@ -60,6 +60,10 @@ var templateFiles = []string{
 
 var composeImage = regexp.MustCompile(`(?m)^\s+image:\s*(\S+)\s*$`)
 
+// dockerfileBase is a Dockerfile's base image: a Stack that builds its
+// image (Keycloak's) needs it to build.
+var dockerfileBase = regexp.MustCompile(`(?m)^FROM\s+(\S+)`)
+
 // alloyImage is the telemetry agent's image, as its Stack runs it.
 func alloyImage() string {
 	data, _ := assets.Stacks.ReadFile("stacks/telemetry/compose.yaml.tmpl")
@@ -69,8 +73,8 @@ func alloyImage() string {
 	return ""
 }
 
-// stackImages are the images of the platform Stack in platform/stacks/<dir>
-// (none if there is no such Stack).
+// stackImages are the images of the platform Stack in platform/stacks/<dir>,
+// and the base image of the one it builds (none if there is no such Stack).
 func stackImages(dir string) []string {
 	data, err := assets.Stacks.ReadFile("stacks/" + dir + "/compose.yaml")
 	if err != nil {
@@ -79,6 +83,11 @@ func stackImages(dir string) []string {
 	var images []string
 	for _, m := range composeImage.FindAllSubmatch(data, -1) {
 		images = append(images, string(m[1]))
+	}
+	if data, err := assets.Stacks.ReadFile("stacks/" + dir + "/Dockerfile"); err == nil {
+		for _, m := range dockerfileBase.FindAllSubmatch(data, -1) {
+			images = append(images, string(m[1]))
+		}
 	}
 	return images
 }
