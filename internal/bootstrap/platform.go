@@ -443,6 +443,7 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	if err := adoptBootstrapServices(ctx, k); err != nil {
 		return err
 	}
+	o.Progress.Begin(PhaseStacks)
 	platformDeploys, err := o.platformStackDeploys(stacks)
 	if err != nil {
 		return err

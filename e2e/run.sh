@@ -202,6 +202,12 @@ step "bootstrap again: idempotent" '
   urbex bootstrap >/tmp/again.log 2>&1 || { cat /tmp/again.log; fail "second bootstrap failed"; }
   cat /tmp/again.log
   if grep -E "changed=[1-9]" /tmp/again.log; then fail "a second bootstrap changed something"; fi
+  # Its progress, phase by phase: the template is not on the fake
+  # Proxmox, and there is no Cloudflare.
+  urbex status --progress | tee /tmp/progress.txt
+  grep -q "^urbex bootstrap: done in" /tmp/progress.txt || fail "status --progress should show the bootstrap done"
+  grep -q "✓ Install Gitea and Komodo" /tmp/progress.txt || fail "status --progress should show the parallel play done"
+  grep -q "skipped: no Cloudflare" /tmp/progress.txt || fail "status --progress should show Cloudflare skipped"
   echo "ok: second bootstrap changed nothing"'
 
 echo hello-api-staging >>"$WORK/pve-containers.txt"
@@ -216,6 +222,8 @@ step "apply staging: it follows main, and runs main's head right away" '
   grep -q "^TRACK=main$" /work/gitops/environments/staging/hello/api/version.env || fail "staging does not follow main"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "unexpected builds: $(komodo_names Builds)"
   urbex status staging | grep -E "version=[0-9a-f]{7}\(follows-main\) stack=running" || fail "status should show staging following main"
+  urbex status --progress | tee /tmp/progress.txt
+  grep -q "^urbex apply staging (hello): done in" /tmp/progress.txt && grep -q "✓ Build main" /tmp/progress.txt || fail "status --progress should show the apply done, main built"
   [ "$(komodo_tags Stack hello-api-staging)" = "app hello staging" ] || fail "stack tags: $(komodo_tags Stack hello-api-staging)"
   [ "$(komodo_tags Build hello-api)" = "app hello" ] || fail "build tags: $(komodo_tags Build hello-api)"
   [ "$(keycloak_realm hello-staging)" = 200 ] || fail "no Keycloak realm for the project in staging"

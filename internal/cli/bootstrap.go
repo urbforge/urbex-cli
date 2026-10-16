@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/progress"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -101,16 +102,24 @@ func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool) error 
 
 	proxmoxClient := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
+	var tracker *progress.Tracker
+	if !dryRun {
+		tracker = startProgress(cmd, "bootstrap", "urbex bootstrap", bootstrap.Phases(cfg))
+	}
 	orchestrator := &bootstrap.Orchestrator{
 		Config:      cfg,
 		Credentials: creds,
 		Proxmox:     proxmoxClient,
-		Runner:      bootstrap.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
-		Out:         out,
+		// Ansible's play headers move the progress on.
+		Runner:   bootstrap.ExecRunner{Stdout: tracker.Watch(out), Stderr: cmd.ErrOrStderr()},
+		Out:      out,
+		Progress: tracker,
 	}
 
-	return orchestrator.Run(cmd.Context(), bootstrap.Options{
+	err = orchestrator.Run(cmd.Context(), bootstrap.Options{
 		GitOpsRepoPath: gitopsRepoPath,
 		DryRun:         dryRun,
 	})
+	tracker.Finish(err)
+	return err
 }

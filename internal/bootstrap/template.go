@@ -154,10 +154,12 @@ func CurrentTemplate(ctx context.Context, p TemplateProxmox, cfg *platform.Confi
 func (o *Orchestrator) ensureTemplate(ctx context.Context, gitopsRepoPath string) int {
 	p, ok := o.Proxmox.(TemplateProxmox)
 	if !ok {
+		o.Progress.Skip(PhaseTemplate, "not available on this Proxmox")
 		return 0
 	}
 	vmid, err := o.buildTemplate(ctx, p, gitopsRepoPath)
 	if err != nil {
+		o.Progress.Skip(PhaseTemplate, "couldn't build it: the LXCs come from the Debian template")
 		fmt.Fprintf(o.Out, "Warning: couldn't prepare the LXC template (%v): new LXCs are created from %s and install everything themselves.\n", err, o.Config.Proxmox.LXCTemplate)
 		return 0
 	}
@@ -171,7 +173,10 @@ func (o *Orchestrator) buildTemplate(ctx context.Context, p TemplateProxmox, git
 	if err != nil {
 		return 0, err
 	}
-	if current == 0 {
+	if current != 0 {
+		o.Progress.Skip(PhaseTemplate, "the current one is there")
+	} else {
+		o.Progress.Begin(PhaseTemplate)
 		if current, err = o.newTemplate(ctx, p, gitopsRepoPath, version); err != nil {
 			return 0, err
 		}

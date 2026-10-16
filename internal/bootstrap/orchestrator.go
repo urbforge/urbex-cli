@@ -27,6 +27,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/progress"
 	"github.com/urbforge/urbex-cli/internal/runner"
 	"github.com/urbforge/urbex-cli/internal/secrets"
 )
@@ -59,6 +60,9 @@ type Orchestrator struct {
 	// Secrets encrypts the platform Stacks' secrets; nil means a sops
 	// store for the platform's age key.
 	Secrets SecretWriter
+	// Progress records the run's phases for 'urbex status --progress';
+	// nil records nothing.
+	Progress *progress.Tracker
 }
 
 // Options controls a single Run.
@@ -91,6 +95,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	o.Progress.Begin(PhasePrepare)
 	toCreate, alreadyPresent, err := o.checkExisting(ctx, opts.GitOpsRepoPath)
 	if err != nil {
 		return err
@@ -142,6 +147,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	tfEnv := []string{"TF_VAR_proxmox_api_token=" + o.Credentials.ProxmoxToken}
 
+	o.Progress.Begin(PhaseLXCs)
 	if err := o.Runner.Run(ctx, Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: tfEnv}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
@@ -184,11 +190,13 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	fmt.Fprintln(o.Out, "Base services provisioned.")
 
+	o.Progress.Begin(PhaseDNS)
 	if err := o.setupDNS(ctx, clients, ep, ips, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up technitium: %w", err)
 	}
 	// The platform services Komodo deploys from the GitOps repo: their
 	// folders go in before setupPlatform pushes it.
+	o.Progress.Begin(PhaseGitOps)
 	stacks := o.platformStacks(tunnelToken)
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
 		return err
@@ -199,10 +207,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := o.setupPlatform(ctx, clients, opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("setting up gitea/komodo: %w", err)
 	}
+	o.Progress.Begin(PhaseConnect)
 	if err := o.connectPlatformServers(ctx, clients, ansibleDir, stacks); err != nil {
 		return fmt.Errorf("connecting the base services to komodo: %w", err)
 	}
-	if o.Config.Cloudflare.Enabled() {
+	if !o.Config.Cloudflare.Enabled() {
+		o.Progress.Skip(PhaseCloudflare, "no Cloudflare in urbex.platform.yaml")
+	} else {
+		o.Progress.Begin(PhaseCloudflare)
 		if err := o.publishPlatform(ctx, clients); err != nil {
 			return fmt.Errorf("publishing the platform on cloudflare: %w", err)
 		}
@@ -210,6 +222,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// Keycloak last: Komodo has deployed it, but its first start takes
 	// minutes, and the platform isn't ready - nor can apply set up a
 	// realm - until it answers (urbforge/urbex-cli#32).
+	o.Progress.Begin(PhaseKeycloak)
 	if err := o.waitKeycloak(ctx, clients); err != nil {
 		return err
 	}
