@@ -82,6 +82,8 @@ type fakePlatform struct {
 	deployed        []string
 	deployFails     map[string]bool // Stacks whose deploy fails
 	mu              sync.Mutex      // Stacks are deployed concurrently
+	keycloakWaits   []string        // the Keycloak URLs waited for
+	keycloakDown    bool            // Keycloak never answers
 	waitedServers   []string
 	hooks           []string
 	deletedHooks    []string
@@ -107,6 +109,14 @@ func (f *fakePlatform) clients() Clients {
 			return nil
 		},
 		Technitium: func(baseURL, token string) TechnitiumAPI { return &fakeTechnitium{f} },
+		KeycloakReady: func(ctx context.Context, baseURL string, waiting func()) error {
+			f.keycloakWaits = append(f.keycloakWaits, baseURL)
+			if f.keycloakDown {
+				waiting()
+				return errors.New("keycloak at " + baseURL + " didn't answer within 15m0s")
+			}
+			return nil
+		},
 	}
 }
 

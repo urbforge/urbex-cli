@@ -169,6 +169,9 @@ type Clients struct {
 	Cloudflare func(token, accountID, zoneID string) CloudflareAPI
 	// Technitium builds the Technitium client; nil means the real one.
 	Technitium func(baseURL, token string) TechnitiumAPI
+	// KeycloakReady waits until the Keycloak at baseURL answers, calling
+	// waiting once if it doesn't yet; nil means the real wait.
+	KeycloakReady func(ctx context.Context, baseURL string, waiting func()) error
 }
 
 // DefaultClients returns Clients backed by the real HTTP clients and git.

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
@@ -19,6 +20,7 @@ import (
 // KeycloakAPI is the subset of keycloak.Client the orchestrator uses to
 // keep a project environment's realm (ADR-0024).
 type KeycloakAPI interface {
+	WaitReady(ctx context.Context, timeout time.Duration, waiting func()) error
 	EnsureRealm(ctx context.Context, realm, displayName string) error
 	EnsureRoles(ctx context.Context, realm string, roles []string) error
 	EnsurePublicClient(ctx context.Context, realm string, pc keycloak.PublicClient) error
@@ -137,6 +139,9 @@ func (o *Orchestrator) setupIdentity(ctx context.Context, opts Options) (bool, e
 		return false, nil
 	}
 	env, realm := opts.Env, o.Realm(opts.Env)
+	if err := o.waitKeycloak(ctx); err != nil {
+		return false, err
+	}
 	if err := o.Keycloak.EnsureRealm(ctx, realm, o.Manifest.Project+" ("+env+")"); err != nil {
 		return false, err
 	}
@@ -245,10 +250,21 @@ func (o *Orchestrator) TestUsers(ctx context.Context, repoPath, env string) (map
 	return out, nil
 }
 
+// waitKeycloak waits for Keycloak to answer before using it: right after
+// a bootstrap, its first start can take minutes (urbforge/urbex-cli#32).
+func (o *Orchestrator) waitKeycloak(ctx context.Context) error {
+	return o.Keycloak.WaitReady(ctx, keycloak.StartTimeout, func() {
+		fmt.Fprintln(o.Out, "Waiting for Keycloak to start - its first start takes a few minutes...")
+	})
+}
+
 // teardownIdentity deletes the environment's realm, with its users.
 func (o *Orchestrator) teardownIdentity(ctx context.Context, env string) error {
 	if o.Keycloak == nil {
 		return nil
+	}
+	if err := o.waitKeycloak(ctx); err != nil {
+		return err
 	}
 	if err := o.Keycloak.DeleteRealm(ctx, o.Realm(env)); err != nil {
 		return err

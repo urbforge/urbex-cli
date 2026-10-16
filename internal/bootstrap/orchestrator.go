@@ -17,10 +17,13 @@ import (
 	"fmt"
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
+	"github.com/urbforge/urbex-cli/internal/keycloak"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -204,6 +207,12 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 			return fmt.Errorf("publishing the platform on cloudflare: %w", err)
 		}
 	}
+	// Keycloak last: Komodo has deployed it, but its first start takes
+	// minutes, and the platform isn't ready - nor can apply set up a
+	// realm - until it answers (urbforge/urbex-cli#32).
+	if err := o.waitKeycloak(ctx, clients); err != nil {
+		return err
+	}
 	path, _ := credentials.DefaultPath()
 	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
 	return nil
@@ -258,4 +267,22 @@ func allocateIPs(cfg *platform.Config) (map[string]string, int, error) {
 		ips[Hostname(svc.Name)] = addrs[i]
 	}
 	return ips, prefixLen, nil
+}
+
+// waitKeycloak waits for Keycloak to answer on the LAN, saying so when it
+// doesn't yet.
+func (o *Orchestrator) waitKeycloak(ctx context.Context, clients Clients) error {
+	ep, err := EndpointsFor(o.Config)
+	if err != nil {
+		return err
+	}
+	ready := clients.KeycloakReady
+	if ready == nil {
+		ready = func(ctx context.Context, baseURL string, waiting func()) error {
+			return keycloak.WaitReady(ctx, &http.Client{Timeout: 10 * time.Second}, baseURL, keycloak.StartTimeout, 5*time.Second, waiting)
+		}
+	}
+	return ready(ctx, ep.KeycloakURL, func() {
+		fmt.Fprintln(o.Out, "Waiting for Keycloak to start - its first start takes a few minutes...")
+	})
 }
