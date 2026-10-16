@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -205,6 +206,8 @@ func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
 		"loki_push_url: http://loki.urbex.example.com:3100/loki/api/v1/push",
 		"prometheus_write_url: http://prometheus.urbex.example.com:9090/api/v1/write",
 		"urbex_service: gitea", "urbex_service: observability",
+		// The images Komodo deploys later, pulled by the parallel play.
+		"- quay.io/keycloak/keycloak:", "- docker.io/grafana/grafana:", "- docker.io/prom/prometheus:",
 	} {
 		if !strings.Contains(string(inventory), want) {
 			t.Errorf("base inventory lacks %q:\n%s", want, inventory)
@@ -213,6 +216,9 @@ func TestRun_BaseInventoryLabelsPlatformTelemetry(t *testing.T) {
 	playbook, _ := os.ReadFile(filepath.Join(dir, "ansible", "playbook.yml"))
 	if !strings.Contains(string(playbook), "- telemetry") {
 		t.Error("the base playbook should install the telemetry agent")
+	}
+	if !strings.Contains(string(playbook), "docker pull --quiet {{ item }}") {
+		t.Error("the parallel play should pull each LXC's Stack images")
 	}
 }
 
@@ -341,7 +347,11 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 	want := "urbex-keycloak,urbex-observability,urbex-tunnel," +
 		"urbex-telemetry-urbex-gitea,urbex-telemetry-urbex-komodo,urbex-telemetry-urbex-technitium," +
 		"urbex-telemetry-urbex-keycloak,urbex-telemetry-urbex-observability,urbex-telemetry-urbex-tunnel"
-	if strings.Join(fp.deployed, ",") != want {
+	// All at once (urbforge/urbex-cli#30): in any order.
+	sort.Strings(fp.deployed)
+	wantSorted := strings.Split(want, ",")
+	sort.Strings(wantSorted)
+	if strings.Join(fp.deployed, ",") != strings.Join(wantSorted, ",") {
 		t.Errorf("deployed %v", fp.deployed)
 	}
 	// Every LXC's telemetry agent: a Stack of its own, kind agent, its
@@ -365,6 +375,20 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 				t.Errorf("%s %v gets %s: these are the Stacks' secrets now", call.Name, call.Args, strings.SplitN(e, "=", 2)[0])
 			}
 		}
+	}
+}
+
+// The Stacks are deployed all at once: a failed one doesn't stop the
+// others, and fails the bootstrap with its name (urbforge/urbex-cli#30).
+func TestRun_AFailedStackDeployNamesIt(t *testing.T) {
+	o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
+	fp.deployFails = map[string]bool{"urbex-observability": true}
+	err := o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "urbex-observability") || strings.Contains(err.Error(), "urbex-keycloak") {
+		t.Fatalf("Run = %v, want an error naming urbex-observability only", err)
+	}
+	if !slices.Contains(fp.deployed, "urbex-keycloak") || !slices.Contains(fp.deployed, "urbex-telemetry-urbex-gitea") {
+		t.Errorf("the other Stacks should still be deployed: %v", fp.deployed)
 	}
 }
 

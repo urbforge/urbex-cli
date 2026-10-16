@@ -440,10 +440,15 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	if err := adoptBootstrapServices(ctx, k); err != nil {
 		return err
 	}
-	if err := o.deployPlatformStacks(ctx, k, stacks); err != nil {
+	platformDeploys, err := o.platformStackDeploys(stacks)
+	if err != nil {
 		return err
 	}
-	if err := o.deployTelemetryAgents(ctx, k); err != nil {
+	telemetryDeploys, err := o.telemetryStackDeploys()
+	if err != nil {
+		return err
+	}
+	if err := o.deployStacks(ctx, k, append(platformDeploys, telemetryDeploys...)); err != nil {
 		return err
 	}
 	// The builder (ADR-0027: every Komodo resource has a kind).

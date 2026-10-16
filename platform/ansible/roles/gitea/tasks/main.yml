@@ -22,8 +22,11 @@
     status_code: 200
   register: gitea_version
   until: gitea_version.status == 200
-  retries: 30
-  delay: 2
+  # Up to 5 minutes: its first start migrates its database, and the
+  # node's disk is shared with every other LXC installing at the same
+  # time - it once took 2.5 minutes.
+  retries: 100
+  delay: 3
 
 - name: Check whether the urbex admin user exists
   command: docker compose exec -T -u git gitea gitea admin user list --admin

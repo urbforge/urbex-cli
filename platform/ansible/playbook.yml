@@ -21,6 +21,18 @@
   become: true
   strategy: free
   tasks:
+    # The images of the Stack Komodo deploys here once Komodo is up
+    # (Keycloak, the observability stack, the tunnel): pulled now, while
+    # Gitea and Komodo install, so that the deploy only starts them
+    # (urbforge/urbex-cli#30).
+    - name: Pull the images of this LXC's Stack
+      command: docker pull --quiet {{ item }}
+      loop: "{{ urbex_images | default([]) }}"
+      changed_when: false
+      # One LXC at a time: the node's disk is shared, and Gitea's and
+      # Komodo's first starts are slowed by every concurrent write.
+      throttle: 1
+
     - name: Deploy this LXC's service
       include_role:
         # Gitea and Komodo; Keycloak's, the observability stack's and the

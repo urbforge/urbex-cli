@@ -12,6 +12,10 @@ type inventoryHost struct {
 	AnsibleHost string `yaml:"ansible_host"`
 	// Service labels the host's logs and metrics (gitea, komodo, ...).
 	Service string `yaml:"urbex_service"`
+	// Images are those of the Stack Komodo deploys on the host later:
+	// pulled while the other base services install
+	// (urbforge/urbex-cli#30), so that deploy only starts them.
+	Images []string `yaml:"urbex_images,omitempty"`
 }
 
 type inventoryGroup struct {
@@ -101,7 +105,7 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 		groupName := "urbex_" + svc.Name
 		root.All.Children[groupName] = inventoryGroup{
 			Hosts: map[string]inventoryHost{
-				hostname: {AnsibleHost: serviceIPs[hostname], Service: svc.Name},
+				hostname: {AnsibleHost: serviceIPs[hostname], Service: svc.Name, Images: stackImages(svc.Name)},
 			},
 		}
 	}
