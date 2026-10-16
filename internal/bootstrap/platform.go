@@ -201,6 +201,7 @@ var ansibleSecretEnv = []string{
 // Ansible. ensureSecrets generates them too.
 var stackSecretEnv = []string{
 	"URBEX_KEYCLOAK_ADMIN_PASSWORD",
+	"URBEX_KEYCLOAK_DB_PASSWORD",
 	"URBEX_GRAFANA_ADMIN_PASSWORD",
 }
 

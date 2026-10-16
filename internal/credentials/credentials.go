@@ -38,6 +38,7 @@ type Credentials struct {
 	KomodoAPISecret         string `yaml:"komodoApiSecret,omitempty"`
 	KomodoOnboardingKey     string `yaml:"komodoOnboardingKey,omitempty"`
 	KeycloakAdminPassword   string `yaml:"keycloakAdminPassword,omitempty"`
+	KeycloakDBPassword      string `yaml:"keycloakDbPassword,omitempty"`
 	GrafanaAdminPassword    string `yaml:"grafanaAdminPassword,omitempty"`
 	TechnitiumAdminPassword string `yaml:"technitiumAdminPassword,omitempty"`
 	TechnitiumToken         string `yaml:"technitiumToken,omitempty"`
@@ -66,6 +67,7 @@ func (c *Credentials) fields() []struct {
 		{"URBEX_KOMODO_API_SECRET", &c.KomodoAPISecret},
 		{"URBEX_KOMODO_ONBOARDING_KEY", &c.KomodoOnboardingKey},
 		{"URBEX_KEYCLOAK_ADMIN_PASSWORD", &c.KeycloakAdminPassword},
+		{"URBEX_KEYCLOAK_DB_PASSWORD", &c.KeycloakDBPassword},
 		{"URBEX_GRAFANA_ADMIN_PASSWORD", &c.GrafanaAdminPassword},
 		{"URBEX_TECHNITIUM_ADMIN_PASSWORD", &c.TechnitiumAdminPassword},
 		{"URBEX_TECHNITIUM_TOKEN", &c.TechnitiumToken},

@@ -189,7 +189,7 @@ step "bootstrap: base services and platform setup" '
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done
   # No generated secret is in plaintext anywhere under platform/.
-  for name in keycloakAdminPassword grafanaAdminPassword technitiumAdminPassword komodoDbPassword komodoAdminPassword giteaAdminPassword; do
+  for name in keycloakAdminPassword keycloakDbPassword grafanaAdminPassword technitiumAdminPassword komodoDbPassword komodoAdminPassword giteaAdminPassword; do
     value=$(cred $name)
     [ -n "$value" ] || fail "no $name in the credentials"
     ! grep -rqF "$value" /work/gitops/platform || fail "$name in plaintext in the gitops repo: $(grep -rlF "$value" /work/gitops/platform)"
