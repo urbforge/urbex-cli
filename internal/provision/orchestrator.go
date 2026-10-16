@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
+	"github.com/urbforge/urbex-cli/internal/progress"
 	"io"
 	"os"
 	"path/filepath"
@@ -101,6 +102,9 @@ type Orchestrator struct {
 	// cloneVMID is the template the environment's new LXCs are cloned
 	// from, or 0 (see templateVMID).
 	cloneVMID int
+	// Progress records apply's phases for 'urbex status --progress'; nil
+	// records nothing.
+	Progress *progress.Tracker
 }
 
 // Options controls a single run.
@@ -130,6 +134,7 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	}
 
 	env := tfEnv(o.Credentials)
+	o.Progress.Begin(PhaseLXCs)
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
@@ -149,6 +154,7 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 // a version set, it waits for Komodo to run it; a new environment stays
 // empty until `urbex deploy` gives it one.
 func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
+	o.Progress.Begin(PhasePrepare)
 	tfDir, err := o.prepare(opts)
 	if err != nil {
 		return err
@@ -205,10 +211,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := writeInventory(opts.GitOpsRepoPath, ansibleDir, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, ep, o.Manifest.ShipsLogs(), quickTunnel); err != nil {
 		return fmt.Errorf("writing ansible inventory: %w", err)
 	}
+	o.Progress.Begin(PhaseConfigure)
 	if err := o.runAnsible(ctx, opts); err != nil {
 		return err
 	}
 
+	o.Progress.Begin(PhaseKomodo)
 	if err := o.Rollout.SetupProject(ctx, o.Manifest.Project, o.Manifest.Deployables()); err != nil {
 		return err
 	}
@@ -223,9 +231,11 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	// The LXCs' telemetry agents, from the folders just pushed (ADR-0027).
+	o.Progress.Begin(PhaseAgents)
 	if err := o.Rollout.DeployTelemetry(ctx, target); err != nil {
 		return err
 	}
+	o.Progress.Begin(PhasePublish)
 	if err := o.publish(ctx, opts.Env); err != nil {
 		return fmt.Errorf("publishing on cloudflare: %w", err)
 	}
@@ -234,6 +244,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	} else if err := o.registerDNS(ctx, opts.Env, allocations); err != nil {
 		return fmt.Errorf("registering internal dns: %w", err)
 	}
+	o.Progress.Begin(PhaseIdentity)
 	usersChanged, err := o.setupIdentity(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("setting up keycloak: %w", err)
@@ -260,17 +271,21 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if set < len(o.Manifest.Deployables()) && tracking == len(o.Manifest.Deployables()) {
 		// A new environment that follows main: build main now, as a
 		// push would, rather than wait for the next one.
+		o.Progress.Begin(PhaseBuild)
 		if err := o.Rollout.BuildMain(ctx, o.Manifest.Project); err != nil {
 			return err
 		}
 		if err := o.refresh(ctx, opts); err != nil {
 			return err
 		}
+		o.Progress.Begin(PhaseDeploy)
 		if err := o.waitAndReport(ctx, opts, allocations); err != nil {
 			return err
 		}
 		fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
 	} else if set < len(o.Manifest.Deployables()) {
+		o.Progress.Skip(PhaseBuild, "doesn't follow main")
+		o.Progress.Skip(PhaseDeploy, "no version to run yet")
 		fmt.Fprintf(o.Out, "%s (%s) is ready, with no version to run yet:\n", o.Manifest.Project, opts.Env)
 		for _, svc := range o.Manifest.Deployables() {
 			fmt.Fprintf(o.Out, "  %-16s %s\n", svc.Name, o.address(opts.Env, svc, allocations))
@@ -284,6 +299,8 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		// Nothing may have changed in the repo - e.g. re-applying onto a
 		// recreated LXC - so tell Komodo to deploy rather than wait for it
 		// to notice.
+		o.Progress.Skip(PhaseBuild, "its version is built")
+		o.Progress.Begin(PhaseDeploy)
 		if err := o.Rollout.Deploy(ctx, target); err != nil {
 			return err
 		}

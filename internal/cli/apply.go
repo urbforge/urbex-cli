@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/provision"
@@ -52,10 +53,14 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 				return err
 			}
 
-			return o.Apply(cmd.Context(), provision.Options{
+			tracker := startProgress(cmd, "apply", fmt.Sprintf("urbex apply %s (%s)", args[0], o.Manifest.Project), provision.Phases())
+			o.Progress = tracker
+			err = o.Apply(cmd.Context(), provision.Options{
 				Env:            args[0],
 				GitOpsRepoPath: repoPath,
 			})
+			tracker.Finish(err)
+			return err
 		},
 	}
 

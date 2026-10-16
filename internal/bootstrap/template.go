@@ -154,6 +154,7 @@ func CurrentTemplate(ctx context.Context, p TemplateProxmox, cfg *platform.Confi
 func (o *Orchestrator) ensureTemplate(ctx context.Context, gitopsRepoPath string) int {
 	p, ok := o.Proxmox.(TemplateProxmox)
 	if !ok {
+		o.Progress.Skip(PhaseTemplate, "not available on this Proxmox")
 		return 0
 	}
 	vmid, err := o.buildTemplate(ctx, p, gitopsRepoPath)
@@ -171,7 +172,10 @@ func (o *Orchestrator) buildTemplate(ctx context.Context, p TemplateProxmox, git
 	if err != nil {
 		return 0, err
 	}
-	if current == 0 {
+	if current != 0 {
+		o.Progress.Skip(PhaseTemplate, "the current one is there")
+	} else {
+		o.Progress.Begin(PhaseTemplate)
 		if current, err = o.newTemplate(ctx, p, gitopsRepoPath, version); err != nil {
 			return 0, err
 		}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -25,6 +26,7 @@ import (
 func newStatusCmd() *cobra.Command {
 	var manifestPath string
 	var gitopsRepoPath string
+	var showProgressFlag, watch bool
 
 	cmd := &cobra.Command{
 		Use:   "status [env]",
@@ -46,9 +48,22 @@ A version is a release (1.4.2) or a commit of main (a1b2c3d);
 Each service with an LXC also shows its internal DNS name (Technitium),
 read from the server: "(missing)" when it has no record, or where it
 points when that is not the allocated IP. TLS certificates are not
-tracked yet. See docs/reference/cli.md in urbforge/urbex.`,
+tracked yet.
+
+With --progress, shows how the latest 'urbex bootstrap' or 'urbex apply'
+run on this machine is getting on - from another terminal while it runs,
+or afterwards: each phase with the time it took, the one running, those
+left with an estimate (from the earlier runs, or the usual times), and
+the time left. --watch refreshes it until the run ends. See
+docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showProgressFlag || watch {
+				if len(args) > 0 {
+					return fmt.Errorf("--progress shows the latest bootstrap or apply: it takes no environment")
+				}
+				return showProgress(cmd, cmd.OutOrStdout(), watch, 2*time.Second)
+			}
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
 				return err
@@ -86,6 +101,8 @@ tracked yet. See docs/reference/cli.md in urbforge/urbex.`,
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest (only used when env is given)")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
+	cmd.Flags().BoolVar(&showProgressFlag, "progress", false, "show how the latest bootstrap or apply is getting on: phases, times, what is left")
+	cmd.Flags().BoolVar(&watch, "watch", false, "with --progress: refresh every 2 seconds until the run ends")
 
 	return cmd
 }
