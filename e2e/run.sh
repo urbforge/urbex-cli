@@ -322,7 +322,8 @@ step "promote refuses what was never released" '
   expect_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 5'
 
 step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
-  printf %s "s3cr3t-e2e" | urbex secret set staging api API_TOKEN
+  # Set from inside the GitOps repo: sops must not trip on its .sops.yaml.
+  (cd /work/gitops && printf %s "s3cr3t-e2e" | urbex secret set --file /work/app/urbex.yaml staging api API_TOKEN)
   expect_http http://$NET.210:8080/secret "token=s3cr3t-e2e" 90
   [ "$(urbex secret list staging api)" = "API_TOKEN" ] || fail "secret list does not show API_TOKEN"
   if grep -rq "s3cr3t-e2e" /work/gitops; then fail "the secret is in the GitOps repo in plaintext"; fi
@@ -331,7 +332,7 @@ step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
   urbex secret unset staging api API_TOKEN
   for _ in $(seq 1 45); do [ "$(curl -s http://$NET.210:8080/secret)" = "token=" ] && break; sleep 2; done
   [ "$(curl -s http://$NET.210:8080/secret)" = "token=" ] || fail "the secret is still set after unset"
-  echo "ok: secret set, delivered, listed, and removed"'
+  echo "ok: secret set (from inside the GitOps repo), delivered, listed, and removed"'
 
 # Pushes made by hand are spaced out: Komodo caches a repo for a few
 # seconds after pulling it, and a push landing in that window is only

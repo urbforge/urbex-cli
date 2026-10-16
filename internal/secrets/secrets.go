@@ -181,7 +181,12 @@ func Keys(path string) ([]string, error) {
 }
 
 func (s *Store) sops(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "sops", args...)
+	// The key is always passed explicitly, so sops must not look for a
+	// .sops.yaml from the working directory: run inside the GitOps repo,
+	// it would find the repo's and match its creation rules against
+	// "/dev/stdin", which none matches ("no matching creation rules").
+	// An empty config has no rules, and the files come out the same.
+	cmd := exec.CommandContext(ctx, "sops", append([]string{"--config", os.DevNull}, args...)...)
 	cmd.Env = append(os.Environ(), "SOPS_AGE_KEY="+s.AgeKey)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
