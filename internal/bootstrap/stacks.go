@@ -99,18 +99,6 @@ const (
 	keycloakDBUser = "keycloak"
 )
 
-// keycloakOnH2 reports whether the GitOps repo's Keycloak Stack, as a
-// previous bootstrap wrote it, ran on the development database (H2) -
-// whose realms the move to PostgreSQL leaves behind (urbex-cli#36). A
-// platform not bootstrapped yet has no such Stack.
-func keycloakOnH2(gitopsRepoPath string) bool {
-	data, err := os.ReadFile(filepath.Join(gitopsRepoPath, PlatformStacksDir, "keycloak", "config.env"))
-	if err != nil {
-		return false
-	}
-	return !strings.Contains(string(data), "\nKC_DB=postgres\n")
-}
-
 // secretWriter is o.Secrets, or a sops-backed store for the platform's
 // age key.
 func (o *Orchestrator) secretWriter() (SecretWriter, error) {

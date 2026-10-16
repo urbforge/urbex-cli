@@ -198,7 +198,6 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// folders go in before setupPlatform pushes it.
 	o.Progress.Begin(PhaseGitOps)
 	stacks := o.platformStacks(tunnelToken)
-	fromH2 := keycloakOnH2(opts.GitOpsRepoPath)
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
 		return err
 	}
@@ -229,9 +228,6 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	path, _ := credentials.DefaultPath()
 	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
-	if fromH2 {
-		fmt.Fprintln(o.Out, "Keycloak moved from its development database to PostgreSQL: the projects' realms, clients and test users were left behind. Run `urbex apply <env>` for each environment to re-create them - the test users keep their passwords.")
-	}
 	return nil
 }
 
