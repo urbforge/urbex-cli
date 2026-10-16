@@ -13,6 +13,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/cloudflare"
 	"github.com/urbforge/urbex-cli/internal/cloudflare/cloudflaretest"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/progress"
 )
 
 // withCloudflare turns Cloudflare on in o's config and points it at a fake
@@ -416,6 +417,34 @@ func TestRun_WaitsForKeycloakBeforeThePlatformIsReady(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Waiting for Keycloak to start") || strings.Contains(out.String(), "Platform ready") {
 		t.Errorf("bootstrap should say it waits, and not call the platform ready:\n%s", out)
+	}
+}
+
+// Waiting for Keycloak is a phase of its own for 'urbex status --progress':
+// on a first start it is the longest one (urbforge/urbex-cli#37).
+func TestRun_RecordsTheKeycloakWait(t *testing.T) {
+	for _, down := range []bool{false, true} {
+		o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
+		fp.keycloakDown = down
+		dir := t.TempDir()
+		tr, err := progress.Start(dir, "bootstrap", "urbex bootstrap", Phases(o.Config))
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.Progress = tr
+		tr.Finish(o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}))
+		run, _ := progress.Latest(dir)
+		states := map[string]progress.State{}
+		for _, p := range run.Phases {
+			states[p.ID] = p.State
+		}
+		want, result := progress.Done, progress.ResultOK
+		if down {
+			want, result = progress.Failed, progress.ResultFailed
+		}
+		if states[PhaseStacks] != progress.Done || states[PhaseKeycloak] != want || run.Result != result {
+			t.Errorf("Keycloak down %v: stacks %s, keycloak %s, result %s", down, states[PhaseStacks], states[PhaseKeycloak], run.Result)
+		}
 	}
 }
 

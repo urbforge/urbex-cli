@@ -222,6 +222,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// Keycloak last: Komodo has deployed it, but its first start takes
 	// minutes, and the platform isn't ready - nor can apply set up a
 	// realm - until it answers (urbforge/urbex-cli#32).
+	o.Progress.Begin(PhaseKeycloak)
 	if err := o.waitKeycloak(ctx, clients); err != nil {
 		return err
 	}

@@ -23,6 +23,7 @@ const (
 	PhaseConnect    = "connect"
 	PhaseStacks     = "stacks"
 	PhaseCloudflare = "cloudflare"
+	PhaseKeycloak   = "keycloak"
 )
 
 // Phases are bootstrap's phases in order. Their estimates are a bootstrap
@@ -43,5 +44,6 @@ func Phases(cfg *platform.Config) []progress.PhaseSpec {
 		{ID: PhaseConnect, Title: "Connect the LXCs to Komodo", Estimate: 20 * time.Second, Play: "Connect the base services' LXCs to Komodo"},
 		{ID: PhaseStacks, Title: "Deploy the platform's Stacks (Komodo)", Estimate: 90 * time.Second},
 		{ID: PhaseCloudflare, Title: "Publish on Cloudflare", Estimate: 30 * time.Second},
+		{ID: PhaseKeycloak, Title: "Wait for Keycloak to start", Estimate: 300 * time.Second},
 	}
 }
