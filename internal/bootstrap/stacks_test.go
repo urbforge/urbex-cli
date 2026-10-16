@@ -42,8 +42,12 @@ func TestRun_KeycloakOnItsOwnPostgreSQL(t *testing.T) {
 		t.Errorf("the database password should be the stack's secret, for both containers:\n%s", sec)
 	}
 	compose, _ := os.ReadFile(filepath.Join(dir, "platform/keycloak/compose.yaml"))
-	if !strings.Contains(string(compose), "command: start\n") || strings.Contains(string(compose), "start-dev") {
-		t.Errorf("keycloak should run in production mode:\n%s", compose)
+	if !strings.Contains(string(compose), "command: start --optimized\n") || strings.Contains(string(compose), "start-dev") {
+		t.Errorf("keycloak should run in production mode, on its pre-built image:\n%s", compose)
+	}
+	dockerfile, _ := os.ReadFile(filepath.Join(dir, "platform/keycloak/Dockerfile"))
+	if !strings.Contains(string(dockerfile), "ENV KC_DB=postgres\n") || !strings.Contains(string(dockerfile), "kc.sh build") {
+		t.Errorf("keycloak's image should be built for PostgreSQL:\n%s", dockerfile)
 	}
 	// Only Keycloak's port is published: the database stays on the
 	// Stack's network.

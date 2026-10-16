@@ -25,12 +25,15 @@ services:
       retries: 30
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.5
+    # Built on the LXC from the Dockerfile next to this file; after the
+    # first time, from Docker's cache.
+    build: .
+    pull_policy: build
     labels:
       urbex.kind: "platform"
       urbex.service: "keycloak"
     restart: unless-stopped
-    command: start
+    command: start --optimized
     depends_on:
       postgres:
         condition: service_healthy
