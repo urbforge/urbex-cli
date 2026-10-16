@@ -159,6 +159,7 @@ func (o *Orchestrator) ensureTemplate(ctx context.Context, gitopsRepoPath string
 	}
 	vmid, err := o.buildTemplate(ctx, p, gitopsRepoPath)
 	if err != nil {
+		o.Progress.Skip(PhaseTemplate, "couldn't build it: the LXCs come from the Debian template")
 		fmt.Fprintf(o.Out, "Warning: couldn't prepare the LXC template (%v): new LXCs are created from %s and install everything themselves.\n", err, o.Config.Proxmox.LXCTemplate)
 		return 0
 	}

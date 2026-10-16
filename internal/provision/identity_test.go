@@ -10,6 +10,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/keycloak"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/progress"
 )
 
 type fakeKeycloak struct {
@@ -174,5 +175,37 @@ func TestIdentity_ApplyWaitsForKeycloak(t *testing.T) {
 	}
 	if len(kc.realms) != 0 {
 		t.Errorf("nothing should be set up in a Keycloak that isn't there: %v", kc.realms)
+	}
+}
+
+// apply records its phases for 'urbex status --progress'
+// (urbforge/urbex-cli#37).
+func TestApply_RecordsItsPhases(t *testing.T) {
+	o, _, _ := cloudflareOrchestrator(t)
+	o.Keycloak, o.KeycloakURL, o.Secrets = &fakeKeycloak{}, "http://192.168.1.203:8080", memStore{}
+	dir := t.TempDir()
+	tr, err := progress.Start(dir, "apply", "urbex apply prod (my-app)", Phases())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Progress = tr
+	err = o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: t.TempDir()})
+	tr.Finish(err)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	run, _ := progress.Latest(dir)
+	states := map[string]progress.State{}
+	for _, p := range run.Phases {
+		states[p.ID] = p.State
+	}
+	for _, id := range []string{PhasePrepare, PhaseLXCs, PhaseConfigure, PhaseKomodo, PhaseAgents, PhasePublish, PhaseIdentity} {
+		if states[id] != progress.Done {
+			t.Errorf("phase %s = %s, want done", id, states[id])
+		}
+	}
+	// A new prod has no version yet: nothing to build or deploy.
+	if states[PhaseBuild] != progress.Skipped || states[PhaseDeploy] != progress.Skipped || run.Result != progress.ResultOK {
+		t.Errorf("build %s, deploy %s, result %s", states[PhaseBuild], states[PhaseDeploy], run.Result)
 	}
 }

@@ -134,7 +134,6 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	}
 
 	env := tfEnv(o.Credentials)
-	o.Progress.Begin(PhaseLXCs)
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
@@ -164,6 +163,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 
 	env := tfEnv(o.Credentials)
+	o.Progress.Begin(PhaseLXCs)
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
