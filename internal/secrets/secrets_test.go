@@ -128,3 +128,44 @@ func TestStore_SetReadUnsetRoundTrip(t *testing.T) {
 		t.Error("Unset of a missing secret should report false")
 	}
 }
+
+// Run from inside the GitOps repo, sops would find the repo's .sops.yaml
+// and fail to match its rules against "/dev/stdin"; from a folder with
+// someone else's .sops.yaml, its rules. Neither must matter.
+func TestStore_WorksWhateverTheWorkingDirectory(t *testing.T) {
+	if _, err := exec.LookPath("sops"); err != nil {
+		t.Skip("sops not installed")
+	}
+	secret, recipient := testKey(t)
+	store, err := NewStore(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := WriteSopsConfig(repo, recipient); err != nil {
+		t.Fatal(err)
+	}
+	foreign := t.TempDir()
+	os.WriteFile(filepath.Join(foreign, ".sops.yaml"), []byte("creation_rules:\n  - path_regex: ^nothing$\n    age: "+recipient+"\n"), 0o644)
+	path := filepath.Join(repo, "environments", "staging", "hello", "web", FileName)
+
+	ctx := context.Background()
+	for _, dir := range []string{repo, filepath.Dir(filepath.Dir(path)), foreign} {
+		t.Chdir(dir)
+		if err := store.Set(ctx, path, "API_TOKEN", "s3cr3t-"+filepath.Base(dir)); err != nil {
+			t.Fatalf("Set from %s: %v", dir, err)
+		}
+		values, err := store.Read(ctx, path)
+		if err != nil || values["API_TOKEN"] != "s3cr3t-"+filepath.Base(dir) {
+			t.Fatalf("Read from %s = %v, %v", dir, values, err)
+		}
+	}
+
+	// The file is still the one plain sops decrypts with the repo's config.
+	cmd := exec.Command("sops", "decrypt", "--input-type", "dotenv", "--output-type", "dotenv", path)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "SOPS_AGE_KEY="+secret)
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "API_TOKEN=s3cr3t-") {
+		t.Errorf("sops decrypt = %s, %v", out, err)
+	}
+}
