@@ -3,18 +3,22 @@ package provision
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/urbforge/urbex-cli/internal/keycloak"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 )
 
 type fakeKeycloak struct {
-	realms  map[string]bool
-	roles   map[string][]string
-	clients map[string]keycloak.PublicClient // realm/clientId
-	users   map[string]keycloak.TestUser     // realm/username
+	notReady bool // WaitReady says Keycloak never answered
+	waited   int
+	realms   map[string]bool
+	roles    map[string][]string
+	clients  map[string]keycloak.PublicClient // realm/clientId
+	users    map[string]keycloak.TestUser     // realm/username
 }
 
 func (f *fakeKeycloak) init() {
@@ -22,6 +26,14 @@ func (f *fakeKeycloak) init() {
 		f.realms, f.roles = map[string]bool{}, map[string][]string{}
 		f.clients, f.users = map[string]keycloak.PublicClient{}, map[string]keycloak.TestUser{}
 	}
+}
+func (f *fakeKeycloak) WaitReady(_ context.Context, _ time.Duration, waiting func()) error {
+	f.waited++
+	if f.notReady {
+		waiting()
+		return errors.New("keycloak at http://kc didn't answer within 15m0s")
+	}
+	return nil
 }
 func (f *fakeKeycloak) EnsureRealm(_ context.Context, realm, _ string) error {
 	f.init()
@@ -130,5 +142,37 @@ func TestIdentity_RealmPerEnvironmentWithTestUsersInStaging(t *testing.T) {
 	}
 	if kc.realms["my-app-staging"] || !kc.realms["my-app-prod"] {
 		t.Errorf("destroying staging deletes its realm only: %v", kc.realms)
+	}
+}
+
+// Right after a bootstrap Keycloak can take minutes to start: apply waits
+// for it, says why, and stops with Keycloak's error if it never answers
+// (urbforge/urbex-cli#32).
+func TestIdentity_ApplyWaitsForKeycloak(t *testing.T) {
+	o, _, _ := cloudflareOrchestrator(t)
+	kc := &fakeKeycloak{}
+	o.Keycloak, o.KeycloakURL, o.Secrets = kc, "http://192.168.1.203:8080", memStore{}
+	o.Manifest.Services[0].Auth = &manifest.Auth{Keycloak: true, Roles: []string{"member"}}
+	if err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: t.TempDir()}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if kc.waited == 0 || !kc.realms["my-app-prod"] {
+		t.Errorf("apply should wait for Keycloak, then set up the realm: waited %d, realms %v", kc.waited, kc.realms)
+	}
+
+	o, _, _ = cloudflareOrchestrator(t)
+	out := &bytes.Buffer{}
+	kc = &fakeKeycloak{notReady: true}
+	o.Keycloak, o.KeycloakURL, o.Secrets, o.Out = kc, "http://192.168.1.203:8080", memStore{}, out
+	o.Manifest.Services[0].Auth = &manifest.Auth{Keycloak: true, Roles: []string{"member"}}
+	err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "didn't answer within") {
+		t.Fatalf("Apply = %v, want Keycloak's timeout", err)
+	}
+	if !strings.Contains(out.String(), "Waiting for Keycloak to start") {
+		t.Errorf("apply should say it waits for Keycloak:\n%s", out)
+	}
+	if len(kc.realms) != 0 {
+		t.Errorf("nothing should be set up in a Keycloak that isn't there: %v", kc.realms)
 	}
 }

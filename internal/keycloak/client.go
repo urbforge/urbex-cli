@@ -21,13 +21,64 @@ type Client struct {
 	baseURL, username, password string
 	http                        *http.Client
 	token                       string
+	// pollInterval is the pause between tries while waiting for
+	// Keycloak to answer.
+	pollInterval time.Duration
 }
 
 // New returns a Client for the Keycloak at baseURL (e.g.
 // http://192.168.1.203:8080), logging in as the master realm's admin.
 func New(baseURL, username, password string) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), username: username, password: password,
-		http: &http.Client{Timeout: 30 * time.Second}}
+		http: &http.Client{Timeout: 30 * time.Second}, pollInterval: 5 * time.Second}
+}
+
+// StartTimeout is how long Urbex waits for Keycloak to answer: its first
+// start, in development mode, builds before it serves anything, and took
+// up to 10 minutes on a home lab node (urbforge/urbex-cli#32).
+const StartTimeout = 15 * time.Minute
+
+// WaitReady waits until Keycloak serves its master realm, or timeout
+// elapses. waiting, if not nil, is called once, when the first try finds
+// Keycloak not ready yet - to tell the user why nothing happens.
+func (c *Client) WaitReady(ctx context.Context, timeout time.Duration, waiting func()) error {
+	return WaitReady(ctx, c.http, c.baseURL, timeout, c.pollInterval, waiting)
+}
+
+// WaitReady waits until the Keycloak at baseURL serves its master realm,
+// trying every interval until timeout elapses; see Client.WaitReady.
+func WaitReady(ctx context.Context, hc *http.Client, baseURL string, timeout, interval time.Duration, waiting func()) error {
+	baseURL = strings.TrimRight(baseURL, "/")
+	deadline := time.Now().Add(timeout)
+	var last string
+	for first := true; ; first = false {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/realms/master", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := hc.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			last = resp.Status
+		} else {
+			last = err.Error()
+		}
+		if first && waiting != nil {
+			waiting()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("keycloak at %s didn't answer within %s (last: %s): see its logs in Grafana or Komodo (Stack urbex-keycloak)", baseURL, timeout, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 func (c *Client) login(ctx context.Context) error {

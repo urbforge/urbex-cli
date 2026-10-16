@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -389,6 +390,32 @@ func TestRun_AFailedStackDeployNamesIt(t *testing.T) {
 	}
 	if !slices.Contains(fp.deployed, "urbex-keycloak") || !slices.Contains(fp.deployed, "urbex-telemetry-urbex-gitea") {
 		t.Errorf("the other Stacks should still be deployed: %v", fp.deployed)
+	}
+}
+
+// The platform is ready once Keycloak answers: its first start takes
+// minutes, and apply needs it right after (urbforge/urbex-cli#32).
+func TestRun_WaitsForKeycloakBeforeThePlatformIsReady(t *testing.T) {
+	o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
+	out := &bytes.Buffer{}
+	o.Out = out
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fp.keycloakWaits) != 1 || !strings.HasSuffix(fp.keycloakWaits[0], ":8080") {
+		t.Errorf("waited for Keycloak at %v, want its LAN address once", fp.keycloakWaits)
+	}
+
+	o, _, fp = newRunOrchestrator(t, &fakeProxmox{})
+	out.Reset()
+	o.Out = out
+	fp.keycloakDown = true
+	err := o.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "didn't answer within") {
+		t.Fatalf("Run = %v, want Keycloak's timeout", err)
+	}
+	if !strings.Contains(out.String(), "Waiting for Keycloak to start") || strings.Contains(out.String(), "Platform ready") {
+		t.Errorf("bootstrap should say it waits, and not call the platform ready:\n%s", out)
 	}
 }
 
