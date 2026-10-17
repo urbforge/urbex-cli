@@ -2,22 +2,47 @@
 # changes are overwritten. Deployed by Komodo as the Stack urbex-keycloak, like a
 # project service (ADR-0027): configuration in config.env, secrets in
 # secrets.sops.env, decrypted on the LXC at deploy time.
+#
+# Keycloak in production mode on its own PostgreSQL, which only Keycloak
+# reaches: on the Stack's network, no port published.
 services:
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.7.5
+  postgres:
+    image: docker.io/library/postgres:17.11-alpine
     labels:
       urbex.kind: "platform"
       urbex.service: "keycloak"
     restart: unless-stopped
-    command: start-dev
     env_file:
       - config.env
       - path: ${URBEX_SECRETS_FILE:-secrets.env}
         required: false
     volumes:
-      - keycloak-data:/opt/keycloak/data
+      - keycloak-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  keycloak:
+    # Built on the LXC from the Dockerfile next to this file; after the
+    # first time, from Docker's cache.
+    build: .
+    pull_policy: build
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "keycloak"
+    restart: unless-stopped
+    command: start --optimized
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - config.env
+      - path: ${URBEX_SECRETS_FILE:-secrets.env}
+        required: false
     ports:
       - "8080:8080"
 
 volumes:
-  keycloak-data:
+  keycloak-db:

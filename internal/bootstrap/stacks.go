@@ -47,13 +47,19 @@ const PlatformStacksDir = "platform"
 // repo: Keycloak, the observability stack and, with Cloudflare, the
 // tunnel, whose connector token is tunnelToken.
 func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
+	// Keycloak runs in production mode on its own PostgreSQL, in the same
+	// Stack (urbex-cli#36). Both containers read config.env and the
+	// secrets: KC_* configure Keycloak, POSTGRES_* the database.
 	keycloak := map[string]string{
-		// The development database's credentials, as Keycloak 26.0
-		// created it: later versions default to others and can't open it
-		// otherwise. The file stays inside the container's volume.
-		"KC_DB_USERNAME":              "sa",
-		"KC_DB_PASSWORD":              "password",
+		"KC_DB":                       "postgres",
+		"KC_DB_URL":                   "jdbc:postgresql://postgres:5432/" + keycloakDBName,
+		"KC_DB_USERNAME":              keycloakDBUser,
+		"POSTGRES_DB":                 keycloakDBName,
+		"POSTGRES_USER":               keycloakDBUser,
 		"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
+		// Production mode wants HTTPS; TLS ends before Keycloak - at
+		// Cloudflare, or nowhere on the LAN.
+		"KC_HTTP_ENABLED": "true",
 		// Logs worth having in Loki: every request, and logins at INFO.
 		"KC_HTTP_ACCESS_LOG_ENABLED":                         "true",
 		"KC_SPI_EVENTS_LISTENER_JBOSS_LOGGING_SUCCESS_LEVEL": "info",
@@ -65,11 +71,18 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 		keycloak["KC_HOSTNAME"] = "https://" + pub.Keycloak
 		keycloak["KC_HOSTNAME_BACKCHANNEL_DYNAMIC"] = "true"
 		keycloak["KC_PROXY_HEADERS"] = "xforwarded"
-		keycloak["KC_HTTP_ENABLED"] = "true"
+	} else {
+		// On the LAN only: no fixed hostname, the URL each request comes
+		// in on - by IP or internal name - is the issuer.
+		keycloak["KC_HOSTNAME_STRICT"] = "false"
 	}
 	stacks := []PlatformStack{
 		{Name: Hostname("keycloak"), Dir: "keycloak", Config: keycloak,
-			Secrets: map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": o.Credentials.KeycloakAdminPassword}},
+			Secrets: map[string]string{
+				"KC_BOOTSTRAP_ADMIN_PASSWORD": o.Credentials.KeycloakAdminPassword,
+				"KC_DB_PASSWORD":              o.Credentials.KeycloakDBPassword,
+				"POSTGRES_PASSWORD":           o.Credentials.KeycloakDBPassword,
+			}},
 		{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
 			Secrets: map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword}},
 	}
@@ -79,6 +92,12 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 	}
 	return stacks
 }
+
+// Keycloak's database and its owner, in the Keycloak Stack's PostgreSQL.
+const (
+	keycloakDBName = "keycloak"
+	keycloakDBUser = "keycloak"
+)
 
 // secretWriter is o.Secrets, or a sops-backed store for the platform's
 // age key.

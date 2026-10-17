@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,5 +208,14 @@ func TestTemplateVersion(t *testing.T) {
 	cfg.Proxmox.LXCTemplate = "local:vztmpl/debian-14.tar.zst"
 	if TemplateVersion(cfg) == v {
 		t.Error("a new Debian template must change the version")
+	}
+}
+
+// Keycloak's Stack builds its image: the base image is pulled with the
+// database's, before Komodo deploys it.
+func TestStackImages_IncludesTheBuiltImagesBase(t *testing.T) {
+	images := stackImages("keycloak")
+	if !slices.ContainsFunc(images, func(i string) bool { return strings.HasPrefix(i, "quay.io/keycloak/keycloak:") }) || !slices.ContainsFunc(images, func(i string) bool { return strings.Contains(i, "postgres:") }) {
+		t.Errorf("stackImages(keycloak) = %v, want Keycloak's base image and PostgreSQL", images)
 	}
 }
