@@ -85,7 +85,7 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 					pub = "https://" + host
 				}
 			} else if entry, ok := ledger.Lookup(provision.Hostname(d.Project, svc.Name, d.Env)); ok {
-				lan = fmt.Sprintf("http://%s:%d", entry.IP, repo.Port(d.Env, d.Project, svc.Name))
+				lan = provision.LANAddress(entry.IP, repo.Port(d.Env, d.Project, svc.Name))
 				record = dns.Check(ctx, o.InternalHostname(d.Env, svc), entry.IP)
 				// Routes go to the service's internal name (ADR-0027);
 				// ones set up before that, to its address.

@@ -227,3 +227,43 @@ func TestCompose_KindLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteService_ApplicationFromAnImage(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	dir := filepath.Join(repo.Path, "environments", "prod", "photos", "cache")
+	svc := manifest.Service{Name: "cache", Image: "valkey/valkey", Version: "9"}
+
+	if err := repo.WriteService("prod", "photos", svc, svc.Image, false); err != nil {
+		t.Fatalf("WriteService: %v", err)
+	}
+	compose := read(t, filepath.Join(dir, ComposeFile))
+	if !strings.Contains(compose, "image: valkey/valkey:${VERSION}\n") {
+		t.Errorf("expected the published image, its tag and digest from version.env:\n%s", compose)
+	}
+	// It reads its own variables and, without a port, publishes none.
+	for _, unwanted := range []string{"PORT", "ports:", "environment:", "healthcheck:"} {
+		if strings.Contains(compose, unwanted) {
+			t.Errorf("unexpected %q in:\n%s", unwanted, compose)
+		}
+	}
+
+	pinned := "9.0.1@sha256:0123456789abcdef"
+	if err := repo.SetVersion("prod", "photos", "cache", VersionFileState{Version: pinned}); err != nil {
+		t.Fatal(err)
+	}
+	version := read(t, filepath.Join(dir, VersionFile))
+	if !strings.Contains(version, "VERSION="+pinned+"\n") || !strings.Contains(version, "digest") {
+		t.Errorf("unexpected version file:\n%s", version)
+	}
+	if st, _ := repo.Version("prod", "photos", "cache"); st.Version != pinned || st.Track {
+		t.Errorf("Version = %+v", st)
+	}
+
+	svc.Port = 6379
+	if err := repo.WriteService("prod", "photos", svc, svc.Image, false); err != nil {
+		t.Fatal(err)
+	}
+	if compose := read(t, filepath.Join(dir, ComposeFile)); !strings.Contains(compose, `- "6379:6379"`) || strings.Contains(compose, "PORT") {
+		t.Errorf("expected its port published, with no PORT variable:\n%s", compose)
+	}
+}

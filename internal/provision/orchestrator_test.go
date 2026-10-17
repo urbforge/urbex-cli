@@ -86,6 +86,7 @@ func validCredentials() *credentials.Credentials {
 type fakeRollout struct {
 	telemetry                    []string
 	projects, envSetups, deploys int
+	deployed                     []string // the services of the last Deploy
 	reconciles                   int
 	missing                      []string // images MissingImages reports
 	waitErr                      error
@@ -107,7 +108,11 @@ func (f *fakeRollout) SetupProject(ctx context.Context, project string, services
 
 func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
 	for _, svc := range t.Services {
-		if err := repo.WriteService(t.Env, t.Project, svc, "192.168.1.200:3000/urbex/"+t.Project+"-"+svc.Name, rollout.FollowsMainByDefault(t.Env)); err != nil {
+		image, follow := "192.168.1.200:3000/urbex/"+t.Project+"-"+svc.Name, rollout.FollowsMainByDefault(t.Env)
+		if svc.FromImage() {
+			image, follow = svc.Image, false
+		}
+		if err := repo.WriteService(t.Env, t.Project, svc, image, follow); err != nil {
 			return err
 		}
 	}
@@ -130,6 +135,10 @@ func (f *fakeRollout) DeployTelemetry(ctx context.Context, t rollout.Target) err
 }
 func (f *fakeRollout) Deploy(ctx context.Context, t rollout.Target) error {
 	f.deploys++
+	f.deployed = nil
+	for _, svc := range t.Services {
+		f.deployed = append(f.deployed, svc.Name)
+	}
 	return nil
 }
 
@@ -469,7 +478,7 @@ func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 	o, _, ro, out, synced := newOrchestrator(validManifest())
 	ctx := context.Background()
 
-	if _, err := o.Promote(ctx, dir); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
+	if _, err := o.Promote(ctx, dir, false); err == nil || !strings.Contains(err.Error(), "urbex apply staging") {
 		t.Fatalf("expected promote before any apply to say so, got %v", err)
 	}
 	ro.mainVersion = "a1b2c3d"
@@ -480,7 +489,7 @@ func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 	}
 
 	// Staging runs a commit of main that was never released.
-	_, err := o.Promote(ctx, dir)
+	_, err := o.Promote(ctx, dir, false)
 	if err == nil || !strings.Contains(err.Error(), "commit a1b2c3d, which is not a release") {
 		t.Fatalf("expected promote of an unreleased commit to point at urbex release, got %v", err)
 	}
@@ -491,7 +500,7 @@ func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 		{Name: "v1.4.2", Commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
 	}
 	*synced = nil
-	changed, err := o.Promote(ctx, dir)
+	changed, err := o.Promote(ctx, dir, false)
 	if err != nil || !changed {
 		t.Fatalf("Promote = %v, %v; want a change", changed, err)
 	}
@@ -510,7 +519,7 @@ func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 	}
 
 	*synced = nil
-	changed, err = o.Promote(ctx, dir)
+	changed, err = o.Promote(ctx, dir, false)
 	if err != nil || changed || len(*synced) != 0 {
 		t.Errorf("a second promote must change and push nothing, got changed=%v err=%v synced=%v", changed, err, *synced)
 	}
@@ -780,6 +789,25 @@ func TestApply_StagingFollowsMainAndRunsItsHead(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
+	}
+}
+
+// The push that creates main on Gitea can still reach the webhook created
+// right after it: Komodo then builds main and sets staging to it while
+// apply runs. Staging is still new, and said to follow main.
+func TestApply_StagingFollowsMainEvenIfKomodoSetsItFirst(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out, _ := newOrchestrator(validManifest())
+	ro.mainVersion = "a1b2c3d"
+	o.SyncGitOps = func(ctx context.Context, path, message string) error {
+		return ro.BuildMain(ctx, o.Manifest.Project)
+	}
+
+	if err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !strings.Contains(out.String(), "staging follows main") {
+		t.Errorf("expected staging to be said to follow main:\n%s", out)
 	}
 }
 

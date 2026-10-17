@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/semver"
 )
@@ -14,6 +15,9 @@ func newDeployCmd() *cobra.Command {
 	var gitopsRepoPath string
 	var version string
 	var followMain bool
+	var app string
+	var update bool
+	var allowMajor bool
 
 	cmd := &cobra.Command{
 		Use:   "deploy <env>",
@@ -37,12 +41,27 @@ has the same effect: this command is a convenience. It also regenerates
 the services' compose files from urbex.yaml, so it is how a changed port
 or healthcheck takes effect.
 
+Applications from a published image (image and version in urbex.yaml)
+run their tag's digest, pinned by the environment's first apply, until
+it is changed:
+
+  urbex deploy prod --update                the tags in urbex.yaml,
+                                            resolved again, for all of them
+  urbex deploy prod --app db --update       the same, for one
+  urbex deploy prod --app db --version 17.7 another tag
+
+A new major version of an application with volumes (17 to 18) is refused
+without --allow-major: its data may need a dump and restore first.
+
 Every declared service must already have been applied ('urbex apply').
 See docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if followMain && version != "" {
 				return fmt.Errorf("--version and --follow-main are exclusive")
+			}
+			if update && version != "" {
+				return fmt.Errorf("--update and --version are exclusive")
 			}
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
@@ -54,8 +73,13 @@ See docs/reference/cli.md in urbforge/urbex.`,
 				return err
 			}
 
-			opts := provision.Options{Env: args[0], GitOpsRepoPath: repoPath, FollowMain: followMain}
-			if !followMain {
+			opts := provision.Options{Env: args[0], GitOpsRepoPath: repoPath, FollowMain: followMain,
+				App: app, Update: update, AllowMajor: allowMajor}
+			if app != "" || update {
+				opts.Version = version
+				return p.Deploy(cmd.Context(), opts)
+			}
+			if !followMain && len(manifest.Built(p.Manifest.Deployables())) > 0 {
 				if version == "" {
 					releases, err := p.rollout.Releases(cmd.Context(), p.Manifest.Project)
 					if err != nil {
@@ -81,5 +105,8 @@ See docs/reference/cli.md in urbforge/urbex.`,
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().StringVar(&version, "version", "", "release (X.Y.Z) or commit of main (short hash) to run; default is the latest release")
 	cmd.Flags().BoolVar(&followMain, "follow-main", false, "make the environment follow main: deploy every push to main")
+	cmd.Flags().StringVar(&app, "app", "", "the application from an image to deploy (with --update or --version <tag>)")
+	cmd.Flags().BoolVar(&update, "update", false, "resolve the image tags in urbex.yaml again and run what they point to now")
+	cmd.Flags().BoolVar(&allowMajor, "allow-major", false, "allow a new major version of an application from an image that has volumes")
 	return cmd
 }

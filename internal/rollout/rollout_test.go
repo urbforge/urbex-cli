@@ -664,3 +664,68 @@ func TestSetupEnv_TelemetryAgentPerLXC(t *testing.T) {
 		t.Errorf("telemetry stack tags = %q", got)
 	}
 }
+
+func TestSetupProject_ApplicationsFromImagesHaveNoBuild(t *testing.T) {
+	g, k, git := &fakeGitea{branches: map[string]bool{"main": true}, hooks: map[string]string{}}, &fakeKomodo{}, &fakeGit{}
+	db := manifest.Service{Name: "db", Image: "postgres", Version: "17"}
+	r := newRollout(g, k, git)
+
+	if err := r.SetupProject(context.Background(), "my-app", append(services(), db)); err != nil {
+		t.Fatalf("SetupProject: %v", err)
+	}
+	if _, ok := k.builds["my-app-db"]; ok || len(k.builds) != 2 {
+		t.Errorf("expected a Build for the services built from source only, got %v", k.builds)
+	}
+
+	// Only images: nothing to build, and no webhook for the release
+	// Action, which fails for a repo without Builds.
+	const hook = "http://komodo.urbex.example.com:9120/listener/github/action/urbex-release/__ANY__"
+	k.builds = nil
+	if err := r.SetupProject(context.Background(), "my-app", []manifest.Service{db}); err != nil {
+		t.Fatalf("SetupProject: %v", err)
+	}
+	if len(k.builds) != 0 {
+		t.Errorf("expected no Build, got %v", k.builds)
+	}
+	if _, ok := g.hooks[hook]; ok {
+		t.Errorf("expected no release webhook for a project of images only, got %v", g.hooks)
+	}
+}
+
+func TestWriteEnv_ApplicationFromAnImagePullsItAndNeverFollowsMain(t *testing.T) {
+	repo := envrepo.Repo{Path: t.TempDir()}
+	db := manifest.Service{Name: "db", Image: "postgres", Version: "17"}
+	target := Target{Project: "my-app", Env: "staging", Services: append(services(), db)}
+
+	if err := newRollout(&fakeGitea{}, &fakeKomodo{}, &fakeGit{}).WriteEnv(target, repo); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+	compose, err := os.ReadFile(filepath.Join(repo.Path, "environments", "staging", "my-app", "db", "compose.yaml"))
+	if err != nil || !strings.Contains(string(compose), "image: postgres:${VERSION}\n") {
+		t.Errorf("expected the published image in the compose file (%v):\n%s", err, compose)
+	}
+	if st, _ := repo.Version("staging", "my-app", "db"); st.Track {
+		t.Errorf("an application from an image must not follow main, got %+v", st)
+	}
+	if st, _ := repo.Version("staging", "my-app", "api"); !st.Track {
+		t.Errorf("staging's services built from source still follow main, got %+v", st)
+	}
+}
+
+func TestRuns(t *testing.T) {
+	for _, tc := range []struct {
+		image, want string
+		runs        bool
+	}{
+		{"git.urbex.test:3000/urbex/hello-api:1.4.2", "1.4.2", true},
+		{"git.urbex.test:3000/urbex/hello-api:1.4.1", "1.4.2", false},
+		{"nginx@sha256:abc", "1.29@sha256:abc", true},
+		{"docker.io/library/nginx:1.29@sha256:abc", "1.29@sha256:abc", true},
+		{"nginx@sha256:def", "1.29@sha256:abc", false},
+		{"nginx:1.29", "1.29@sha256:abc", false},
+	} {
+		if got := Runs(tc.image, tc.want); got != tc.runs {
+			t.Errorf("Runs(%q, %q) = %v, want %v", tc.image, tc.want, got, tc.runs)
+		}
+	}
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
@@ -56,6 +57,12 @@ type Rollouter interface {
 	RemoveEnv(ctx context.Context, t rollout.Target) error
 	RemoveServers(ctx context.Context, t rollout.Target) error
 	RemoveProject(ctx context.Context, project string, services []manifest.Service) error
+}
+
+// ImageResolver resolves a published image's tag to the digest it points
+// to now - see internal/imageref.
+type ImageResolver interface {
+	Resolve(ctx context.Context, image, tag string) (string, error)
 }
 
 // Orchestrator runs the plan/apply provisioning flow for one project+env.
@@ -91,6 +98,9 @@ type Orchestrator struct {
 	Out        io.Writer
 	// Rollout drives Komodo; required by everything but Plan.
 	Rollout Rollouter
+	// Images pins the applications from published images to a digest;
+	// required by apply and deploy when the manifest has any.
+	Images ImageResolver
 	// SyncGitOps commits and pushes the GitOps repo to Gitea after a
 	// change - which is also what makes Komodo deploy; nil skips it.
 	SyncGitOps func(ctx context.Context, gitopsRepoPath, message string) error
@@ -115,6 +125,14 @@ type Options struct {
 	Version string
 	// FollowMain makes Deploy set the environment to follow main instead.
 	FollowMain bool
+	// App, Update and AllowMajor are for the applications from published
+	// images: Deploy acts on App (all of them if "") - Update resolves
+	// the manifest's tag again, Version sets another tag - and refuses a
+	// new major version of an application with volumes without
+	// AllowMajor.
+	App        string
+	Update     bool
+	AllowMajor bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).
 	GitOpsRepoPath string
@@ -227,6 +245,16 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.Rollout.SetupEnv(ctx, target, repo); err != nil {
 		return err
 	}
+	if err := o.pinImages(ctx, repo, opts.Env); err != nil {
+		return err
+	}
+	// Read before the push: from then on Komodo may build main - the
+	// push SetupProject just made may still reach the webhook it created
+	// - and set the environment to it, which would hide that it is new.
+	versions, err := o.versions(repo, opts.Env)
+	if err != nil {
+		return err
+	}
 	if err := o.sync(ctx, opts, "apply"); err != nil {
 		return err
 	}
@@ -255,20 +283,19 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		}
 	}
 
-	versions, err := o.versions(repo, opts.Env)
-	if err != nil {
-		return err
-	}
+	// The applications from images are pinned by now: whether there is
+	// something to run depends on the ones built from source.
+	built := manifest.Built(o.Manifest.Deployables())
 	set, tracking := 0, 0
-	for _, v := range versions {
-		if v.Version != "" {
+	for _, svc := range built {
+		if versions[svc.Name].Version != "" {
 			set++
 		}
-		if v.Track {
+		if versions[svc.Name].Track {
 			tracking++
 		}
 	}
-	if set < len(o.Manifest.Deployables()) && tracking == len(o.Manifest.Deployables()) {
+	if set < len(built) && tracking == len(built) {
 		// A new environment that follows main: build main now, as a
 		// push would, rather than wait for the next one.
 		o.Progress.Begin(PhaseBuild)
@@ -283,14 +310,25 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 			return err
 		}
 		fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
-	} else if set < len(o.Manifest.Deployables()) {
+	} else if set < len(built) {
 		o.Progress.Skip(PhaseBuild, "doesn't follow main")
-		o.Progress.Skip(PhaseDeploy, "no version to run yet")
+		if images := manifest.FromImages(o.Manifest.Deployables()); len(images) > 0 {
+			// What comes from images runs already; the rest waits.
+			o.Progress.Begin(PhaseDeploy)
+			if err := o.Rollout.Deploy(ctx, o.targetOf(opts.Env, images)); err != nil {
+				return err
+			}
+			if err := o.waitAndReportServices(ctx, opts, allocations, images); err != nil {
+				return err
+			}
+		} else {
+			o.Progress.Skip(PhaseDeploy, "no version to run yet")
+		}
 		fmt.Fprintf(o.Out, "%s (%s) is ready, with no version to run yet:\n", o.Manifest.Project, opts.Env)
-		for _, svc := range o.Manifest.Deployables() {
+		for _, svc := range built {
 			fmt.Fprintf(o.Out, "  %-16s %s\n", svc.Name, o.address(opts.Env, svc, allocations))
 		}
-		if opts.Env == "prod" {
+		if opts.Env == "prod" && !o.Manifest.SingleEnvironment() {
 			fmt.Fprintln(o.Out, "Give it staging's release with 'urbex release' (if staging runs an unreleased commit), then 'urbex promote'.")
 		} else {
 			fmt.Fprintf(o.Out, "Set one with 'urbex deploy %s --version <release>' or '--follow-main'.\n", opts.Env)
@@ -326,13 +364,20 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	if opts.App != "" || opts.Update {
+		return o.deployImages(ctx, opts, repo, allocations)
+	}
+	built := manifest.Built(o.Manifest.Deployables())
+	if len(built) == 0 {
+		return fmt.Errorf("%s has no service built from source: update its applications with 'urbex deploy %s --update' (or --app <name> --version <tag>)", o.Manifest.Project, opts.Env)
+	}
 	if opts.FollowMain {
 		return o.followMain(ctx, opts, repo, allocations)
 	}
 	if !ValidVersion(opts.Version) {
 		return fmt.Errorf("invalid version %q: expected a release (X.Y.Z) or a commit of main (its short hash)", opts.Version)
 	}
-	missing, err := o.Rollout.MissingImages(ctx, o.Manifest.Project, o.Manifest.Deployables(), opts.Version)
+	missing, err := o.Rollout.MissingImages(ctx, o.Manifest.Project, built, opts.Version)
 	if err != nil {
 		return err
 	}
@@ -351,7 +396,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 		return err
 	}
 	wasTracking := false
-	for _, svc := range o.Manifest.Deployables() {
+	for _, svc := range built {
 		wasTracking = wasTracking || before[svc.Name].Track
 		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: opts.Version}); err != nil {
 			return err
@@ -382,7 +427,7 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 	if err != nil {
 		return err
 	}
-	for _, svc := range o.Manifest.Deployables() {
+	for _, svc := range manifest.Built(o.Manifest.Deployables()) {
 		st := envrepo.VersionFileState{Version: current[svc.Name].Version, Track: true}
 		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, st); err != nil {
 			return err
@@ -403,6 +448,135 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 	}
 	fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
 	return nil
+}
+
+// pinImages pins every application from a published image that has no
+// version yet in env - new in the environment, or the environment new -
+// to the digest its tag resolves to now. One already pinned stays as it
+// is, even if the manifest now asks for another tag: deploy --update or
+// --version moves it.
+func (o *Orchestrator) pinImages(ctx context.Context, repo envrepo.Repo, env string) error {
+	for _, svc := range manifest.FromImages(o.Manifest.Deployables()) {
+		st, err := repo.Version(env, o.Manifest.Project, svc.Name)
+		if err != nil {
+			return err
+		}
+		if st.Version != "" {
+			if p, ok := imageref.ParsePinned(st.Version); ok && p.Tag != svc.Version {
+				fmt.Fprintf(o.Out, "%s runs %s:%s in %s; urbex.yaml asks for %s - 'urbex deploy %s --app %s --update' moves it.\n",
+					svc.Name, svc.Image, p.Tag, env, svc.Version, env, svc.Name)
+			}
+			continue
+		}
+		pinned, err := o.resolve(ctx, svc, svc.Version)
+		if err != nil {
+			return err
+		}
+		if err := repo.SetVersion(env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: pinned.String()}); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.Out, "%s: %s:%s pinned to %s.\n", svc.Name, svc.Image, pinned.Tag, pinned.Digest)
+	}
+	return nil
+}
+
+func (o *Orchestrator) resolve(ctx context.Context, svc manifest.Service, tag string) (imageref.Pinned, error) {
+	if o.Images == nil {
+		return imageref.Pinned{}, fmt.Errorf("no image resolver configured")
+	}
+	digest, err := o.Images.Resolve(ctx, svc.Image, tag)
+	if err != nil {
+		return imageref.Pinned{}, fmt.Errorf("resolving %s's image: %w", svc.Name, err)
+	}
+	return imageref.Pinned{Tag: tag, Digest: digest}, nil
+}
+
+// deployImages moves applications from published images - opts.App, or
+// all of them - to a new digest: their manifest tag resolved again
+// (opts.Update), or another tag (opts.Version). Like Deploy, it writes
+// version files and pushes; Komodo deploys.
+func (o *Orchestrator) deployImages(ctx context.Context, opts Options, repo envrepo.Repo, allocations map[string]allocation.Entry) error {
+	if opts.FollowMain {
+		return fmt.Errorf("--follow-main is for services built from source, not --app or --update")
+	}
+	if opts.Update == (opts.Version != "") {
+		return fmt.Errorf("say what to run: --update (the tag in urbex.yaml, resolved again) or --version <tag>")
+	}
+	var apps []manifest.Service
+	if opts.App == "" {
+		apps = manifest.FromImages(o.Manifest.Deployables())
+		if len(apps) == 0 {
+			return fmt.Errorf("%s has no application from an image to update", o.Manifest.Project)
+		}
+		if opts.Version != "" {
+			return fmt.Errorf("--version with applications from images needs --app: each has its own tags")
+		}
+	} else {
+		svc, ok := o.Manifest.Service(opts.App)
+		if !ok {
+			return fmt.Errorf("urbex.yaml has no application %q", opts.App)
+		}
+		if !svc.FromImage() {
+			return fmt.Errorf("%s is built from source: its version is a release or a commit, deployed with the project's other such services ('urbex deploy %s --version <release>')", svc.Name, opts.Env)
+		}
+		apps = []manifest.Service{svc}
+	}
+
+	if err := o.refresh(ctx, opts); err != nil {
+		return err
+	}
+	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
+		return err
+	}
+	var changed []manifest.Service
+	for _, svc := range apps {
+		tag := svc.Version
+		if opts.Version != "" {
+			tag = opts.Version
+		}
+		st, err := repo.Version(opts.Env, o.Manifest.Project, svc.Name)
+		if err != nil {
+			return err
+		}
+		current, _ := imageref.ParsePinned(st.Version)
+		if err := o.checkMajor(svc, current.Tag, tag, opts.AllowMajor); err != nil {
+			return err
+		}
+		pinned, err := o.resolve(ctx, svc, tag)
+		if err != nil {
+			return err
+		}
+		if pinned == current {
+			fmt.Fprintf(o.Out, "%s: already runs %s:%s (%s).\n", svc.Name, svc.Image, pinned.Tag, pinned.Digest)
+			continue
+		}
+		if err := repo.SetVersion(opts.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: pinned.String()}); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.Out, "%s: %s -> %s\n", svc.Name, orNone(st.Version), pinned)
+		changed = append(changed, svc)
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	verb := "update"
+	if opts.Version != "" {
+		verb = "deploy " + opts.Version + " of " + opts.App + " to"
+	}
+	if err := o.sync(ctx, opts, verb); err != nil {
+		return err
+	}
+	return o.waitAndReportServices(ctx, opts, allocations, changed)
+}
+
+// checkMajor refuses a new major version of an application with volumes
+// without allowMajor: its data usually needs a dump and restore that
+// urbex doesn't do (ADR-0028).
+func (o *Orchestrator) checkMajor(svc manifest.Service, from, to string, allowMajor bool) error {
+	if from == "" || len(svc.Volumes) == 0 || allowMajor || imageref.SameMajor(from, to) {
+		return nil
+	}
+	return fmt.Errorf("%s would go from %s to %s, a new major version, and has volumes: its data may need a dump and restore first - pass --allow-major once that is done", svc.Name, from, to)
 }
 
 // ValidVersion reports whether v can be deployed: a release (X.Y.Z) or
@@ -449,11 +623,17 @@ func (o *Orchestrator) Publish(ctx context.Context, opts Options, verb string) e
 	return nil
 }
 
-// Promote sets prod to the release staging runs, the same way Deploy
-// does. Staging usually runs a commit of main; prod only runs releases,
-// so that commit must have been released ('urbex release' releases it).
-// It reports false, and changes nothing, if prod already runs it.
-func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool, error) {
+// Promote sets prod to what staging runs, the same way Deploy does: the
+// release staging runs for the services built from source, the same
+// image digests for the applications from images. Staging usually runs
+// a commit of main; prod only runs releases, so that commit must have
+// been released ('urbex release' releases it). It reports false, and
+// changes nothing, if prod already runs it all. allowMajor is as for
+// Deploy.
+func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allowMajor bool) (bool, error) {
+	if o.Manifest.SingleEnvironment() {
+		return false, fmt.Errorf("%s has only prod: promote doesn't apply - change its versions with 'urbex deploy prod'", o.Manifest.Project)
+	}
 	from := Options{Env: "staging", GitOpsRepoPath: gitopsRepoPath}
 	to := Options{Env: "prod", GitOpsRepoPath: gitopsRepoPath}
 	if _, _, err := o.applied(from); err != nil {
@@ -474,9 +654,11 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 	if err != nil {
 		return false, err
 	}
-	releases, err := o.Rollout.Releases(ctx, o.Manifest.Project)
-	if err != nil {
-		return false, err
+	var releases []gitea.Tag
+	if len(manifest.Built(o.Manifest.Deployables())) > 0 {
+		if releases, err = o.Rollout.Releases(ctx, o.Manifest.Project); err != nil {
+			return false, err
+		}
 	}
 
 	changed := false
@@ -485,17 +667,23 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string) (bool
 		if version == "" {
 			return false, fmt.Errorf("staging has no version set for %s - nothing to promote", svc.Name)
 		}
-		release, err := releaseOf(version, releases)
-		if err != nil {
+		want := version
+		if svc.FromImage() {
+			from, _ := imageref.ParsePinned(prod[svc.Name].Version)
+			to, _ := imageref.ParsePinned(version)
+			if err := o.checkMajor(svc, from.Tag, to.Tag, allowMajor); err != nil {
+				return false, err
+			}
+		} else if want, err = releaseOf(version, releases); err != nil {
 			return false, err
 		}
-		if prod[svc.Name].Version == release && !prod[svc.Name].Track {
+		if prod[svc.Name].Version == want && !prod[svc.Name].Track {
 			continue
 		}
-		if err := repo.SetVersion(to.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: release}); err != nil {
+		if err := repo.SetVersion(to.Env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: want}); err != nil {
 			return false, err
 		}
-		fmt.Fprintf(o.Out, "%s: %s -> %s\n", svc.Name, orNone(prod[svc.Name].Version), release)
+		fmt.Fprintf(o.Out, "%s: %s -> %s\n", svc.Name, orNone(prod[svc.Name].Version), want)
 		changed = true
 	}
 	if !changed {
@@ -550,6 +738,9 @@ func (o *Orchestrator) applied(opts Options) (map[string]allocation.Entry, envre
 	if len(o.Manifest.Services) == 0 {
 		return nil, repo, fmt.Errorf("urbex.yaml declares no services - nothing to deploy")
 	}
+	if err := o.checkManifest(opts.Env); err != nil {
+		return nil, repo, err
+	}
 	if err := o.checkPlatform(); err != nil {
 		return nil, repo, err
 	}
@@ -602,13 +793,20 @@ func (o *Orchestrator) sync(ctx context.Context, opts Options, verb string) erro
 // waitAndReport waits for Komodo to run what the GitOps repo asks for,
 // then prints where each service is.
 func (o *Orchestrator) waitAndReport(ctx context.Context, opts Options, allocations map[string]allocation.Entry) error {
+	return o.waitAndReportServices(ctx, opts, allocations, o.Manifest.Deployables())
+}
+
+// waitAndReportServices is waitAndReport for some of the environment's
+// services only.
+func (o *Orchestrator) waitAndReportServices(ctx context.Context, opts Options, allocations map[string]allocation.Entry, services []manifest.Service) error {
 	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
-	deployed, err := o.Rollout.WaitDeployed(ctx, o.target(opts.Env), envrepo.Repo{Path: opts.GitOpsRepoPath})
+	target := o.targetOf(opts.Env, services)
+	deployed, err := o.Rollout.WaitDeployed(ctx, target, envrepo.Repo{Path: opts.GitOpsRepoPath})
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(o.Out, "Deployed %s (%s):\n", o.Manifest.Project, opts.Env)
-	for i, svc := range o.Manifest.Deployables() {
+	for i, svc := range target.Services {
 		fmt.Fprintf(o.Out, "  %-16s %s  %s (%s)\n", svc.Name, o.address(opts.Env, svc, allocations), deployed[i].Want, deployed[i].Image)
 		if host := o.PublicHostname(opts.Env, svc); host != "" && svc.Public {
 			fmt.Fprintf(o.Out, "  %-16s https://%s\n", "", host)
@@ -632,6 +830,18 @@ func (o *Orchestrator) reportQuickTunnel(ctx context.Context, hostname string, a
 		return
 	}
 	fmt.Fprintf(o.Out, "  %-16s %s (cloudflare quick tunnel: random URL, no authentication, changes on every restart - never a substitute for cloudflare.accountId/zoneId in production, see ADR-0025)\n", "", url)
+}
+
+// checkManifest refuses an environment the stack doesn't have, and what
+// the manifest declares that urbex can't act on yet.
+func (o *Orchestrator) checkManifest(env string) error {
+	if !o.Manifest.HasEnvironment(env) {
+		return fmt.Errorf("%s has no %s environment (environments: %v in urbex.yaml)", o.Manifest.Project, env, o.Manifest.EnvironmentList())
+	}
+	if unsupported := o.Manifest.Unsupported(); len(unsupported) > 0 {
+		return fmt.Errorf("urbex.yaml: %s", strings.Join(unsupported, "; "))
+	}
+	return nil
 }
 
 func (o *Orchestrator) checkPlatform() error {
@@ -662,6 +872,23 @@ func (o *Orchestrator) target(env string) rollout.Target {
 		}
 	}
 	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: services, Hostnames: hostnames, Logs: o.Manifest.ShipsLogs()}
+}
+
+// targetOf is the target of env restricted to some of its services.
+func (o *Orchestrator) targetOf(env string, services []manifest.Service) rollout.Target {
+	t := o.target(env)
+	keep := map[string]bool{}
+	for _, svc := range services {
+		keep[svc.Name] = true
+	}
+	var kept []manifest.Service
+	for _, svc := range t.Services {
+		if keep[svc.Name] {
+			kept = append(kept, svc)
+		}
+	}
+	t.Services = kept
+	return t
 }
 
 func (o *Orchestrator) loadLedger(opts Options) (*allocation.Ledger, error) {
@@ -898,6 +1125,9 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 	if len(o.Manifest.Services) == 0 {
 		return "", fmt.Errorf("urbex.yaml declares no services - nothing to provision (frontend deploys, e.g. Cloudflare Pages/Firebase, are not handled by urbex plan/apply)")
 	}
+	if err := o.checkManifest(opts.Env); err != nil {
+		return "", err
+	}
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {
 		return "", fmt.Errorf("missing required credentials: %v", missing)
 	}
@@ -990,7 +1220,7 @@ func (o *Orchestrator) address(env string, svc manifest.Service, allocations map
 		return "https://" + o.PublicHostname(env, svc)
 	}
 	entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
-	return fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+	return LANAddress(entry.IP, svc.Port)
 }
 
 // templateVMID is urbex's LXC template new LXCs are cloned from, when it
@@ -1007,4 +1237,13 @@ func (o *Orchestrator) templateVMID() int {
 		return 0
 	}
 	return vmid
+}
+
+// LANAddress is where a service is reached on the LAN: its LXC's address
+// and port, or only the address for an application without a port.
+func LANAddress(ip string, port int) string {
+	if port == 0 {
+		return ip
+	}
+	return fmt.Sprintf("http://%s:%d", ip, port)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -121,6 +122,7 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
 		Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
 		Out:         out,
+		Images:      &imageref.Resolver{},
 		SyncGitOps: func(ctx context.Context, path, message string) error {
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
 		},
