@@ -200,6 +200,16 @@ func (m *Manifest) HasEnvironment(env string) bool {
 	return false
 }
 
+// LeadingEnvironment is the environment a change goes to first, and the
+// one urbex.yaml follows: staging, or prod for a stack that has only
+// production.
+func (m *Manifest) LeadingEnvironment() string {
+	if m.HasEnvironment("staging") {
+		return "staging"
+	}
+	return "prod"
+}
+
 // SingleEnvironment reports whether the stack has only production:
 // release and promote don't apply to it.
 func (m *Manifest) SingleEnvironment() bool { return !m.HasEnvironment("staging") }
