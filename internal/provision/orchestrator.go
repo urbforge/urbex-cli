@@ -451,9 +451,11 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 }
 
 // pinImages pins every application from a published image that has no
-// version yet in env - new in the environment, or the environment new -
-// to the digest its tag resolves to now. One already pinned stays as it
-// is, even if the manifest now asks for another tag: deploy --update or
+// version yet in env - new in the environment, or the environment new.
+// A new prod of a stack with staging takes the digest staging runs, as
+// promote would, so that prod never starts on one staging hasn't run;
+// otherwise the tag is resolved now. One already pinned stays as it is,
+// even if the manifest now asks for another tag: deploy --update or
 // --version moves it.
 func (o *Orchestrator) pinImages(ctx context.Context, repo envrepo.Repo, env string) error {
 	for _, svc := range manifest.FromImages(o.Manifest.Deployables()) {
@@ -467,6 +469,19 @@ func (o *Orchestrator) pinImages(ctx context.Context, repo envrepo.Repo, env str
 					svc.Name, svc.Image, p.Tag, env, svc.Version, env, svc.Name)
 			}
 			continue
+		}
+		if env == "prod" && o.Manifest.HasEnvironment("staging") {
+			staging, err := repo.Version("staging", o.Manifest.Project, svc.Name)
+			if err != nil {
+				return err
+			}
+			if p, ok := imageref.ParsePinned(staging.Version); ok {
+				if err := repo.SetVersion(env, o.Manifest.Project, svc.Name, envrepo.VersionFileState{Version: p.String()}); err != nil {
+					return err
+				}
+				fmt.Fprintf(o.Out, "%s: %s:%s pinned to %s, the digest staging runs.\n", svc.Name, svc.Image, p.Tag, p.Digest)
+				continue
+			}
 		}
 		pinned, err := o.resolve(ctx, svc, svc.Version)
 		if err != nil {

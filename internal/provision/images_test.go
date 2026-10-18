@@ -116,6 +116,29 @@ func TestApply_NewProdRunsItsImagesWhileWaitingForARelease(t *testing.T) {
 	}
 }
 
+func TestApply_NewProdTakesTheDigestStagingRuns(t *testing.T) {
+	dir := t.TempDir()
+	o, ro, images, out, _ := imagesOrchestrator(stackManifest())
+	ro.mainVersion = "a1b2c3d"
+	ctx := context.Background()
+	if err := o.Apply(ctx, Options{Env: "staging", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply staging: %v", err)
+	}
+
+	// The tag moves upstream before prod is created.
+	images.digests["valkey/valkey:9"] = "sha256:moved"
+	images.resolved = nil
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply prod: %v", err)
+	}
+	if st := version(t, dir, "prod", "cache"); st.Version != "9@sha256:9" || len(images.resolved) != 0 {
+		t.Errorf("expected prod on staging's digest without resolving, got %+v after %v", st, images.resolved)
+	}
+	if !strings.Contains(out.String(), "cache: valkey/valkey:9 pinned to sha256:9, the digest staging runs.") {
+		t.Errorf("expected the copied pin in the output:\n%s", out)
+	}
+}
+
 func TestApply_StackOfImagesWithOnlyProd(t *testing.T) {
 	dir := t.TempDir()
 	m := &manifest.Manifest{APIVersion: "urbex/v1", Project: "my-app", Environments: []string{"prod"},
