@@ -39,12 +39,27 @@ func SetServiceVersion(path, service, version string) (bool, error) {
 	quote := ""
 	if raw[0] == '"' || raw[0] == '\'' {
 		quote = raw[:1]
+	} else if !plainString(version) {
+		// Unquoted, a tag like 1.30 or 18 would be read as a number,
+		// and the schema wants a string.
+		quote = `"`
 	}
 	if strings.Trim(raw, `"'`) != node.Value {
 		return false, fmt.Errorf("%s: can't change the version of %q in place (line %d): edit it by hand", path, service, node.Line)
 	}
 	lines[node.Line-1] = line[:start] + quote + version + quote + line[end:]
 	return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// plainString reports whether s, written without quotes, is read back as
+// the string s.
+func plainString(s string) bool {
+	var n yaml.Node
+	if err := yaml.Unmarshal([]byte("v: "+s), &n); err != nil || len(n.Content) == 0 {
+		return false
+	}
+	v := mapValue(n.Content[0], "v")
+	return v != nil && v.Kind == yaml.ScalarNode && v.Tag == "!!str" && v.Value == s
 }
 
 // serviceVersionNode finds the `version` value of the named service.

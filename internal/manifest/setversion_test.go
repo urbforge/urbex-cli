@@ -21,6 +21,9 @@ services:
   - name: cache
     image: docker.io/library/redis
     version: '7.2'
+  - name: plain
+    image: docker.io/library/alpine
+    version: latest
   - name: inline
     image: docker.io/library/busybox
     meta: {version: 1, x: y}
@@ -41,8 +44,10 @@ func TestSetServiceVersion(t *testing.T) {
 		want                   string // the line that now holds the version
 	}{
 		{"double quotes kept, comment kept", "web", "1.28", `    version: "1.28" # the tag`},
-		{"plain stays plain", "db", "17.7", `    version: 17.7`},
+		{"plain number gets quotes", "db", "17.7", `    version: "17.7"`},
 		{"single quotes kept", "cache", "7.4", `    version: '7.4'`},
+		{"plain stays plain when it is still a string", "db", "17.7-alpine", `    version: 17.7-alpine`},
+		{"quoted when plain would be a number", "plain", "1.30", `    version: "1.30"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeVersionManifest(t)
@@ -64,6 +69,7 @@ func versionLineOf(service string) string {
 		"web":   `    version: "1.29" # the tag`,
 		"db":    `    version: 17.6`,
 		"cache": `    version: '7.2'`,
+		"plain": `    version: latest`,
 	}[service]
 }
 
