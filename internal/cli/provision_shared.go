@@ -6,8 +6,10 @@ import (
 	"github.com/urbforge/urbex-cli/internal/cloudflare"
 	"github.com/urbforge/urbex-cli/internal/keycloak"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -122,7 +124,7 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
 		Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
 		Out:         out,
-		Images:      &imageref.Resolver{},
+		Images:      &imageref.Resolver{HTTP: &http.Client{Timeout: 30 * time.Second}},
 		SyncGitOps: func(ctx context.Context, path, message string) error {
 			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
 		},

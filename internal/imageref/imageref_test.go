@@ -78,7 +78,7 @@ func registry(t *testing.T, digestHeader bool) (*httptest.Server, *[]string) {
 	manifest := []byte(`{"schemaVersion":2}`)
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, r.URL.Path+"?"+r.URL.RawQuery)
+		seen = append(seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 		switch {
 		case r.URL.Path == "/token":
 			if r.URL.Query().Get("scope") != "repository:library/postgres:pull" || r.URL.Query().Get("service") != "registry.test" {
@@ -116,6 +116,15 @@ func TestResolve_GetsAnAnonymousTokenAndReadsTheDigest(t *testing.T) {
 		t.Fatalf("Resolve = %q, %v; want the registry's digest (requests: %v)", digest, err, *seen)
 	}
 
+	// Docker Hub counts a GET of a manifest against its pull limit, not
+	// a HEAD.
+	for _, req := range *seen {
+		if strings.HasPrefix(req, "GET /v2/") {
+			t.Errorf("expected only HEAD requests for the manifest, got %v", *seen)
+			break
+		}
+	}
+
 	_, err = r.Resolve(context.Background(), host+"/library/postgres", "99")
 	if err == nil || !strings.Contains(err.Error(), "no such image or tag") {
 		t.Errorf("expected a missing tag to say so, got %v", err)
@@ -123,12 +132,15 @@ func TestResolve_GetsAnAnonymousTokenAndReadsTheDigest(t *testing.T) {
 }
 
 func TestResolve_HashesTheManifestWithoutADigestHeader(t *testing.T) {
-	srv, _ := registry(t, false)
+	srv, seen := registry(t, false)
 	r := &Resolver{Scheme: "http"}
 	digest, err := r.Resolve(context.Background(), strings.TrimPrefix(srv.URL, "http://")+"/library/postgres", "17")
 	sum := sha256.Sum256([]byte(`{"schemaVersion":2}`))
 	if want := "sha256:" + hex.EncodeToString(sum[:]); err != nil || digest != want {
 		t.Errorf("Resolve = %q, %v; want %s", digest, err, want)
+	}
+	if got := strings.Join(*seen, ", "); !strings.Contains(got, "HEAD /v2/") || !strings.Contains(got, "GET /v2/") || strings.Count(got, "/token") != 1 {
+		t.Errorf("expected a HEAD, then a GET with the same token, got %s", got)
 	}
 }
 

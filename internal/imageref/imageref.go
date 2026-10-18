@@ -138,29 +138,28 @@ func (r *Resolver) Resolve(ctx context.Context, image, tag string) (string, erro
 	}
 	manifestURL := fmt.Sprintf("%s://%s/v2/%s/manifests/%s", scheme, ref.Registry, ref.Repository, url.PathEscape(tag))
 
-	res, err := r.get(ctx, manifestURL, "")
+	// HEAD first: registries return the digest in a header, and Docker Hub
+	// doesn't count a HEAD against its anonymous pull limit, as it does a
+	// GET. GET only when the registry doesn't give the digest that way.
+	token := ""
+	res, err := r.request(ctx, http.MethodHead, manifestURL, ref.Repository, &token)
 	if err != nil {
+		return "", fmt.Errorf("%s:%s: %w", image, tag, err)
+	}
+	res.Body.Close()
+	if err := statusError(res, image, tag); err != nil && res.StatusCode != http.StatusMethodNotAllowed {
 		return "", err
 	}
-	if res.StatusCode == http.StatusUnauthorized {
-		challenge := res.Header.Get("WWW-Authenticate")
-		res.Body.Close()
-		token, err := r.token(ctx, challenge, ref.Repository)
-		if err != nil {
-			return "", fmt.Errorf("%s:%s: %w", image, tag, err)
-		}
-		if res, err = r.get(ctx, manifestURL, token); err != nil {
-			return "", err
-		}
+	if digest := res.Header.Get("Docker-Content-Digest"); res.StatusCode == http.StatusOK && strings.HasPrefix(digest, "sha256:") {
+		return digest, nil
+	}
+
+	if res, err = r.request(ctx, http.MethodGet, manifestURL, ref.Repository, &token); err != nil {
+		return "", fmt.Errorf("%s:%s: %w", image, tag, err)
 	}
 	defer res.Body.Close()
-	switch {
-	case res.StatusCode == http.StatusNotFound:
-		return "", fmt.Errorf("%s:%s: no such image or tag", image, tag)
-	case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
-		return "", fmt.Errorf("%s:%s: the registry refused an anonymous pull (%d) - only public images are supported", image, tag, res.StatusCode)
-	case res.StatusCode != http.StatusOK:
-		return "", fmt.Errorf("%s:%s: registry answered %s", image, tag, res.Status)
+	if err := statusError(res, image, tag); err != nil {
+		return "", err
 	}
 	if digest := res.Header.Get("Docker-Content-Digest"); strings.HasPrefix(digest, "sha256:") {
 		return digest, nil
@@ -174,6 +173,36 @@ func (r *Resolver) Resolve(ctx context.Context, image, tag string) (string, erro
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// request asks the registry for a manifest with method, getting an
+// anonymous pull token into *token the first time the registry wants one.
+func (r *Resolver) request(ctx context.Context, method, u, repository string, token *string) (*http.Response, error) {
+	res, err := r.do(ctx, method, u, *token)
+	if err != nil || res.StatusCode != http.StatusUnauthorized || *token != "" {
+		return res, err
+	}
+	challenge := res.Header.Get("WWW-Authenticate")
+	res.Body.Close()
+	if *token, err = r.token(ctx, challenge, repository); err != nil {
+		return nil, err
+	}
+	return r.do(ctx, method, u, *token)
+}
+
+// statusError is what a registry's answer to a manifest request means,
+// nil if it found it.
+func statusError(res *http.Response, image, tag string) error {
+	switch {
+	case res.StatusCode == http.StatusOK:
+		return nil
+	case res.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("%s:%s: no such image or tag", image, tag)
+	case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
+		return fmt.Errorf("%s:%s: the registry refused an anonymous pull (%d) - only public images are supported", image, tag, res.StatusCode)
+	default:
+		return fmt.Errorf("%s:%s: registry answered %s", image, tag, res.Status)
+	}
+}
+
 func (r *Resolver) client() *http.Client {
 	if r.HTTP == nil {
 		return http.DefaultClient
@@ -181,8 +210,8 @@ func (r *Resolver) client() *http.Client {
 	return r.HTTP
 }
 
-func (r *Resolver) get(ctx context.Context, u, token string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+func (r *Resolver) do(ctx context.Context, method, u, token string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
 		return nil, err
 	}
