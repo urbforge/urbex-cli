@@ -5,7 +5,9 @@
 //	environments/<env>/<project>/<service>/
 //	    compose.yaml        generated from urbex.yaml; owned by urbex
 //	    version.env         VERSION=1.4.2 (a release) or VERSION=a1b2c3d (a
-//	                        commit of main); TRACK=main if it follows main
+//	                        commit of main); TRACK=main if it follows main;
+//	                        VERSION=17.6@sha256:... (a published image's
+//	                        tag and the digest it resolved to)
 //	    config.env          non-secret configuration
 //	    secrets.sops.env    secrets, SOPS-encrypted once there are any
 //
@@ -113,7 +115,9 @@ func (r Repo) WriteService(env, project string, svc manifest.Service, image stri
 // VersionFileState is what a service's version.env says.
 type VersionFileState struct {
 	// Version is what to run: a release ("1.4.2") or the short hash of a
-	// commit of main ("a1b2c3d"); "" if nothing is set yet.
+	// commit of main ("a1b2c3d"); for an application from a published
+	// image, its tag and digest ("17.6@sha256:..."). "" if nothing is set
+	// yet.
 	Version string
 	// Track is whether the environment follows main: Komodo then sets
 	// Version to every new build of main.
@@ -155,9 +159,16 @@ func (r Repo) SetVersion(env, project, service string, st VersionFileState) erro
 
 func writeVersionFile(path string, st VersionFileState) error {
 	var b strings.Builder
-	b.WriteString("# What this service runs here: a release (VERSION=1.4.2) or a commit of\n")
-	b.WriteString("# main (VERSION=a1b2c3d). Change it - urbex deploy, urbex promote, or by\n")
-	b.WriteString("# hand - and push: Komodo deploys it.\n")
+	if strings.Contains(st.Version, "@") {
+		b.WriteString("# What this application runs here: its image's tag and the digest it\n")
+		b.WriteString("# resolved to, kept until changed even if the tag moves. Change it - urbex\n")
+		b.WriteString("# deploy --update or --version, urbex promote, or by hand - and push:\n")
+		b.WriteString("# Komodo deploys it.\n")
+	} else {
+		b.WriteString("# What this service runs here: a release (VERSION=1.4.2) or a commit of\n")
+		b.WriteString("# main (VERSION=a1b2c3d). Change it - urbex deploy, urbex promote, or by\n")
+		b.WriteString("# hand - and push: Komodo deploys it.\n")
+	}
 	if st.Track {
 		b.WriteString("#\n# TRACK=main: Komodo sets VERSION to every new build of main. Remove the\n")
 		b.WriteString("# line (urbex deploy --version does) to stay on a version.\n")
@@ -215,19 +226,31 @@ func renderCompose(env, project string, svc manifest.Service, image string) stri
 	b.WriteString("      - " + ConfigFile + "\n")
 	b.WriteString("      - path: ${" + SecretsEnvVar + ":-secrets.env}\n")
 	b.WriteString("        required: false\n")
-	b.WriteString("    environment:\n")
-	fmt.Fprintf(&b, "      PORT: \"%d\"\n", svc.Port)
-	keys := make([]string, 0, len(svc.Extra))
-	for k := range svc.Extra {
+	// An application from a published image reads its own variables: it
+	// gets no PORT, and publishes its port only if it declares one.
+	vars := map[string]string{}
+	if !svc.FromImage() {
+		vars["PORT"] = fmt.Sprint(svc.Port)
+	}
+	for k, v := range svc.Extra {
+		vars[k] = v
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&b, "      %s: %q\n", k, svc.Extra[k])
+	if len(keys) > 0 {
+		b.WriteString("    environment:\n")
 	}
-	b.WriteString("    ports:\n")
-	fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
-	if svc.Healthcheck != "" {
+	for _, k := range keys {
+		fmt.Fprintf(&b, "      %s: %q\n", k, vars[k])
+	}
+	if svc.Port != 0 {
+		b.WriteString("    ports:\n")
+		fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
+	}
+	if svc.Healthcheck != "" && svc.Port != 0 {
 		b.WriteString("    healthcheck:\n")
 		fmt.Fprintf(&b, "      test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://localhost:%d%s\"]\n", svc.Port, svc.Healthcheck)
 		b.WriteString("      interval: 30s\n")

@@ -11,6 +11,9 @@ URBEX_AGE_KEY=$(grep '^AGE-SECRET-KEY-' /work/age.key)
 export URBEX_AGE_KEY
 export URBEX_GITOPS_REPO=/work/gitops
 export ANSIBLE_HOST_KEY_CHECKING=False ANSIBLE_DEPRECATION_WARNINGS=False
+# SSH's control sockets can't live in /work when it is a folder shared
+# from macOS (podman machine): keep them in the container.
+export ANSIBLE_SSH_CONTROL_PATH_DIR=/tmp/ansible-cp
 export PATH=/work/bin:$PATH
 
 python /e2e/fakepve.py &

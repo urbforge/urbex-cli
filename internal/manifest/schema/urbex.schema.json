@@ -19,6 +19,15 @@
       "description": "Unique project name on the platform.",
       "pattern": "^[a-z][a-z0-9-]{1,38}[a-z0-9]$"
     },
+    "environments": {
+      "type": "array",
+      "description": "The stack's environments: [staging, prod] (the default), or [prod] for a stack that runs only one - release and promote then don't apply. See docs/decisions/0028-application-model.md.",
+      "items": { "enum": ["staging", "prod"] },
+      "minItems": 1,
+      "uniqueItems": true,
+      "contains": { "const": "prod" },
+      "default": ["staging", "prod"]
+    },
     "frontend": {
       "type": "object",
       "additionalProperties": false,
@@ -88,13 +97,51 @@
     "service": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "runtime", "port"],
+      "required": ["name"],
+      "oneOf": [
+        { "required": ["runtime", "port"], "not": { "anyOf": [{ "required": ["image"] }, { "required": ["version"] }] } },
+        { "required": ["image", "version"], "not": { "required": ["runtime"] } }
+      ],
       "properties": {
         "name": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
         },
         "runtime": { "enum": ["java", "python", "go", "docker"] },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "An application from a published image, pulled as it is (e.g. 'postgres', 'ghcr.io/immich-app/postgres'). Exclusive with runtime. See docs/decisions/0028-application-model.md."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The image's tag (e.g. \"17\" or \"17.6\"); each environment runs the digest it resolved to. Required with image."
+        },
+        "provides": {
+          "enum": ["postgres"],
+          "description": "The interface this application implements, so that urbex configures it and passes its connection to the applications that use it. See docs/decisions/0030-postgresql-application.md."
+        },
+        "uses": {
+          "type": "array",
+          "description": "Names of the applications of the stack this one needs: deployed first, and their connection passed (DATABASE_URL and PG* for a postgres provider).",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
+          "uniqueItems": true
+        },
+        "volumes": {
+          "type": "array",
+          "description": "Named volumes: data kept across redeploys, updates and the LXC being changed in place; deleted only by destroy --delete-data.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "path"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
+              "path": { "type": "string", "pattern": "^/" },
+              "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "10Gi" }
+            }
+          }
+        },
         "dockerfile": {
           "type": "string",
           "description": "Required when runtime is 'docker'. Path to the Dockerfile, relative to the repo root."
@@ -145,8 +192,19 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "runtime": { "const": "docker" } } },
+          "if": { "required": ["runtime"], "properties": { "runtime": { "const": "docker" } } },
           "then": { "required": ["dockerfile"] }
+        },
+        {
+          "if": { "required": ["provides"], "properties": { "provides": { "const": "postgres" } } },
+          "then": {
+            "required": ["volumes"],
+            "properties": {
+              "volumes": { "minItems": 1, "maxItems": 1 },
+              "public": { "const": false }
+            },
+            "not": { "anyOf": [{ "required": ["port"] }, { "required": ["healthcheck"] }] }
+          }
         }
       ]
     }

@@ -1,11 +1,16 @@
 package manifest
 
+import "fmt"
+
 // Manifest is the typed form of a validated urbex.yaml. See
 // docs/reference/manifest.md in urbforge/urbex and
 // schema/urbex.schema.json for the authoritative shape.
 type Manifest struct {
-	APIVersion    string         `yaml:"apiVersion"`
-	Project       string         `yaml:"project"`
+	APIVersion string `yaml:"apiVersion"`
+	Project    string `yaml:"project"`
+	// Environments is nil when omitted: staging and prod (see
+	// EnvironmentList).
+	Environments  []string       `yaml:"environments,omitempty"`
 	Frontend      *Frontend      `yaml:"frontend,omitempty"`
 	Services      []Service      `yaml:"services,omitempty"`
 	Domain        *Domain        `yaml:"domain,omitempty"`
@@ -21,11 +26,21 @@ type Frontend struct {
 }
 
 type Service struct {
-	Name        string `yaml:"name"`
-	Runtime     string `yaml:"runtime"`
-	Dockerfile  string `yaml:"dockerfile,omitempty"`
-	Port        int    `yaml:"port"`
-	Healthcheck string `yaml:"healthcheck,omitempty"`
+	Name       string `yaml:"name"`
+	Runtime    string `yaml:"runtime"`
+	Dockerfile string `yaml:"dockerfile,omitempty"`
+	// Image and Version, instead of Runtime, make an application from a
+	// published image: pulled as it is, pinned by digest in each
+	// environment (ADR-0028).
+	Image   string `yaml:"image,omitempty"`
+	Version string `yaml:"version,omitempty"`
+	// Provides, Uses and Volumes are declared by the schema (ADR-0028,
+	// ADR-0030) but not acted on yet: see Unsupported.
+	Provides    string   `yaml:"provides,omitempty"`
+	Uses        []string `yaml:"uses,omitempty"`
+	Volumes     []Volume `yaml:"volumes,omitempty"`
+	Port        int      `yaml:"port"`
+	Healthcheck string   `yaml:"healthcheck,omitempty"`
 	// Public publishes the service on the internet, through the
 	// platform's Cloudflare Tunnel (ADR-0022).
 	Public    bool                         `yaml:"public,omitempty"`
@@ -77,6 +92,13 @@ func (s Service) EnvFor(env string) map[string]string {
 	return s.Env[env]
 }
 
+// Volume is a named volume: data an application keeps across redeploys.
+type Volume struct {
+	Name string `yaml:"name"`
+	Path string `yaml:"path"`
+	Size string `yaml:"size,omitempty"`
+}
+
 type Resources struct {
 	CPU    int    `yaml:"cpu"`
 	Memory string `yaml:"memory"`
@@ -121,6 +143,99 @@ const (
 
 // IsWeb reports whether s is a web frontend.
 func (s Service) IsWeb() bool { return s.Runtime == WebRuntime }
+
+// FromImage reports whether s is an application from a published image,
+// which urbex pulls rather than builds.
+func (s Service) FromImage() bool { return s.Image != "" }
+
+// Built returns the deployables built from the project's repository: a
+// Komodo Build each, released and promoted by commit and release.
+func Built(services []Service) []Service {
+	var out []Service
+	for _, svc := range services {
+		if !svc.FromImage() {
+			out = append(out, svc)
+		}
+	}
+	return out
+}
+
+// FromImages returns the deployables from published images.
+func FromImages(services []Service) []Service {
+	var out []Service
+	for _, svc := range services {
+		if svc.FromImage() {
+			out = append(out, svc)
+		}
+	}
+	return out
+}
+
+// Service returns the deployable named name.
+func (m *Manifest) Service(name string) (Service, bool) {
+	for _, svc := range m.Deployables() {
+		if svc.Name == name {
+			return svc, true
+		}
+	}
+	return Service{}, false
+}
+
+// EnvironmentList returns the stack's environments: what the manifest
+// says, staging and prod by default.
+func (m *Manifest) EnvironmentList() []string {
+	if len(m.Environments) == 0 {
+		return []string{"staging", "prod"}
+	}
+	return m.Environments
+}
+
+// HasEnvironment reports whether the stack has env.
+func (m *Manifest) HasEnvironment(env string) bool {
+	for _, e := range m.EnvironmentList() {
+		if e == env {
+			return true
+		}
+	}
+	return false
+}
+
+// LeadingEnvironment is the environment a change goes to first, and the
+// one urbex.yaml follows: staging, or prod for a stack that has only
+// production.
+func (m *Manifest) LeadingEnvironment() string {
+	if m.HasEnvironment("staging") {
+		return "staging"
+	}
+	return "prod"
+}
+
+// SingleEnvironment reports whether the stack has only production:
+// release and promote don't apply to it.
+func (m *Manifest) SingleEnvironment() bool { return !m.HasEnvironment("staging") }
+
+// Unsupported returns what the manifest declares that the schema accepts
+// but urbex doesn't act on yet - refused rather than ignored, since an
+// application that expects a volume or a database would run without it -
+// and what an application from an image can't do without a port.
+func (m *Manifest) Unsupported() []string {
+	var out []string
+	for _, svc := range m.Services {
+		if len(svc.Volumes) > 0 {
+			out = append(out, fmt.Sprintf("services %s: volumes are not supported yet (urbforge/urbex-cli#44)", svc.Name))
+		}
+		if svc.Provides != "" || len(svc.Uses) > 0 {
+			out = append(out, fmt.Sprintf("services %s: provides and uses are not supported yet (urbforge/urbex-cli#43)", svc.Name))
+		}
+		if svc.Port == 0 && svc.Public {
+			out = append(out, fmt.Sprintf("services %s: public needs a port", svc.Name))
+		}
+		if svc.Port == 0 && svc.Healthcheck != "" {
+			out = append(out, fmt.Sprintf("services %s: healthcheck needs a port", svc.Name))
+		}
+	}
+	return out
+}
 
 // Deployables returns what an environment of the project runs: its
 // services and, if it has one, its web frontend.

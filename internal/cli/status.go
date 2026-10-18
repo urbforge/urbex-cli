@@ -238,7 +238,7 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 	for _, svc := range m.Deployables() {
 		lan, record := "-", ""
 		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
-			lan = fmt.Sprintf("http://%s:%d", entry.IP, svc.Port)
+			lan = provision.LANAddress(entry.IP, svc.Port)
 			record = dns.Check(cmd.Context(), o.InternalHostname(env, svc), entry.IP)
 		}
 		public := ""

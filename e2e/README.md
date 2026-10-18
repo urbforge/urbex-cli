@@ -72,6 +72,11 @@ runner and fails the test on the first assertion that doesn't hold:
 13. `urbex apply staging` on a brand-new machine: it rejoins Komodo,
     follows `main` again, and gets its internal DNS record at the new
     address.
+14. A second stack, `site`, of a published image only and with production
+    only (`environments: [prod]`): `apply` pins nginx's tag to its
+    digest with no Build, `deploy --update` keeps an unchanged digest,
+    `deploy --app web --version` moves to another tag; `apply staging`,
+    `promote` and `release` are refused.
 
 ## When a step fails
 

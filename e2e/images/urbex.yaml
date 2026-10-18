@@ -1,0 +1,11 @@
+# A stack of a published image only, in production only: nothing to
+# build, release or promote; its version is the image's tag, pinned to
+# a digest by apply (ADR-0028).
+apiVersion: urbex/v1
+project: site
+environments: [prod]
+services:
+  - name: web
+    image: docker.io/library/nginx
+    version: "1.29"
+    port: 80

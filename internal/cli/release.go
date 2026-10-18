@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/semver"
 )
 
@@ -44,6 +45,13 @@ docs/reference/cli.md in urbforge/urbex.`,
 			out := cmd.OutOrStdout()
 			ctx := cmd.Context()
 			project := p.Manifest.Project
+			if p.Manifest.SingleEnvironment() {
+				return fmt.Errorf("%s has only prod: release doesn't apply - change its versions with 'urbex deploy prod'", project)
+			}
+			built := manifest.Built(p.Manifest.Deployables())
+			if len(built) == 0 {
+				return fmt.Errorf("%s has no service built from source: nothing to release - its applications from images move with 'urbex deploy <env> --update'", project)
+			}
 
 			releases, err := p.rollout.Releases(ctx, project)
 			if err != nil {
@@ -72,12 +80,12 @@ docs/reference/cli.md in urbforge/urbex.`,
 				return err
 			}
 			fmt.Fprintf(out, "Releasing %s %s from %s.\n", project, next.Tag(), why)
-			if err := p.rollout.Release(ctx, project, p.Manifest.Deployables(), next, target); err != nil {
+			if err := p.rollout.Release(ctx, project, built, next, target); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "Released %s %s:\n", project, next)
-			for _, svc := range p.Manifest.Deployables() {
-				fmt.Fprintf(out, "  %-16s %s:%s\n", svc.Name, p.rollout.Image(project, svc.Name), next)
+			for _, svc := range built {
+				fmt.Fprintf(out, "  %-16s %s:%s\n", svc.Name, p.rollout.Image(project, svc), next)
 			}
 			fmt.Fprintln(out, "Put it in production with 'urbex promote' (or 'urbex deploy prod').")
 			return nil
@@ -109,8 +117,8 @@ func releaseTarget(cmd *cobra.Command, p *project, gitopsRepoPath, ref string) (
 		}
 	}
 	repo := envrepo.Repo{Path: gitopsRepoPath}
-	if repo.Exists("staging", p.Manifest.Project) && len(p.Manifest.Services) > 0 {
-		st, err := repo.Version("staging", p.Manifest.Project, p.Manifest.Services[0].Name)
+	if built := manifest.Built(p.Manifest.Services); repo.Exists("staging", p.Manifest.Project) && len(built) > 0 {
+		st, err := repo.Version("staging", p.Manifest.Project, built[0].Name)
 		if err != nil {
 			return "", "", err
 		}

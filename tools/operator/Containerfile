@@ -17,13 +17,17 @@ ARG MISE_VERSION
 # uv are only needed to install them, and are removed in the same layer.
 # urbex-python is Ansible's interpreter, which has PyYAML (urbex-op set
 # uses it to edit credentials.yaml).
+# OpenSSL's ARM feature detection crashes (SIGILL) in Linux VMs on Apple
+# M4 - podman on a Mac - when cryptography loads; ignored elsewhere.
+ENV OPENSSL_armcap=0
 ENV MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise/config MISE_CACHE_DIR=/tmp/mise-cache MISE_YES=1
 WORKDIR /opt/mise/tools
 COPY mise.toml ./
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-client git curl jq ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL -o /tmp/mise "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-x64" \
+ && arch=$(uname -m | sed "s/x86_64/x64/;s/aarch64/arm64/") \
+ && curl -fsSL -o /tmp/mise "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${arch}" \
  && chmod +x /tmp/mise \
  && /tmp/mise trust \
  && /tmp/mise install terraform sops age python uv pipx:ansible-core \

@@ -86,7 +86,8 @@ ssh-keygen -q -t ed25519 -N "" -C urbex-e2e -f "$WORK/id_e2e"
 # Versions come from mise.toml, like the developer's and the operator's.
 pinned() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$REPO/mise.toml"; }
 if command -v go >/dev/null; then
-  CGO_ENABLED=0 go build -o "$WORK/bin/urbex" ./cmd/urbex
+  # For the runner container: Linux, on podman's architecture.
+  CGO_ENABLED=0 GOOS=linux GOARCH=$(podman info --format '{{.Host.Arch}}') go build -o "$WORK/bin/urbex" ./cmd/urbex
 else
   podman run --rm -v "$REPO:/src:z" -v urbex-e2e-gomod:/go/pkg/mod -w /src \
     "docker.io/library/golang:$(pinned go)" sh -c 'CGO_ENABLED=0 go build -o e2e/.work/bin/urbex ./cmd/urbex'
@@ -103,6 +104,13 @@ cp -r e2e/app "$WORK/app"
 git -C "$WORK/app" init -q -b main
 git -C "$WORK/app" add -A
 git -C "$WORK/app" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "hello v1"
+
+# A second stack, of a published image only, in a repo of its own.
+mkdir -p "$WORK/site"
+cp e2e/images/urbex.yaml "$WORK/site/"
+git -C "$WORK/site" init -q -b main
+git -C "$WORK/site" add -A
+git -C "$WORK/site" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "site"
 
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
@@ -138,6 +146,12 @@ proxmox:
     gateway: $NET.1
     baseHostOffset: 200
 EOF
+# On macOS the gateway's DNS is gvproxy's, which answers NXDOMAIN when
+# the Mac's resolver fails for a moment: Technitium caches that for five
+# minutes, and image pulls fail. Public resolvers answer for themselves.
+if [ "$(uname -s)" = Darwin ]; then
+  printf 'dns:\n  forwarders: [1.1.1.1, 9.9.9.9]\n' >>"$WORK/gitops/urbex.platform.yaml"
+fi
 
 step "bootstrap: base services and platform setup" '
   urbex bootstrap
@@ -396,6 +410,31 @@ step "apply staging again on a new machine: it rejoins Komodo and follows main" 
   urbex apply staging
   expect_http http://$NET.212:8080/ "hello v5 from urbex (staging)" 5
   [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.212" ] || fail "internal dns record was not re-created at the new address"'
+
+machine site-web-prod 213
+echo site-web-prod >>"$WORK/pve-containers.txt"
+step "an application from a published image: pinned to a digest, updated, one environment" '
+  cd /work/site
+  urbex apply staging >/tmp/staging.log 2>&1 && fail "a prod-only stack has no staging"
+  grep -q "has no staging environment" /tmp/staging.log || { cat /tmp/staging.log; fail "unexpected apply staging error"; }
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.213/ "Welcome to nginx" 5
+  grep -qE "^VERSION=1[.]29@sha256:[0-9a-f]{64}$" /work/gitops/environments/prod/site/web/version.env || fail "version.env should pin the tag to its digest"
+  grep -q "image: docker.io/library/nginx:\${VERSION}" /work/gitops/environments/prod/site/web/compose.yaml || fail "the stack should pull the published image"
+  [ "$(komodo_names Builds)" = "hello-api" ] || fail "an application from an image needs no Build: $(komodo_names Builds)"
+  [ "$(technitium_record web.site.urbex.urbex.test)" = "$NET.213" ] || fail "no internal dns record for site web"
+  urbex deploy prod --update | tee /tmp/update.log
+  grep -q "already runs docker.io/library/nginx:1.29" /tmp/update.log || fail "an unchanged tag should change nothing"
+  urbex deploy prod --app web --version 1.28 | tee /tmp/version.log
+  grep -qE "^VERSION=1[.]28@sha256:[0-9a-f]{64}$" /work/gitops/environments/prod/site/web/version.env || fail "deploy --version should pin the other tag"
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.213 "docker inspect -f {{.Config.Image}} site-web-prod-app-1" | grep -q "nginx:1.28@sha256:" || fail "the container does not run the pinned 1.28 digest"
+  expect_http http://$NET.213/ "Welcome to nginx" 5
+  urbex promote >/tmp/promote.log 2>&1 && fail "promote should not apply to a prod-only stack"
+  grep -q "only prod" /tmp/promote.log || { cat /tmp/promote.log; fail "unexpected promote error"; }
+  urbex release >/tmp/release.log 2>&1 && fail "release should not apply to a prod-only stack"
+  grep -q "only prod" /tmp/release.log || { cat /tmp/release.log; fail "unexpected release error"; }
+  echo "ok: site runs nginx from its published image, pinned, updated by tag"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

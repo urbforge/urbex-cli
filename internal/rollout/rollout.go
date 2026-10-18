@@ -2,11 +2,13 @@
 // build its releases and an environment run the versions the GitOps repo
 // says:
 //
-//   - per service, a Komodo Build from the project's repo, run by the
+//   - per service built from source, a Komodo Build from the project's
+//     repo, run by the
 //     platform's release Action - which a webhook on the project repo
 //     triggers - for every push to main (an image per commit, which the
 //     environments that follow main, staging by default, then run), and
-//     tagged for every release (vX.Y.Z);
+//     tagged for every release (vX.Y.Z); an application from a published
+//     image has none, its Stack pulls the image;
 //   - per service and environment, a Komodo Stack on the service's LXC,
 //     whose source is the service's folder under environments/ in the
 //     GitOps repo - redeployed, when that folder changes, by the
@@ -29,6 +31,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/gitsync"
+	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/semver"
@@ -199,15 +202,22 @@ func (r *Rollout) timeout() time.Duration {
 	return r.Timeout
 }
 
-// Image is a service's image reference without its tag.
-func (r *Rollout) Image(project, service string) string {
-	return r.Internal.Registry + "/" + r.Org + "/" + BuildName(project, service)
+// Image is a service's image reference without its tag: the image its
+// Build pushes to Gitea's registry or, for an application from a
+// published image, that image.
+func (r *Rollout) Image(project string, svc manifest.Service) string {
+	if svc.FromImage() {
+		return svc.Image
+	}
+	return r.Internal.Registry + "/" + r.Org + "/" + BuildName(project, svc.Name)
 }
 
 // SetupProject makes a project releasable: its repo on Gitea (creating
 // the main branch from the local HEAD if Gitea doesn't have it), a Build
-// per service, and the webhook that has Komodo build every release tag.
-// It is idempotent and re-syncs the Builds from the manifest.
+// per service built from source, and the webhook that has Komodo build
+// every release tag. It is idempotent and re-syncs the Builds from the
+// manifest. A project of published images only has nothing to build: no
+// Build and no webhook.
 func (r *Rollout) SetupProject(ctx context.Context, project string, services []manifest.Service) error {
 	if err := r.Gitea.EnsureRepo(ctx, r.Org, project); err != nil {
 		return err
@@ -215,7 +225,15 @@ func (r *Rollout) SetupProject(ctx context.Context, project string, services []m
 	if err := r.ensureTrunk(ctx, project); err != nil {
 		return err
 	}
-	for _, svc := range services {
+	built := manifest.Built(services)
+	if len(built) == 0 {
+		// The release Action fails for a repo without Builds.
+		if err := r.deleteLANWebhook(ctx, project); err != nil {
+			return err
+		}
+		return r.Gitea.DeleteWebhook(ctx, r.Org, project, r.Internal.ActionWebhook(bootstrap.ReleaseAction))
+	}
+	for _, svc := range built {
 		cfg, err := r.buildConfig(project, svc)
 		if err != nil {
 			return err
@@ -271,7 +289,8 @@ func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
 // GitOps repo - see envrepo.Repo.WriteService.
 func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 	for _, svc := range t.Services {
-		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc.Name), FollowsMainByDefault(t.Env)); err != nil {
+		follow := FollowsMainByDefault(t.Env) && !svc.FromImage()
+		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc), follow); err != nil {
 			return fmt.Errorf("writing %s: %w", envrepo.ServiceDir(t.Env, t.Project, svc.Name), err)
 		}
 	}
@@ -510,7 +529,7 @@ func (r *Rollout) WaitDeployed(ctx context.Context, t Target, repo envrepo.Repo)
 		}
 		var pending []string
 		for _, d := range deployed {
-			if d.Want == "" || d.State != "running" || !strings.HasSuffix(d.Image, ":"+d.Want) {
+			if d.Want == "" || d.State != "running" || !Runs(d.Image, d.Want) {
 				pending = append(pending, fmt.Sprintf("%s (want %s, %s %s)", d.Service, orNone(d.Want), d.State, orNone(d.Image)))
 			}
 		}
@@ -532,6 +551,17 @@ func (r *Rollout) WaitDeployed(ctx context.Context, t Target, repo envrepo.Repo)
 		case <-time.After(r.interval()):
 		}
 	}
+}
+
+// Runs reports whether image, as Komodo reports a Stack's, is version
+// want: a tag, or a published image's tag and digest - which Docker
+// reports by digest alone ("nginx@sha256:...").
+func Runs(image, want string) bool {
+	if strings.HasSuffix(image, ":"+want) {
+		return true
+	}
+	pinned, ok := imageref.ParsePinned(want)
+	return ok && strings.HasSuffix(image, "@"+pinned.Digest)
 }
 
 func orNone(s string) string {
@@ -612,14 +642,18 @@ func (r *Rollout) RemoveProject(ctx context.Context, project string, services []
 	}
 	// No push starts a build any more, but one may be running - a push
 	// just before - and Komodo refuses to delete a busy Build.
-	builds := make([]string, 0, len(services))
-	for _, svc := range services {
+	built := manifest.Built(services)
+	if len(built) == 0 {
+		return nil
+	}
+	builds := make([]string, 0, len(built))
+	for _, svc := range built {
 		builds = append(builds, BuildName(project, svc.Name))
 	}
 	if err := r.Komodo.WaitIdle(ctx, builds, bootstrap.ReleaseAction, r.timeout()); err != nil {
 		return err
 	}
-	for _, svc := range services {
+	for _, svc := range built {
 		if err := r.Komodo.DeleteResource(ctx, "Build", BuildName(project, svc.Name)); err != nil {
 			return err
 		}

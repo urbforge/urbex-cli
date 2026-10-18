@@ -142,4 +142,7 @@ func TestSetForwarders(t *testing.T) {
 	if got := strings.Join(fake.Forwarders, ","); got != "192.168.1.1,1.1.1.1" {
 		t.Errorf("forwarders = %q", got)
 	}
+	if fake.DNSSECValidation {
+		t.Error("expected DNSSEC validation left to the forwarders")
+	}
 }

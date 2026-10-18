@@ -22,14 +22,18 @@ type Server struct {
 	Token string
 	// Forwarders are the servers set with SetForwarders.
 	Forwarders []string
+	// DNSSECValidation is the dnssecValidation setting; Technitium's
+	// default is true.
+	DNSSECValidation bool
 }
 
 // NewServer starts a fake Technitium DNS server.
 func NewServer() *Server {
 	s := &Server{
-		Zones:   map[string]bool{},
-		Records: map[string]map[string]string{},
-		Token:   "fake-token",
+		Zones:            map[string]bool{},
+		Records:          map[string]map[string]string{},
+		Token:            "fake-token",
+		DNSSECValidation: true,
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
@@ -79,6 +83,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.Forwarders = nil
 		if f := q.Get("forwarders"); f != "" {
 			s.Forwarders = strings.Split(f, ",")
+		}
+		if v := q.Get("dnssecValidation"); v != "" {
+			s.DNSSECValidation = v == "true"
 		}
 		ok(w, map[string]any{"forwarders": s.Forwarders})
 	case "/api/zones/records/add":

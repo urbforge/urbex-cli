@@ -103,9 +103,11 @@ func (c *Client) DeleteZone(ctx context.Context, zone string) error {
 
 // SetForwarders makes the server forward every name it isn't
 // authoritative for to servers (plain DNS over UDP), instead of resolving
-// them itself from the root servers.
+// them itself from the root servers. It leaves validating DNSSEC to them:
+// many LAN resolvers, and routers that intercept port 53, don't pass
+// DNSKEY records on, and Technitium then fails every public name.
 func (c *Client) SetForwarders(ctx context.Context, servers []string) error {
-	q := url.Values{"forwarders": {strings.Join(servers, ",")}, "forwarderProtocol": {"Udp"}}
+	q := url.Values{"forwarders": {strings.Join(servers, ",")}, "forwarderProtocol": {"Udp"}, "dnssecValidation": {"false"}}
 	if err := c.do(ctx, "/api/settings/set", q, nil); err != nil {
 		return fmt.Errorf("setting forwarders: %w", err)
 	}
