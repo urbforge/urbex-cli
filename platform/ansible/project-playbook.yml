@@ -12,6 +12,25 @@
   roles:
     - common
 
+# A named volume is a Docker volume on the folder of a mount point. Docker
+# fills it with the image's files, and their owners, only when the folder
+# is empty, and a mount point formatted ext4 has a lost+found. Nothing is
+# touched on a folder that isn't a mount point: the volume isn't there.
+- name: Make the named volumes ready for Docker
+  hosts: all
+  become: true
+  tasks:
+    - name: Remove the empty lost+found of a new volume
+      ansible.builtin.shell: |
+        mountpoint -q "{{ item }}" || exit 3
+        if [ -d "{{ item }}/lost+found" ] && rmdir "{{ item }}/lost+found" 2>/dev/null; then echo removed; fi
+      args:
+        executable: /bin/bash
+      loop: "{{ urbex_volume_paths | default([]) }}"
+      register: urbex_lost_found
+      changed_when: "'removed' in urbex_lost_found.stdout"
+      failed_when: urbex_lost_found.rc != 0
+
 - name: Connect them to Komodo
   hosts: all
   become: true

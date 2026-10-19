@@ -110,19 +110,23 @@ type Volume struct {
 const DefaultVolumeSize = "10Gi"
 
 // VolumesRoot and SharesRoot are where an application's LXC mounts its
-// named volumes and shares, each in a folder of its name; the
-// container binds them from there.
+// named volumes and shares: a named volume in a folder of its
+// application and its name, a share in a folder of its name. The
+// container gets a named volume as a Docker volume on its folder, and a
+// share bound as it is. The application is in the path so
+// that applications sharing an LXC (placement: stack) can each have a
+// volume of the same name.
 const (
 	VolumesRoot = "/srv/volumes"
 	SharesRoot  = "/srv/shares"
 )
 
-// LXCPath is where the volume is mounted on its application's LXC.
-func (v Volume) LXCPath() string {
+// LXCPath is where the volume v of the service is mounted on its LXC.
+func (s Service) LXCPath(v Volume) string {
 	if v.Share != "" {
 		return SharesRoot + "/" + v.Share
 	}
-	return VolumesRoot + "/" + v.Name
+	return VolumesRoot + "/" + s.Name + "/" + v.Name
 }
 
 // SizeOrDefault is a named volume's size.

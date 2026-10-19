@@ -15,8 +15,8 @@ func TestParseMountPoint(t *testing.T) {
 		value string
 		want  MountPoint
 	}{
-		{"local-lvm:vm-9101-disk-1,mp=/srv/volumes/data,backup=1,size=8G",
-			MountPoint{Key: "mp0", Volume: "local-lvm:vm-9101-disk-1", Path: "/srv/volumes/data", SizeGB: 8}},
+		{"local-lvm:vm-9101-disk-1,mp=/srv/volumes/db/data,backup=1,size=8G",
+			MountPoint{Key: "mp0", Volume: "local-lvm:vm-9101-disk-1", Path: "/srv/volumes/db/data", SizeGB: 8}},
 		{"/mnt/pve/nas/media,mp=/srv/shares/media,ro=1",
 			MountPoint{Key: "mp0", Volume: "/mnt/pve/nas/media", Path: "/srv/shares/media", ReadOnly: true}},
 		{"volume=local:9101/vm-9101-disk-0.raw,mp=/data,size=512M",
@@ -36,7 +36,7 @@ func TestMountPoints_InKeyOrder(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Write([]byte(`{"data":{"hostname":"media-jellyfin-prod","rootfs":"local-lvm:vm-9101-disk-0,size=5G",
-			"mp10":"/mnt/pve/nas/media,mp=/srv/shares/media","mp2":"local-lvm:vm-9101-disk-1,mp=/srv/volumes/config,backup=1,size=5G"}}`))
+			"mp10":"/mnt/pve/nas/media,mp=/srv/shares/media","mp2":"local-lvm:vm-9101-disk-1,mp=/srv/volumes/app/config,backup=1,size=5G"}}`))
 	}))
 	defer server.Close()
 
@@ -62,7 +62,7 @@ func TestAddResizeAndPending(t *testing.T) {
 			got = append(got, "resize "+form.Get("disk")+" "+form.Get("size"))
 			w.Write([]byte(`{"data":null}`))
 		case "GET /nodes/pve/lxc/9101/pending":
-			w.Write([]byte(`{"data":[{"key":"hostname","value":"x"},{"key":"mp1","pending":"local-lvm:10,mp=/srv/volumes/data,backup=1"}]}`))
+			w.Write([]byte(`{"data":[{"key":"hostname","value":"x"},{"key":"mp1","pending":"local-lvm:10,mp=/srv/volumes/db/data,backup=1"}]}`))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -70,7 +70,7 @@ func TestAddResizeAndPending(t *testing.T) {
 	defer server.Close()
 
 	c, ctx := New(server.URL, "t", false), context.Background()
-	if err := c.AddVolume(ctx, "pve", 9101, "mp1", "local-lvm", 10, "/srv/volumes/data"); err != nil {
+	if err := c.AddVolume(ctx, "pve", 9101, "mp1", "local-lvm", 10, "/srv/volumes/db/data"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.ResizeVolume(ctx, "pve", 9101, "mp0", 20); err != nil {
@@ -80,7 +80,7 @@ func TestAddResizeAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"config mp1=local-lvm:10,mp=/srv/volumes/data,backup=1", "resize mp0 20G"}
+	want := []string{"config mp1=local-lvm:10,mp=/srv/volumes/db/data,backup=1", "resize mp0 20G"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("requests = %v, want %v", got, want)
 	}

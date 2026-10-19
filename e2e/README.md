@@ -19,7 +19,7 @@ exactly what depends on one:
 |---|---|
 | LXCs | Debian 13 systemd containers (`e2e/machine`), reachable over SSH as root, at the static IPs urbex allocates. Privileged, so Docker runs inside them, as `nesting` allows in an LXC. |
 | `terraform` | A stub (`e2e/runner/terraform`) that logs its arguments and leaves a state file. `run.sh` creates the machines instead. |
-| Proxmox API | A stub (`e2e/fakepve.py`) for the one call urbex makes itself: listing a node's containers. |
+| Proxmox API | A stub (`e2e/fakepve.py`) for the calls urbex makes itself: listing a node's containers, and an LXC's mount points (they apply at once: there is nothing to restart, which the unit tests cover). |
 
 Everything else is the real thing: the `urbex` binary built from this
 checkout, `ansible-playbook` over SSH with the embedded roles, Docker,
@@ -77,6 +77,12 @@ runner and fails the test on the first assertion that doesn't hold:
     digest with no Build, `deploy --update` keeps an unchanged digest,
     `deploy --app web --version` moves to another tag; `apply staging`,
     `promote` and `release` are refused.
+15. A named volume on `site`: a mount point of the LXC (`backup=1`) that
+    is a Docker volume on its folder (whose empty `lost+found` is
+    removed), whose data survives a re-apply and the container being
+    replaced; a bigger `size` grows it, a smaller one is
+    refused; `destroy` refuses without `--delete-data`, naming the
+    volume, and removes everything with it.
 
 ## When a step fails
 
@@ -103,4 +109,7 @@ It does not prove the Terraform modules create LXCs on a real Proxmox
 (pool placement, the `keyctl` feature, the Debian 13 template): that
 needs a real node, and was checked by hand - see `docs/status.md` in
 urbforge/urbex. `terraform validate` on `platform/terraform` checks
-their syntax against the real provider.
+their syntax against the real provider. The same goes for the volumes:
+the test proves what urbex asks of the API and what the container gets, not
+that Proxmox allocates the volume, mounts it after a restart, or includes it
+in a backup; nor does it bind a share, which needs `root@pam` on the node.

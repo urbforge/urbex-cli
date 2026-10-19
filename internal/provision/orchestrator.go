@@ -116,7 +116,7 @@ type Orchestrator struct {
 	// from, or 0 (see templateVMID).
 	cloneVMID int
 	// skipped are the applications apply leaves out of Komodo because
-	// their shares aren't mounted yet.
+	// what they keep isn't mounted yet.
 	skipped map[string]bool
 	// Progress records apply's phases for 'urbex status --progress'; nil
 	// records nothing.
@@ -222,12 +222,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		}
 	}
 
-	missingShares, err := o.mountVolumes(ctx, opts.Env, allocations)
+	notReady, err := o.mountVolumes(ctx, opts.Env, allocations)
 	if err != nil {
 		return err
 	}
 	o.skipped = map[string]bool{}
-	for _, m := range missingShares {
+	for _, m := range notReady {
 		o.skipped[m.service] = true
 	}
 	if existed != nil {
@@ -373,8 +373,8 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if !o.Config.Cloudflare.Enabled() && !o.Config.Cloudflare.QuickTunnel {
 		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
 	}
-	if len(missingShares) > 0 {
-		return o.reportMissingShares(opts.Env, missingShares)
+	if len(notReady) > 0 {
+		return o.reportNotReady(opts.Env, notReady)
 	}
 	return nil
 }

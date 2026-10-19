@@ -54,7 +54,7 @@ func (c *Client) MountPoints(ctx context.Context, node string, vmid int) ([]Moun
 }
 
 // ParseMountPoint reads a mount point's value as Proxmox writes it, e.g.
-// "local-lvm:vm-9101-disk-1,mp=/srv/volumes/data,backup=1,size=8G".
+// "local-lvm:vm-9101-disk-1,mp=/srv/volumes/db/data,backup=1,size=8G".
 func ParseMountPoint(key, value string) MountPoint {
 	parts := strings.Split(value, ",")
 	m := MountPoint{Key: key}

@@ -22,6 +22,10 @@ type hostVars struct {
 	// AppPort is only read by the quicktunnel role, on hosts in the
 	// public_service group.
 	AppPort string `yaml:"urbex_app_port,omitempty"`
+	// VolumePaths are where the host mounts its named volumes: the
+	// project playbook makes them ready for Docker's first copy of the
+	// image's files.
+	VolumePaths []string `yaml:"urbex_volume_paths,omitempty"`
 }
 
 type inventoryAll struct {
@@ -85,6 +89,9 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
 		hv := hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: svc.Name, Env: env}
+		for _, v := range svc.NamedVolumes() {
+			hv.VolumePaths = append(hv.VolumePaths, svc.LXCPath(v))
+		}
 		if quickTunnel && svc.Public {
 			hv.AppPort = strconv.Itoa(svc.Port)
 			if publicHosts == nil {

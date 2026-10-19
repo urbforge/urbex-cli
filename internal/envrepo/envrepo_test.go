@@ -268,8 +268,9 @@ func TestWriteService_ApplicationFromAnImage(t *testing.T) {
 	}
 }
 
-// Named volumes and shares are mount points of the LXC, bound into the
-// container at their paths.
+// A named volume is a Docker named volume on the folder of its mount
+// point, so Docker fills it with the image's files and owners; a share
+// is a folder of the node, bound as it is.
 func TestCompose_Volumes(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	svc := manifest.Service{Name: "jellyfin", Image: "jellyfin/jellyfin", Version: "10", Port: 8096, Volumes: []manifest.Volume{
@@ -280,8 +281,26 @@ func TestCompose_Volumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	compose := read(t, filepath.Join(repo.Path, "environments/prod/media/jellyfin", ComposeFile))
-	want := "    volumes:\n      - /srv/volumes/config:/config\n      - /srv/shares/media:/media:ro\n"
+	want := "    volumes:\n      - config:/config\n      - /srv/shares/media:/media:ro\n"
 	if !strings.Contains(compose, want) {
-		t.Errorf("expected the volumes bound from the LXC:\n%s", compose)
+		t.Errorf("expected the named volume and the bound share:\n%s", compose)
+	}
+	top := "volumes:\n  config:\n    driver: local\n    driver_opts:\n      type: none\n      o: bind\n      device: /srv/volumes/jellyfin/config\n"
+	if !strings.HasSuffix(compose, top) {
+		t.Errorf("expected the volume declared on its mount point, at the end:\n%s", compose)
+	}
+	if strings.Contains(compose, "media:\n    driver") {
+		t.Errorf("a share is not a Docker volume:\n%s", compose)
+	}
+}
+
+func TestCompose_NoVolumesNoVolumesBlock(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
+	if err := repo.WriteService("prod", "demo", svc, "reg/demo-api", false); err != nil {
+		t.Fatal(err)
+	}
+	if compose := read(t, filepath.Join(repo.Path, "environments/prod/demo/api", ComposeFile)); strings.Contains(compose, "volumes:") {
+		t.Errorf("a service without volumes has none:\n%s", compose)
 	}
 }

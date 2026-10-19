@@ -219,7 +219,7 @@ internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.
 internal/netalloc/           static IP block allocation (base-service LXCs)
 internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
 internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
-internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs)
+internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs; the LXC template; mount points: the applications' volumes)
 internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
 internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
 internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox

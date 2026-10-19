@@ -436,6 +436,59 @@ step "an application from a published image: pinned to a digest, updated, one en
   grep -q "only prod" /tmp/release.log || { cat /tmp/release.log; fail "unexpected release error"; }
   echo "ok: site runs nginx from its published image, pinned, updated by tag"'
 
+# What Proxmox does for a mount point, on the machine standing in for the
+# LXC: a folder that is a mount point, with the lost+found of an ext4 one.
+podman exec e2e-site-web-prod sh -c 'mkdir -p /srv/volumes/web/data/lost+found && mount --bind /srv/volumes/web/data /srv/volumes/web/data'
+step "volumes: a named volume is a mount point, kept across redeploys; destroy asks for --delete-data" '
+  cd /work/site
+  site_volume() { # site_volume <size>: the site stack, with a volume of that size
+    cat >urbex.yaml <<YAML
+apiVersion: urbex/v1
+project: site
+environments: [prod]
+services:
+  - name: web
+    image: docker.io/library/nginx
+    version: "1.29"
+    port: 80
+    volumes:
+      - { name: data, path: /data, size: $1 }
+YAML
+  }
+  lxc() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.213 "$@"; }
+  mounts() { cat /work/pve-lxc-*.json; }
+
+  site_volume 2Gi
+  urbex apply prod >/tmp/volume.log 2>&1 || { cat /tmp/volume.log; fail "apply prod with a volume failed"; }
+  grep -q "web: volume data, 2 GB, mounted at /data (mp0)" /tmp/volume.log || { cat /tmp/volume.log; fail "apply should say it mounted the volume"; }
+  [ "$(ls /work/pve-lxc-*.json | wc -l)" = 1 ] || fail "only the LXC with a volume should have mount points"
+  mounts | grep -q "mp=/srv/volumes/web/data,backup=1,size=2G" || fail "the volume should be a mount point of 2G with backup=1: $(mounts)"
+  grep -q "      - data:/data" /work/gitops/environments/prod/site/web/compose.yaml && grep -q "device: /srv/volumes/web/data" /work/gitops/environments/prod/site/web/compose.yaml || fail "the stack should have a Docker volume on the mount point's folder"
+  [ "$(lxc docker volume inspect -f "{{.Options.device}}" site-web-prod_data)" = /srv/volumes/web/data ] || fail "the Docker volume is not on the mount point's folder"
+  lxc docker inspect -f "{{range .Mounts}}{{.Name}}:{{.Destination}} {{end}}" site-web-prod-app-1 | grep -q "site-web-prod_data:/data" || fail "the container does not have the volume"
+  lxc test ! -e /srv/volumes/web/data/lost+found || fail "the empty lost+found of the new volume should have been removed, for Docker to fill the volume"
+  lxc docker exec site-web-prod-app-1 sh -c "echo kept >/data/keep"
+
+  urbex apply prod >/tmp/again.log 2>&1 || { cat /tmp/again.log; fail "apply prod again failed"; }
+  if grep -q "mounted at" /tmp/again.log; then fail "a re-apply should not add the volume again"; fi
+  urbex deploy prod --app web --version 1.29
+  lxc docker exec site-web-prod-app-1 cat /data/keep | grep -q kept || fail "the volume lost its data when the container was replaced"
+
+  site_volume 3Gi
+  urbex apply prod >/tmp/grow.log 2>&1 || { cat /tmp/grow.log; fail "apply prod with a bigger volume failed"; }
+  grep -q "volume data grown from 2 to 3 GB" /tmp/grow.log || { cat /tmp/grow.log; fail "apply should say it grew the volume"; }
+  mounts | grep -q "size=3G" || fail "the volume should be 3G now: $(mounts)"
+  site_volume 1Gi
+  urbex apply prod >/tmp/shrink.log 2>&1 && fail "a smaller volume should be refused"
+  grep -q "can.t shrink" /tmp/shrink.log || { cat /tmp/shrink.log; fail "unexpected error for a smaller volume"; }
+
+  urbex destroy prod >/tmp/destroy.log 2>&1 && fail "destroy should refuse an environment with named volumes"
+  grep -q "web/data" /tmp/destroy.log && grep -q -- "--delete-data" /tmp/destroy.log || { cat /tmp/destroy.log; fail "destroy should name the volume and the flag"; }
+  [ "$(komodo_stack_state site-web-prod)" = running ] || fail "a refused destroy should leave the stack alone"
+  urbex destroy prod --delete-data
+  [ -z "$(komodo_stack_state site-web-prod)" ] || fail "the stack should be gone after destroy --delete-data"
+  echo "ok: the volume was mounted, kept, grown, never shrunk, and deleted only with --delete-data"'
+
 log "PASSED ($STEP steps)"
 if $KEEP; then
   echo "Machines left running (podman ps --filter name=e2e-); the next run removes them."

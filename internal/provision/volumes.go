@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -69,7 +70,7 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 				return nil, fmt.Errorf("reading the mount points of %s: %w", hostname, err)
 			}
 			for _, mp := range mps {
-				if name, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/"); ok {
+				if name, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/"+svc.Name+"/"); ok {
 					names[name] = true
 				}
 			}
@@ -178,21 +179,25 @@ func replacedContainers(plan []byte) ([]replacement, error) {
 	return out, nil
 }
 
-// missingShare is a share an application's LXC doesn't have yet, and the
-// operator's command that gives it.
-type missingShare struct {
+// notReady is an application apply leaves out because its LXC doesn't
+// have everything it keeps yet: a share the operator hasn't bound, with
+// the command that does it, or named volumes that stay unmounted.
+type notReady struct {
 	service string
-	command string
+	command string // the operator's pct set, for a share
+	volumes string // the named volumes still unmounted
 }
 
 // mountVolumes gives each application's LXC the volumes urbex.yaml
 // declares: a named volume it doesn't have yet becomes a new mount
 // point, one smaller than declared grows; a running LXC that can't take
-// a new mount point at once restarts. Shares are the operator's: it
-// returns those not mounted yet, with the pct command for each.
-func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]missingShare, error) {
+// a new mount point at once restarts. An application whose volumes are
+// still not mounted after that is not ready, and neither is one with a
+// share the operator hasn't bound: it returns them, with the pct command
+// for each share.
+func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]notReady, error) {
 	node := o.Config.Proxmox.Node
-	var missing []missingShare
+	var missing []notReady
 	for _, svc := range o.Manifest.Services {
 		if len(svc.Volumes) == 0 {
 			continue
@@ -219,40 +224,43 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 			return "", fmt.Errorf("%s has no free mount point left", hostname)
 		}
 
-		var added []string
+		// mounted are the keys this LXC must have mounted for the
+		// application to start: its named volumes, and its shares once
+		// the operator has bound them.
+		var mounted []string
 		for _, v := range svc.NamedVolumes() {
 			want, err := sizeparse.GB(v.SizeOrDefault())
 			if err != nil {
 				return nil, fmt.Errorf("services %s: volume %s: %w", svc.Name, v.Name, err)
 			}
-			mp, ok := at[v.LXCPath()]
+			mp, ok := at[svc.LXCPath(v)]
 			switch {
 			case !ok:
 				key, err := free()
 				if err != nil {
 					return nil, err
 				}
-				if err := o.Volumes.AddVolume(ctx, node, vmid, key, o.Config.Proxmox.StoragePool, want, v.LXCPath()); err != nil {
+				if err := o.Volumes.AddVolume(ctx, node, vmid, key, o.Config.Proxmox.StoragePool, want, svc.LXCPath(v)); err != nil {
 					return nil, fmt.Errorf("adding volume %s to %s: %w", v.Name, hostname, err)
 				}
-				added = append(added, key)
+				mounted = append(mounted, key)
 				fmt.Fprintf(o.Out, "%s: volume %s, %d GB, mounted at %s (%s).\n", svc.Name, v.Name, want, v.Path, key)
 			case mp.SizeGB < want:
 				if err := o.Volumes.ResizeVolume(ctx, node, vmid, mp.Key, want); err != nil {
 					return nil, fmt.Errorf("growing volume %s of %s: %w", v.Name, hostname, err)
 				}
 				fmt.Fprintf(o.Out, "%s: volume %s grown from %d to %d GB.\n", svc.Name, v.Name, mp.SizeGB, want)
+				mounted = append(mounted, mp.Key)
 			case mp.SizeGB > want:
 				return nil, fmt.Errorf("services %s: volume %s is %d GB and urbex.yaml asks for %d: Proxmox can't shrink a volume, set its size to %dGi or more", svc.Name, v.Name, mp.SizeGB, want, mp.SizeGB)
+			default:
+				mounted = append(mounted, mp.Key)
 			}
 		}
-		// mounted are the keys this LXC must have mounted now: its new
-		// volumes, and the shares the operator added.
-		mounted := added
 		for _, v := range svc.Shares() {
 			source := o.Config.Storage.Shares[v.Share].Path
-			mp, ok := at[v.LXCPath()]
-			if ok && mp.Volume == source && mp.ReadOnly == v.ReadOnly {
+			mp, ok := at[svc.LXCPath(v)]
+			if ok && path.Clean(mp.Volume) == path.Clean(source) && mp.ReadOnly == v.ReadOnly {
 				mounted = append(mounted, mp.Key)
 				continue
 			}
@@ -262,44 +270,71 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 					return nil, err
 				}
 			}
-			command := fmt.Sprintf("pct set %d -%s %s,mp=%s", vmid, key, source, v.LXCPath())
+			command := fmt.Sprintf("pct set %d -%s %s,mp=%s", vmid, key, source, svc.LXCPath(v))
 			if v.ReadOnly {
 				command += ",ro=1"
 			}
-			missing = append(missing, missingShare{service: svc.Name, command: command})
+			missing = append(missing, notReady{service: svc.Name, command: command})
 		}
-		if len(mounted) > 0 {
+		if len(mounted) == 0 {
+			continue
+		}
+		// A mount point Proxmox applies only when the LXC restarts is not
+		// mounted yet. This apply may have added it, or an earlier one
+		// that was interrupted before the restart. The application must
+		// not start before it is mounted.
+		unmounted := func() ([]string, error) {
 			pending, err := o.Volumes.Pending(ctx, node, vmid)
 			if err != nil {
 				return nil, fmt.Errorf("reading the pending changes of %s: %w", hostname, err)
 			}
-			if slices.ContainsFunc(mounted, func(k string) bool { return slices.Contains(pending, k) }) {
-				fmt.Fprintf(o.Out, "Restarting %s to mount its new volumes.\n", hostname)
-				if err := o.Volumes.RebootContainer(ctx, node, vmid); err != nil {
-					return nil, fmt.Errorf("restarting %s: %w", hostname, err)
-				}
+			return slices.DeleteFunc(slices.Clone(mounted), func(k string) bool { return !slices.Contains(pending, k) }), nil
+		}
+		keys, err := unmounted()
+		if err != nil {
+			return nil, err
+		}
+		if len(keys) > 0 {
+			fmt.Fprintf(o.Out, "Restarting %s: Proxmox mounts %s only when its LXC restarts.\n", hostname, strings.Join(keys, ", "))
+			if err := o.Volumes.RebootContainer(ctx, node, vmid); err != nil {
+				return nil, fmt.Errorf("restarting %s: %w", hostname, err)
 			}
+			if keys, err = unmounted(); err != nil {
+				return nil, err
+			}
+		}
+		if len(keys) > 0 {
+			missing = append(missing, notReady{service: svc.Name, volumes: strings.Join(keys, ", ")})
 		}
 	}
 	return missing, nil
 }
 
-// reportMissingShares names the applications apply skipped, with the
-// operator's commands, and fails: the environment isn't complete.
-func (o *Orchestrator) reportMissingShares(env string, missing []missingShare) error {
+// reportNotReady names the applications apply skipped, with the
+// operator's commands for their shares, and fails: the environment isn't
+// complete. An application never starts without what it keeps.
+func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	services := map[string]bool{}
-	fmt.Fprintf(o.Out, "Some applications need shares their LXC doesn't have yet. Binding a folder of the Proxmox node needs root@pam: on the node, as root, run\n")
+	first := true
 	for _, m := range missing {
-		fmt.Fprintf(o.Out, "  %s\n", m.command)
 		services[m.service] = true
+		if m.command == "" {
+			fmt.Fprintf(o.Out, "%s: the volumes %s of its LXC are not mounted yet, and a container started now would write to the LXC's own disk.\n", m.service, m.volumes)
+			continue
+		}
+		if first {
+			fmt.Fprintf(o.Out, "Some applications need shares their LXC doesn't have yet. Binding a folder of the Proxmox node needs root@pam: on the node, as root, run\n")
+			first = false
+		}
+		fmt.Fprintf(o.Out, "  %s\n", m.command)
 	}
 	names := make([]string, 0, len(services))
 	for name := range services {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	fmt.Fprintf(o.Out, "then run 'urbex apply %s' again.\n", env)
-	return fmt.Errorf("not deployed until their shares are mounted: %s", strings.Join(names, ", "))
+	fmt.Fprintf(o.Out, "Then run 'urbex apply %s' again.\n", env)
+	return fmt.Errorf("not deployed until what they keep is mounted: %s", strings.Join(names, ", "))
 }
 
 // checkDeleteData refuses to destroy LXCs with named volumes unless

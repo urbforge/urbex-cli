@@ -25,6 +25,7 @@ type fakeVolumes struct {
 	calls    []string
 	reboots  []int
 	hotplugs bool // new mount points apply at once, without a restart
+	stuck    bool // a restart leaves the pending mount points pending
 }
 
 func newFakeVolumes() *fakeVolumes {
@@ -60,7 +61,9 @@ func (f *fakeVolumes) Pending(_ context.Context, _ string, vmid int) ([]string, 
 
 func (f *fakeVolumes) RebootContainer(_ context.Context, _ string, vmid int) error {
 	f.reboots = append(f.reboots, vmid)
-	f.pending[vmid] = nil
+	if !f.stuck {
+		f.pending[vmid] = nil
+	}
 	return nil
 }
 
@@ -120,7 +123,7 @@ func TestApply_NamedVolumesBecomeMountPointsWithBackups(t *testing.T) {
 		t.Fatalf("Apply: %v\n%s", err, out)
 	}
 	vmid := vmidOf(t, o, dir, "vault")
-	want := []string{fmt.Sprintf("add %d mp0 local-lvm:5 /srv/volumes/data", vmid)}
+	want := []string{fmt.Sprintf("add %d mp0 local-lvm:5 /srv/volumes/vault/data", vmid)}
 	if !slices.Equal(vols.calls, want) {
 		t.Errorf("calls = %v, want %v", vols.calls, want)
 	}
@@ -176,7 +179,7 @@ func TestApply_SkipsApplicationsUntilTheirSharesAreMounted(t *testing.T) {
 	ctx := context.Background()
 
 	err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir})
-	if err == nil || !strings.Contains(err.Error(), "not deployed until their shares are mounted: jellyfin") {
+	if err == nil || !strings.Contains(err.Error(), "not deployed until what they keep is mounted: jellyfin") {
 		t.Fatalf("expected apply to fail naming jellyfin, got %v\n%s", err, out)
 	}
 	vmid := vmidOf(t, o, dir, "jellyfin")
@@ -274,7 +277,7 @@ func TestDestroy_NamedVolumesNeedDeleteData(t *testing.T) {
 	}
 	// A volume no longer in urbex.yaml still counts: it is on the LXC.
 	vmid := vmidOf(t, o, dir, "vault")
-	vols.mps[vmid] = append(vols.mps[vmid], proxmoxapi.MountPoint{Key: "mp1", Path: "/srv/volumes/old", SizeGB: 1})
+	vols.mps[vmid] = append(vols.mps[vmid], proxmoxapi.MountPoint{Key: "mp1", Path: "/srv/volumes/vault/old", SizeGB: 1})
 	o.Proxmox = fakeLister{vmid}
 
 	r := &fakeRunner{}
@@ -316,4 +319,81 @@ func TestReplacedContainers(t *testing.T) {
 func (o *Orchestrator) repoHas(dir, service string) bool {
 	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(envrepo.ServiceDir("prod", o.Manifest.Project, service))))
 	return err == nil
+}
+
+// An apply interrupted between adding a mount point and restarting the
+// LXC leaves it pending: the next apply restarts, and the application
+// doesn't start before it is mounted.
+func TestApply_RestartsForAVolumeAnEarlierApplyLeftPending(t *testing.T) {
+	dir := t.TempDir()
+	o, vols, _, out := volumesOrchestrator(t)
+	o.Manifest.Services = o.Manifest.Services[:1]
+	ctx := context.Background()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	vmid := vmidOf(t, o, dir, "vault")
+	vols.pending[vmid] = []string{"mp0"} // as if the restart never happened
+	vols.reboots = nil
+	out.Reset()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply again: %v\n%s", err, out)
+	}
+	if !slices.Equal(vols.reboots, []int{vmid}) {
+		t.Errorf("a volume still pending needs the LXC restarted, got %v", vols.reboots)
+	}
+	if !strings.Contains(out.String(), "Restarting media-vault-prod: Proxmox mounts mp0 only when its LXC restarts.") {
+		t.Errorf("expected the restart said before it happens:\n%s", out)
+	}
+}
+
+func TestApply_DoesNotStartAnApplicationWhoseVolumeIsNotMounted(t *testing.T) {
+	dir := t.TempDir()
+	o, vols, ro, out := volumesOrchestrator(t)
+	o.Manifest.Services = o.Manifest.Services[:1]
+	vols.stuck = true
+	err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "not deployed until what they keep is mounted: vault") {
+		t.Fatalf("expected apply to fail naming vault, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out.String(), "the volumes mp0 of its LXC are not mounted yet") {
+		t.Errorf("expected the reason:\n%s", out)
+	}
+	if slices.Contains(ro.deployed, "vault") || o.repoHas(dir, "vault") {
+		t.Errorf("vault must not be deployed: %v", ro.deployed)
+	}
+}
+
+// Applications that share an LXC (placement: stack) can each have a
+// volume of the same name: the application is in the path.
+func TestVolumePath_IncludesTheApplication(t *testing.T) {
+	radarr := manifest.Service{Name: "radarr"}
+	sonarr := manifest.Service{Name: "sonarr"}
+	v := manifest.Volume{Name: "config", Path: "/config"}
+	if got := radarr.LXCPath(v); got != "/srv/volumes/radarr/config" {
+		t.Errorf("radarr: %s", got)
+	}
+	if radarr.LXCPath(v) == sonarr.LXCPath(v) {
+		t.Error("two applications' volumes of the same name must not share a path")
+	}
+	if got := radarr.LXCPath(manifest.Volume{Share: "media", Path: "/media"}); got != "/srv/shares/media" {
+		t.Errorf("share: %s", got)
+	}
+}
+
+// The operator's pct set may spell the folder differently from
+// urbex.platform.yaml: a trailing slash is the same folder.
+func TestApply_ASharePathWithATrailingSlashIsTheSameFolder(t *testing.T) {
+	dir := t.TempDir()
+	o, vols, _, out := volumesOrchestrator(t)
+	ctx := context.Background()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err == nil {
+		t.Fatalf("expected apply to wait for the share\n%s", out)
+	}
+	vmid := vmidOf(t, o, dir, "jellyfin")
+	vols.share(vmid, "mp1", "/mnt/pve/nas/media/", "/srv/shares/media", true)
+	out.Reset()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v\n%s", err, out)
+	}
 }

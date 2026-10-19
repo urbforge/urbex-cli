@@ -69,3 +69,34 @@ func TestWriteInventory_NoQuickTunnelNoPublicGroup(t *testing.T) {
 		t.Errorf("expected no public_service group without quickTunnel:\n%s", data)
 	}
 }
+
+// The playbook makes each named volume's folder ready for Docker; a
+// share isn't one.
+func TestWriteInventory_VolumePaths(t *testing.T) {
+	repoPath, ansibleDir := t.TempDir(), t.TempDir()
+	services := []manifest.Service{{Name: "db", Image: "postgres", Version: "17", Volumes: []manifest.Volume{
+		{Name: "data", Path: "/var/lib/postgresql"},
+		{Share: "media", Path: "/media"},
+	}}, {Name: "web", Image: "nginx", Version: "1"}}
+	allocations := map[string]allocation.Entry{
+		"my-app-db-prod":  {IP: "10.0.0.10"},
+		"my-app-web-prod": {IP: "10.0.0.11"},
+	}
+	if err := writeInventory(repoPath, ansibleDir, "my-app", "prod", services, allocations, bootstrap.Endpoints{}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(ansibleDir, "inventory.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := string(data)
+	if !strings.Contains(inv, "urbex_volume_paths:\n") || !strings.Contains(inv, "- /srv/volumes/db/data\n") {
+		t.Errorf("expected the named volume's folder for db:\n%s", inv)
+	}
+	if strings.Contains(inv, "/srv/shares/media") {
+		t.Errorf("a share is not made ready for Docker:\n%s", inv)
+	}
+	if strings.Count(inv, "urbex_volume_paths") != 1 {
+		t.Errorf("only the host with a named volume has the variable:\n%s", inv)
+	}
+}
