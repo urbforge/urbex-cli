@@ -193,6 +193,30 @@ services:
 	}
 }
 
+func TestValidateFile_Volumes(t *testing.T) {
+	const head = "apiVersion: urbex/v1\nproject: media\nenvironments: [prod]\nservices:\n  - name: jellyfin\n    image: jellyfin/jellyfin\n    version: \"10\"\n    port: 8096\n    volumes:\n"
+	for _, tc := range []struct {
+		name, volumes string
+		valid         bool
+	}{
+		{"named volume and share", "      - { name: config, path: /config, size: 5Gi }\n      - { share: media, path: /media, readOnly: true }\n", true},
+		{"named volume, default size", "      - { name: config, path: /config }\n", true},
+		{"name and share", "      - { name: config, share: media, path: /config }\n", false},
+		{"share with a size", "      - { share: media, path: /media, size: 5Gi }\n", false},
+		{"named volume read only", "      - { name: config, path: /config, readOnly: true }\n", false},
+		{"neither name nor share", "      - { path: /config }\n", false},
+		{"mounted at /", "      - { name: config, path: / }\n", false},
+	} {
+		result, err := ValidateFile(writeTemp(t, head+tc.volumes))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if valid := len(result.Errors) == 0; valid != tc.valid {
+			t.Errorf("%s: valid = %v, want %v (%v)", tc.name, valid, tc.valid, result.Errors)
+		}
+	}
+}
+
 func TestLoadTyped_ApplicationFromAnImage(t *testing.T) {
 	m, result, err := LoadTyped(writeTemp(t, `
 apiVersion: urbex/v1
@@ -229,14 +253,20 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 		{Name: "api", Runtime: "go", Port: 8080, Uses: []string{"db"}},
 		{Name: "ui", Image: "nginx", Version: "1", Public: true, Healthcheck: "/"},
 		{Name: "ok", Image: "nginx", Version: "1", Port: 80, Public: true},
+		{Name: "media", Image: "jellyfin/jellyfin", Version: "10", Port: 8096, Volumes: []Volume{
+			{Name: "config", Path: "/config"},
+			{Share: "media", Path: "/media"},
+			{Share: "media", Path: "/config"},
+		}},
 	}}
 	got := m.Unsupported()
 	want := []string{
-		"services db: volumes are not supported yet (urbforge/urbex-cli#44)",
 		"services db: provides and uses are not supported yet (urbforge/urbex-cli#43)",
 		"services api: provides and uses are not supported yet (urbforge/urbex-cli#43)",
 		"services ui: public needs a port",
 		"services ui: healthcheck needs a port",
+		"services media: share media is declared twice",
+		"services media: two volumes are mounted at /config",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Unsupported = %v", got)

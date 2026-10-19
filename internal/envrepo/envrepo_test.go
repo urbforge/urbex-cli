@@ -267,3 +267,21 @@ func TestWriteService_ApplicationFromAnImage(t *testing.T) {
 		t.Errorf("expected its port published, with no PORT variable:\n%s", compose)
 	}
 }
+
+// Named volumes and shares are mount points of the LXC, bound into the
+// container at their paths.
+func TestCompose_Volumes(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc := manifest.Service{Name: "jellyfin", Image: "jellyfin/jellyfin", Version: "10", Port: 8096, Volumes: []manifest.Volume{
+		{Name: "config", Path: "/config", Size: "5Gi"},
+		{Share: "media", Path: "/media", ReadOnly: true},
+	}}
+	if err := repo.WriteService("prod", "media", svc, svc.Image, false); err != nil {
+		t.Fatal(err)
+	}
+	compose := read(t, filepath.Join(repo.Path, "environments/prod/media/jellyfin", ComposeFile))
+	want := "    volumes:\n      - /srv/volumes/config:/config\n      - /srv/shares/media:/media:ro\n"
+	if !strings.Contains(compose, want) {
+		t.Errorf("expected the volumes bound from the LXC:\n%s", compose)
+	}
+}

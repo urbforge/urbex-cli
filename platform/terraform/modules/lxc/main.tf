@@ -96,8 +96,11 @@ resource "proxmox_virtual_environment_container" "this" {
   }
 
   # Where an LXC came from only matters when it is created: a new template
-  # (or none) must never replace the LXCs that exist.
+  # (or none) must never replace the LXCs that exist. The mount points
+  # are urbex's (the applications' volumes) and the operator's (shares),
+  # added through the API and pct: the provider replaces the LXC on any
+  # change to them, and its volumes with it (ADR-0028).
   lifecycle {
-    ignore_changes = [clone, operating_system, initialization[0].user_account]
+    ignore_changes = [clone, operating_system, initialization[0].user_account, mount_point]
   }
 }

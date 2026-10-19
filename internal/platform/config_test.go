@@ -183,6 +183,23 @@ func TestDNSValidation(t *testing.T) {
 	}
 }
 
+func TestStorageSharesValidation(t *testing.T) {
+	cfg := &Config{Storage: StorageConfig{Shares: map[string]Share{
+		"media":  {Path: "/mnt/pve/nas/media"},
+		"photos": {Path: "nas/photos"},
+		"root":   {Path: "/"},
+	}}}
+	errs := strings.Join(cfg.Validate(), "\n")
+	for _, want := range []string{"storage.shares.photos.path: nas/photos", "storage.shares.root.path: /"} {
+		if !strings.Contains(errs, want) {
+			t.Errorf("Validate() = %q, want it to mention %q", errs, want)
+		}
+	}
+	if strings.Contains(errs, "storage.shares.media") {
+		t.Errorf("an absolute folder is valid: %q", errs)
+	}
+}
+
 func TestReservedLabel(t *testing.T) {
 	if !ReservedLabel("git") || !ReservedLabel("auth") || ReservedLabel("hello") {
 		t.Error("ReservedLabel should match the platform labels only")

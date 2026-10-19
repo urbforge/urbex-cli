@@ -130,16 +130,22 @@
         },
         "volumes": {
           "type": "array",
-          "description": "Named volumes: data kept across redeploys, updates and the LXC being changed in place; deleted only by destroy --delete-data.",
+          "description": "What the application keeps: named volumes (name, size), data kept across redeploys, updates and the LXC being changed in place, deleted only by destroy --delete-data; and shares (share, readOnly), folders the operator declares in urbex.platform.yaml under storage.shares.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "path"],
+            "required": ["path"],
             "properties": {
               "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
-              "path": { "type": "string", "pattern": "^/" },
-              "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "10Gi" }
-            }
+              "share": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
+              "path": { "type": "string", "pattern": "^/." },
+              "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "10Gi" },
+              "readOnly": { "type": "boolean", "default": false }
+            },
+            "oneOf": [
+              { "required": ["name"], "not": { "anyOf": [{ "required": ["share"] }, { "required": ["readOnly"] }] } },
+              { "required": ["share"], "not": { "anyOf": [{ "required": ["name"] }, { "required": ["size"] }] } }
+            ]
           }
         },
         "dockerfile": {
@@ -200,7 +206,7 @@
           "then": {
             "required": ["volumes"],
             "properties": {
-              "volumes": { "minItems": 1, "maxItems": 1 },
+              "volumes": { "minItems": 1, "maxItems": 1, "items": { "required": ["name"] } },
               "public": { "const": false }
             },
             "not": { "anyOf": [{ "required": ["port"] }, { "required": ["healthcheck"] }] }

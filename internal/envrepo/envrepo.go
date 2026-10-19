@@ -250,6 +250,17 @@ func renderCompose(env, project string, svc manifest.Service, image string) stri
 		b.WriteString("    ports:\n")
 		fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
 	}
+	// The volumes are mount points of the LXC (ADR-0028), bound in.
+	if len(svc.Volumes) > 0 {
+		b.WriteString("    volumes:\n")
+	}
+	for _, v := range svc.Volumes {
+		ro := ""
+		if v.ReadOnly {
+			ro = ":ro"
+		}
+		fmt.Fprintf(&b, "      - %s:%s%s\n", v.LXCPath(), v.Path, ro)
+	}
 	if svc.Healthcheck != "" && svc.Port != 0 {
 		b.WriteString("    healthcheck:\n")
 		fmt.Fprintf(&b, "      test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://localhost:%d%s\"]\n", svc.Port, svc.Healthcheck)

@@ -6,8 +6,10 @@ package platform
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -21,6 +23,19 @@ type Config struct {
 	Proxmox    ProxmoxConfig    `yaml:"proxmox"`
 	DNS        DNSConfig        `yaml:"dns"`
 	Keycloak   KeycloakConfig   `yaml:"keycloak"`
+	Storage    StorageConfig    `yaml:"storage,omitempty"`
+}
+
+// StorageConfig is storage that exists outside Urbex (ADR-0028).
+type StorageConfig struct {
+	// Shares are folders the operator provides - a NAS mounted on the
+	// Proxmox node - that applications mount by name.
+	Shares map[string]Share `yaml:"shares,omitempty"`
+}
+
+// Share is a folder on the Proxmox node, at Path.
+type Share struct {
+	Path string `yaml:"path"`
 }
 
 type GitConfig struct {
@@ -304,6 +319,11 @@ func (c *Config) Validate() []string {
 	}
 	if cf.QuickTunnel && cf.Enabled() {
 		errs = append(errs, "cloudflare.quickTunnel and cloudflare.accountId/zoneId are alternatives: set one, not both")
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Storage.Shares)) {
+		if p := c.Storage.Shares[name].Path; !strings.HasPrefix(p, "/") || p == "/" || strings.ContainsAny(p, ", \t") {
+			errs = append(errs, "storage.shares."+name+".path: "+p+" is not a folder on the Proxmox node")
+		}
 	}
 
 	return errs

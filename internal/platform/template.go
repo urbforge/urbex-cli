@@ -46,6 +46,11 @@ dns:
 keycloak:
   baseUrl: https://auth.example.com
   platformRealm: platform
+
+# storage:
+#   shares: # folders of the Proxmox node that applications mount by name
+#     media:
+#       path: /mnt/pve/nas/media
 `
 
 // WriteTemplate writes a starter urbex.platform.yaml to path, to be edited

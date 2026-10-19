@@ -34,10 +34,12 @@ type Service struct {
 	// environment (ADR-0028).
 	Image   string `yaml:"image,omitempty"`
 	Version string `yaml:"version,omitempty"`
-	// Provides, Uses and Volumes are declared by the schema (ADR-0028,
-	// ADR-0030) but not acted on yet: see Unsupported.
-	Provides    string   `yaml:"provides,omitempty"`
-	Uses        []string `yaml:"uses,omitempty"`
+	// Provides and Uses are declared by the schema (ADR-0028, ADR-0030)
+	// but not acted on yet: see Unsupported.
+	Provides string   `yaml:"provides,omitempty"`
+	Uses     []string `yaml:"uses,omitempty"`
+	// Volumes are what the application keeps: named volumes, mount
+	// points of its LXC, and the operator's shares (ADR-0028).
 	Volumes     []Volume `yaml:"volumes,omitempty"`
 	Port        int      `yaml:"port"`
 	Healthcheck string   `yaml:"healthcheck,omitempty"`
@@ -92,11 +94,65 @@ func (s Service) EnvFor(env string) map[string]string {
 	return s.Env[env]
 }
 
-// Volume is a named volume: data an application keeps across redeploys.
+// Volume is what an application keeps across redeploys: a named volume
+// (Name, Size), or a share of the platform (Share, ReadOnly), mounted in
+// the container at Path.
 type Volume struct {
-	Name string `yaml:"name"`
-	Path string `yaml:"path"`
-	Size string `yaml:"size,omitempty"`
+	Name     string `yaml:"name,omitempty"`
+	Share    string `yaml:"share,omitempty"`
+	Path     string `yaml:"path"`
+	Size     string `yaml:"size,omitempty"`
+	ReadOnly bool   `yaml:"readOnly,omitempty"`
+}
+
+// DefaultVolumeSize is a named volume's size when it declares none, as
+// in schema/urbex.schema.json.
+const DefaultVolumeSize = "10Gi"
+
+// VolumesRoot and SharesRoot are where an application's LXC mounts its
+// named volumes and shares, each in a folder of its name; the
+// container binds them from there.
+const (
+	VolumesRoot = "/srv/volumes"
+	SharesRoot  = "/srv/shares"
+)
+
+// LXCPath is where the volume is mounted on its application's LXC.
+func (v Volume) LXCPath() string {
+	if v.Share != "" {
+		return SharesRoot + "/" + v.Share
+	}
+	return VolumesRoot + "/" + v.Name
+}
+
+// SizeOrDefault is a named volume's size.
+func (v Volume) SizeOrDefault() string {
+	if v.Size == "" {
+		return DefaultVolumeSize
+	}
+	return v.Size
+}
+
+// NamedVolumes returns the service's named volumes, without its shares.
+func (s Service) NamedVolumes() []Volume {
+	var out []Volume
+	for _, v := range s.Volumes {
+		if v.Share == "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// Shares returns the service's shares, without its named volumes.
+func (s Service) Shares() []Volume {
+	var out []Volume
+	for _, v := range s.Volumes {
+		if v.Share != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 type Resources struct {
@@ -216,13 +272,25 @@ func (m *Manifest) SingleEnvironment() bool { return !m.HasEnvironment("staging"
 
 // Unsupported returns what the manifest declares that the schema accepts
 // but urbex doesn't act on yet - refused rather than ignored, since an
-// application that expects a volume or a database would run without it -
-// and what an application from an image can't do without a port.
+// application that expects a database would run without it - what an
+// application from an image can't do without a port, and volumes that
+// would be mounted twice.
 func (m *Manifest) Unsupported() []string {
 	var out []string
 	for _, svc := range m.Services {
-		if len(svc.Volumes) > 0 {
-			out = append(out, fmt.Sprintf("services %s: volumes are not supported yet (urbforge/urbex-cli#44)", svc.Name))
+		names, paths := map[string]bool{}, map[string]bool{}
+		for _, v := range svc.Volumes {
+			key := "volume " + v.Name
+			if v.Share != "" {
+				key = "share " + v.Share
+			}
+			if names[key] {
+				out = append(out, fmt.Sprintf("services %s: %s is declared twice", svc.Name, key))
+			}
+			if paths[v.Path] {
+				out = append(out, fmt.Sprintf("services %s: two volumes are mounted at %s", svc.Name, v.Path))
+			}
+			names[key], paths[v.Path] = true, true
 		}
 		if svc.Provides != "" || len(svc.Uses) > 0 {
 			out = append(out, fmt.Sprintf("services %s: provides and uses are not supported yet (urbforge/urbex-cli#43)", svc.Name))

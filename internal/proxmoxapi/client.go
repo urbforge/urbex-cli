@@ -1,8 +1,9 @@
-// Package proxmoxapi is a minimal Proxmox VE API client. It exists only
-// to support urbex bootstrap's pre-flight check for already-existing
-// base-service containers (see docs/decisions/0017-embedded-base-infra-assets.md
-// in urbforge/urbex) - it does not attempt to replace Terraform's Proxmox
-// provider, which does the actual provisioning.
+// Package proxmoxapi is a minimal Proxmox VE API client, for what
+// Terraform's Proxmox provider doesn't do: urbex bootstrap's pre-flight
+// check for already-existing base-service containers (see
+// docs/decisions/0017-embedded-base-infra-assets.md in urbforge/urbex),
+// urbex's LXC template, and the applications' volumes (ADR-0028). The
+// provider still creates and changes the LXCs.
 package proxmoxapi
 
 import (
