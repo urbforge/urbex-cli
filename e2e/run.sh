@@ -467,7 +467,7 @@ YAML
   [ "$(lxc docker volume inspect -f "{{.Options.device}}" site-web-prod_data)" = /srv/volumes/web/data ] || fail "the Docker volume is not on the folder of the mount point"
   lxc docker inspect -f \"{{range .Mounts}}{{.Name}}:{{.Destination}} {{end}}\" site-web-prod-app-1 | grep -q "site-web-prod_data:/data" || fail "the container does not have the volume"
   lxc test ! -e /srv/volumes/web/data/lost+found || fail "the empty lost+found of the new volume should have been removed, for Docker to fill the volume"
-  lxc docker exec site-web-prod-app-1 sh -c \"echo kept >/data/keep\"
+  lxc "docker exec site-web-prod-app-1 sh -c \"echo kept >/data/keep\""
 
   urbex apply prod >/tmp/again.log 2>&1 || { cat /tmp/again.log; fail "apply prod again failed"; }
   if grep -q "mounted at" /tmp/again.log; then fail "a re-apply should not add the volume again"; fi
