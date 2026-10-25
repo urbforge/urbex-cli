@@ -82,10 +82,13 @@ func sizeGB(s string) int {
 		return 0
 	}
 	unit := s[len(s)-1]
+	if !strings.ContainsRune("KMGT", rune(unit)) {
+		n, _ := strconv.ParseFloat(s, 64)
+		return int(n / (1 << 30))
+	}
 	n, err := strconv.ParseFloat(s[:len(s)-1], 64)
 	if err != nil {
-		n, _ = strconv.ParseFloat(s, 64)
-		return int(n / (1 << 30))
+		return 0
 	}
 	switch unit {
 	case 'T':

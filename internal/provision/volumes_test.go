@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -267,6 +268,50 @@ func TestApply_RefusesReplacingAnLXCWithAVolumeNoLongerDeclared(t *testing.T) {
 	}
 }
 
+// An application removed from urbex.yaml leaves the plan as a plain
+// delete, and its volumes go with its LXC: apply refuses it, except
+// with --delete-data.
+func TestApply_RefusesRemovingAnApplicationWithVolumes(t *testing.T) {
+	dir := t.TempDir()
+	o, vols, _, out := volumesOrchestrator(t)
+	o.Manifest.Services = o.Manifest.Services[:1]
+	ctx := context.Background()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	vmid, host := vmidOf(t, o, dir, "vault"), Hostname("media", "vault", "prod")
+	// urbex.yaml no longer has vault: only its LXC's mount points tell.
+	o.Manifest.Services = []manifest.Service{{Name: "jellyfin", Image: "jellyfin/jellyfin", Version: "10.10.7", Port: 8096}}
+	o.Proxmox = fakeLister{vmid}
+	var ran []string
+	o.Runner = runnerFunc(func(c runner.Command) {
+		ran = append(ran, c.Args[0])
+		if c.Args[0] == "show" && c.Stdout != nil {
+			io.WriteString(c.Stdout, `{"resource_changes":[{"module_address":"module.service[\"`+host+`\"]","type":"proxmox_virtual_environment_container","change":{"actions":["delete"],"before":{"vm_id":`+strconv.Itoa(vmid)+`}}}]}`)
+		}
+	})
+	err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), host+" (volumes vault/data)") || !strings.Contains(err.Error(), "urbex apply prod --delete-data") {
+		t.Fatalf("expected the removal refused, saying how to do it, got %v", err)
+	}
+	if slices.Contains(ran, "apply") {
+		t.Errorf("nothing should be applied: ran %v", ran)
+	}
+
+	out.Reset()
+	_ = vols
+	err = o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir, DeleteData: true})
+	if strings.Contains(fmt.Sprint(err), "would delete") {
+		t.Fatalf("--delete-data should let the removal through, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleting "+host+" (volumes vault/data) with their LXCs.") {
+		t.Errorf("expected the deletion named:\n%s", out)
+	}
+	if !slices.Contains(ran, "apply") {
+		t.Errorf("terraform should apply, ran %v", ran)
+	}
+}
+
 func TestDestroy_NamedVolumesNeedDeleteData(t *testing.T) {
 	dir := t.TempDir()
 	o, vols, _, out := volumesOrchestrator(t)
@@ -298,19 +343,25 @@ func TestDestroy_NamedVolumesNeedDeleteData(t *testing.T) {
 	}
 }
 
-func TestReplacedContainers(t *testing.T) {
+func TestDeletedContainers(t *testing.T) {
 	// As terraform show -json writes it: the key is the module's.
-	got, err := replacedContainers([]byte(`{"resource_changes":[
-		{"module_address":"module.service[\"a-db-prod\"]","type":"proxmox_virtual_environment_container","index":null,"change":{"actions":["create","delete"],"replace_paths":[["disk",0,"datastore_id"],["unprivileged"]]}},
-		{"module_address":"module.service[\"a-api-prod\"]","type":"proxmox_virtual_environment_container","change":{"actions":["delete"]}},
+	got, err := deletedContainers([]byte(`{"resource_changes":[
+		{"module_address":"module.service[\"a-db-prod\"]","type":"proxmox_virtual_environment_container","index":null,"change":{"actions":["create","delete"],"replace_paths":[["disk",0,"datastore_id"],["unprivileged"]],"before":{"vm_id":9101}}},
+		{"module_address":"module.service[\"a-api-prod\"]","type":"proxmox_virtual_environment_container","change":{"actions":["delete"],"before":{"vm_id":9102}}},
 		{"module_address":"module.service[\"a-new-prod\"]","type":"proxmox_virtual_environment_container","change":{"actions":["create"]}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].hostname != "a-db-prod" || got[0].because != "disk.datastore_id, unprivileged" {
-		t.Errorf("replacedContainers = %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("deletedContainers = %+v", got)
 	}
-	if got, err := replacedContainers(nil); err != nil || got != nil {
+	if d := got[0]; d.hostname != "a-db-prod" || d.vmid != 9101 || !d.replaced || d.because != "disk.datastore_id, unprivileged" {
+		t.Errorf("replacement = %+v", d)
+	}
+	if d := got[1]; d.hostname != "a-api-prod" || d.vmid != 9102 || d.replaced {
+		t.Errorf("plain delete = %+v", d)
+	}
+	if got, err := deletedContainers(nil); err != nil || got != nil {
 		t.Errorf("no output means no plan: %v %v", got, err)
 	}
 }

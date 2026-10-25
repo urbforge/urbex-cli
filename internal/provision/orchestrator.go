@@ -140,7 +140,8 @@ type Options struct {
 	Update     bool
 	AllowMajor bool
 	// DeleteData lets Destroy delete the environment's named volumes,
-	// with their LXCs.
+	// with their LXCs, and Apply delete those of an application removed
+	// from urbex.yaml, with its LXC.
 	DeleteData bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).
@@ -210,7 +211,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if err := o.refuseReplacingVolumes(ctx, tfDir, env, volumes); err != nil {
+	if err := o.refuseReplacingVolumes(ctx, tfDir, env, opts.Env, volumes, opts.DeleteData); err != nil {
 		return err
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
@@ -853,8 +854,12 @@ func (o *Orchestrator) deployables() []manifest.Service {
 // waitAndReportServices is waitAndReport for some of the environment's
 // services only.
 func (o *Orchestrator) waitAndReportServices(ctx context.Context, opts Options, allocations map[string]allocation.Entry, services []manifest.Service) error {
-	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
 	target := o.targetOf(opts.Env, services)
+	if len(target.Services) == 0 {
+		// Every application is waiting for its shares: nothing to wait for.
+		return nil
+	}
+	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
 	deployed, err := o.Rollout.WaitDeployed(ctx, target, envrepo.Repo{Path: opts.GitOpsRepoPath})
 	if err != nil {
 		return err

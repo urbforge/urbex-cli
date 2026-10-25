@@ -10,6 +10,7 @@ import (
 func newApplyCmd() *cobra.Command {
 	var manifestPath string
 	var gitopsRepoPath string
+	var deleteData bool
 	var repoDir string
 
 	cmd := &cobra.Command{
@@ -41,7 +42,9 @@ Addresses are printed at the end.
 
 Each named volume becomes a mount point of its application's LXC,
 included in Proxmox's backups, and grows when its size does; a change
-that would replace an LXC with named volumes is refused. Shares are
+that would replace an LXC with named volumes is refused, and so is
+removing an application that has them from urbex.yaml, unless
+--delete-data says to delete it with its volumes. Shares are
 bound by the operator: until an application's are, apply prints the
 pct commands, deploys the rest, and fails.
 
@@ -64,6 +67,7 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 			err = o.Apply(cmd.Context(), provision.Options{
 				Env:            args[0],
 				GitOpsRepoPath: repoPath,
+				DeleteData:     deleteData,
 			})
 			tracker.Finish(err)
 			return err
@@ -73,6 +77,8 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the project's main branch on Gitea if it is missing")
+
+	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the LXC and the named volumes of an application removed from urbex.yaml")
 
 	return cmd
 }

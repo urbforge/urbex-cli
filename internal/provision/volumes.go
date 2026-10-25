@@ -83,12 +83,17 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 }
 
 // refuseReplacingVolumes runs terraform plan and refuses a plan that
-// would replace an LXC with named volumes, by hostname: Proxmox deletes
-// the volumes with their LXC. The plan is kept out of the GitOps repo -
-// it holds the variables, the API token among them - and removed
+// would delete an LXC with named volumes, replacing it or not (an
+// application removed from urbex.yaml leaves the plan as a plain
+// delete): Proxmox deletes the volumes with their LXC. The LXC's volumes
+// are read from the plan's before, by its VMID, so it covers
+// applications urbex.yaml no longer declares. A plain delete goes ahead
+// with deleteData (urbex apply --delete-data), naming what it deletes;
+// a replacement never does. The plan is kept out of the GitOps repo - it
+// holds the variables, the API token among them - and removed
 // afterwards.
-func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string, tfEnv []string, volumes map[string][]string) error {
-	if len(volumes) == 0 {
+func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string, tfEnv []string, env string, volumes map[string][]string, deleteData bool) error {
+	if o.Volumes == nil {
 		return nil
 	}
 	tmp, err := os.MkdirTemp("", "urbex-plan-")
@@ -104,33 +109,59 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"show", "-json", plan}, Env: tfEnv, Stdout: &shown}); err != nil {
 		return fmt.Errorf("terraform show: %w", err)
 	}
-	replaced, err := replacedContainers(shown.Bytes())
+	deleted, err := deletedContainers(shown.Bytes())
 	if err != nil {
 		return err
 	}
-	var refused []string
-	for _, r := range replaced {
-		if names, ok := volumes[r.hostname]; ok {
-			refused = append(refused, fmt.Sprintf("%s (volumes %s; changed: %s)", r.hostname, strings.Join(names, ", "), r.because))
+	var replaced, removed []string
+	for _, d := range deleted {
+		names := volumes[d.hostname]
+		if len(names) == 0 && d.vmid > 0 {
+			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, d.vmid)
+			if err != nil {
+				return fmt.Errorf("reading the mount points of %s: %w", d.hostname, err)
+			}
+			for _, mp := range mps {
+				if name, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/"); ok {
+					names = append(names, name)
+				}
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		if d.replaced {
+			replaced = append(replaced, fmt.Sprintf("%s (volumes %s; changed: %s)", d.hostname, strings.Join(names, ", "), d.because))
+		} else {
+			removed = append(removed, fmt.Sprintf("%s (volumes %s)", d.hostname, strings.Join(names, ", ")))
 		}
 	}
-	if len(refused) > 0 {
-		return fmt.Errorf("the change would replace %s, and Proxmox deletes an LXC's volumes with it: revert the change, or move the data out first (see known limitations)", strings.Join(refused, "; "))
+	if len(replaced) > 0 {
+		return fmt.Errorf("the change would replace %s, and Proxmox deletes an LXC's volumes with it: revert the change, or move the data out first (see known limitations)", strings.Join(replaced, "; "))
+	}
+	if len(removed) > 0 {
+		if !deleteData {
+			return fmt.Errorf("the change would delete %s, and Proxmox deletes an LXC's volumes with it: put the application back in urbex.yaml, or run 'urbex apply %s --delete-data' to delete it with its volumes", strings.Join(removed, "; "), env)
+		}
+		fmt.Fprintf(o.Out, "Deleting %s with their LXCs.\n", strings.Join(removed, "; "))
 	}
 	return nil
 }
 
-type replacement struct {
+// deletion is an LXC a plan deletes: replaced when it creates it again.
+type deletion struct {
 	hostname string
-	because  string
+	vmid     int // from the plan's before; 0 if it has none
+	replaced bool
+	because  string // the attributes that replace it
 }
 
-// replacedContainers reads, in terraform show -json of a plan, the LXCs
-// the plan would delete and create again, by hostname, with the
+// deletedContainers reads, in terraform show -json of a plan, the LXCs
+// the plan would delete, by hostname, replaced or not, with the
 // attributes that make it replace them. The hostname is the key of the
 // module instance (module.service["<hostname>"]): the container itself
 // has no key.
-func replacedContainers(plan []byte) ([]replacement, error) {
+func deletedContainers(plan []byte) ([]deletion, error) {
 	if len(bytes.TrimSpace(plan)) == 0 {
 		return nil, nil
 	}
@@ -141,13 +172,16 @@ func replacedContainers(plan []byte) ([]replacement, error) {
 			Change        struct {
 				Actions      []string `json:"actions"`
 				ReplacePaths [][]any  `json:"replace_paths"`
+				Before       struct {
+					VMID int `json:"vm_id"`
+				} `json:"before"`
 			} `json:"change"`
 		} `json:"resource_changes"`
 	}
 	if err := json.Unmarshal(plan, &p); err != nil {
 		return nil, fmt.Errorf("reading terraform plan: %w", err)
 	}
-	var out []replacement
+	var out []deletion
 	for _, rc := range p.ResourceChanges {
 		key, ok := strings.CutPrefix(rc.ModuleAddress, "module.service[")
 		if rc.Type != "proxmox_virtual_environment_container" || !ok {
@@ -157,7 +191,7 @@ func replacedContainers(plan []byte) ([]replacement, error) {
 		if err != nil {
 			continue
 		}
-		if !slices.Contains(rc.Change.Actions, "delete") || !slices.Contains(rc.Change.Actions, "create") {
+		if !slices.Contains(rc.Change.Actions, "delete") {
 			continue
 		}
 		var paths []string
@@ -174,7 +208,7 @@ func replacedContainers(plan []byte) ([]replacement, error) {
 		if because == "" {
 			because = "see terraform plan"
 		}
-		out = append(out, replacement{hostname: host, because: because})
+		out = append(out, deletion{hostname: host, vmid: rc.Change.Before.VMID, replaced: slices.Contains(rc.Change.Actions, "create"), because: because})
 	}
 	return out, nil
 }

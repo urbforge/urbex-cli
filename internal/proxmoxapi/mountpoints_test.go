@@ -88,3 +88,11 @@ func TestAddResizeAndPending(t *testing.T) {
 		t.Errorf("Pending = %v, want only the changed key", pending)
 	}
 }
+
+func TestSizeGB(t *testing.T) {
+	for in, want := range map[string]int{"": 0, "2G": 2, "512M": 1, "1T": 1024, "1073741824": 1, "2147483648": 2} {
+		if got := sizeGB(in); got != want {
+			t.Errorf("sizeGB(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
