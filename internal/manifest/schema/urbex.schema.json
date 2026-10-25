@@ -130,7 +130,7 @@
         },
         "volumes": {
           "type": "array",
-          "description": "What the application keeps: named volumes (name, size), data kept across redeploys, updates and the LXC being changed in place, deleted only by destroy --delete-data; and shares (share, readOnly), folders the operator declares in urbex.platform.yaml under storage.shares.",
+          "description": "What the application keeps: named volumes (name, size), data kept across redeploys, updates and the LXC being changed in place, deleted only with --delete-data, by destroy or by apply once the application is out of urbex.yaml; and shares (share, readOnly), folders the operator declares in urbex.platform.yaml under storage.shares.",
           "items": {
             "type": "object",
             "additionalProperties": false,
