@@ -19,6 +19,9 @@ type Command struct {
 	// process's environment - used to pass secrets like
 	// TF_VAR_proxmox_api_token without writing them to a file.
 	Env []string
+	// Stdout, if set, takes the command's output instead of the
+	// runner's: for output urbex reads, like terraform show -json.
+	Stdout io.Writer
 }
 
 // CommandRunner executes external commands.
@@ -38,6 +41,9 @@ func (r ExecRunner) Run(ctx context.Context, c Command) error {
 	cmd.Dir = c.Dir
 	cmd.Env = append(os.Environ(), c.Env...)
 	cmd.Stdout = r.Stdout
+	if c.Stdout != nil {
+		cmd.Stdout = c.Stdout
+	}
 	cmd.Stderr = r.Stderr
 	return cmd.Run()
 }

@@ -74,6 +74,9 @@ type Orchestrator struct {
 	// Proxmox, if set, lets plan/apply/destroy drop LXCs deleted outside
 	// Terraform from its state (see forgetVanished).
 	Proxmox ContainerLister
+	// Volumes gives the applications' LXCs their volumes and checks their
+	// shares; required when the manifest declares any.
+	Volumes VolumeAPI
 	// Keycloak keeps the project's realm and its frontends' clients; nil
 	// skips it. KeycloakURL is Keycloak's LAN address.
 	Keycloak    KeycloakAPI
@@ -112,6 +115,9 @@ type Orchestrator struct {
 	// cloneVMID is the template the environment's new LXCs are cloned
 	// from, or 0 (see templateVMID).
 	cloneVMID int
+	// skipped are the applications apply leaves out of Komodo because
+	// what they keep isn't mounted yet.
+	skipped map[string]bool
 	// Progress records apply's phases for 'urbex status --progress'; nil
 	// records nothing.
 	Progress *progress.Tracker
@@ -133,6 +139,10 @@ type Options struct {
 	App        string
 	Update     bool
 	AllowMajor bool
+	// DeleteData lets Destroy delete the environment's named volumes,
+	// with their LXCs, and Apply delete those of an application removed
+	// from urbex.yaml, with its LXC.
+	DeleteData bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).
 	GitOpsRepoPath string
@@ -192,6 +202,18 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	ledger, err := o.loadLedger(opts)
+	if err != nil {
+		return err
+	}
+	allocations, _ := o.lookupAllocations(ledger, opts.Env)
+	volumes, err := o.namedVolumes(ctx, opts.Env, o.Manifest.Services, allocations, existed)
+	if err != nil {
+		return err
+	}
+	if err := o.refuseReplacingVolumes(ctx, tfDir, env, opts.Env, volumes, opts.DeleteData); err != nil {
+		return err
+	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
 		return err
 	}
@@ -201,11 +223,14 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		}
 	}
 
-	ledger, err := o.loadLedger(opts)
+	notReady, err := o.mountVolumes(ctx, opts.Env, allocations)
 	if err != nil {
 		return err
 	}
-	allocations, _ := o.lookupAllocations(ledger, opts.Env)
+	o.skipped = map[string]bool{}
+	for _, m := range notReady {
+		o.skipped[m.service] = true
+	}
 	if existed != nil {
 		// LXCs terraform just created have new host keys, possibly at an
 		// address another LXC had before.
@@ -285,7 +310,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 
 	// The applications from images are pinned by now: whether there is
 	// something to run depends on the ones built from source.
-	built := manifest.Built(o.Manifest.Deployables())
+	built := manifest.Built(o.deployables())
 	set, tracking := 0, 0
 	for _, svc := range built {
 		if versions[svc.Name].Version != "" {
@@ -312,7 +337,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		fmt.Fprintf(o.Out, "%s follows main: every push to main is deployed here.\n", opts.Env)
 	} else if set < len(built) {
 		o.Progress.Skip(PhaseBuild, "doesn't follow main")
-		if images := manifest.FromImages(o.Manifest.Deployables()); len(images) > 0 {
+		if images := manifest.FromImages(o.deployables()); len(images) > 0 {
 			// What comes from images runs already; the rest waits.
 			o.Progress.Begin(PhaseDeploy)
 			if err := o.Rollout.Deploy(ctx, o.targetOf(opts.Env, images)); err != nil {
@@ -348,6 +373,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 	if !o.Config.Cloudflare.Enabled() && !o.Config.Cloudflare.QuickTunnel {
 		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
+	}
+	if len(notReady) > 0 {
+		return o.reportNotReady(opts.Env, notReady)
 	}
 	return nil
 }
@@ -458,7 +486,7 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 // even if the manifest now asks for another tag: deploy --update or
 // --version moves it.
 func (o *Orchestrator) pinImages(ctx context.Context, repo envrepo.Repo, env string) error {
-	for _, svc := range manifest.FromImages(o.Manifest.Deployables()) {
+	for _, svc := range manifest.FromImages(o.deployables()) {
 		st, err := repo.Version(env, o.Manifest.Project, svc.Name)
 		if err != nil {
 			return err
@@ -808,14 +836,30 @@ func (o *Orchestrator) sync(ctx context.Context, opts Options, verb string) erro
 // waitAndReport waits for Komodo to run what the GitOps repo asks for,
 // then prints where each service is.
 func (o *Orchestrator) waitAndReport(ctx context.Context, opts Options, allocations map[string]allocation.Entry) error {
-	return o.waitAndReportServices(ctx, opts, allocations, o.Manifest.Deployables())
+	return o.waitAndReportServices(ctx, opts, allocations, o.deployables())
+}
+
+// deployables are what the environment runs, without the applications
+// apply skipped.
+func (o *Orchestrator) deployables() []manifest.Service {
+	var out []manifest.Service
+	for _, svc := range o.Manifest.Deployables() {
+		if !o.skipped[svc.Name] {
+			out = append(out, svc)
+		}
+	}
+	return out
 }
 
 // waitAndReportServices is waitAndReport for some of the environment's
 // services only.
 func (o *Orchestrator) waitAndReportServices(ctx context.Context, opts Options, allocations map[string]allocation.Entry, services []manifest.Service) error {
-	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
 	target := o.targetOf(opts.Env, services)
+	if len(target.Services) == 0 {
+		// Every application is waiting for its shares: nothing to wait for.
+		return nil
+	}
+	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
 	deployed, err := o.Rollout.WaitDeployed(ctx, target, envrepo.Repo{Path: opts.GitOpsRepoPath})
 	if err != nil {
 		return err
@@ -877,7 +921,7 @@ func (o *Orchestrator) checkPlatform() error {
 
 func (o *Orchestrator) target(env string) rollout.Target {
 	hostnames := map[string]string{}
-	services := o.Manifest.Deployables()
+	services := o.deployables()
 	for i, svc := range services {
 		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
 			hostnames[svc.Name] = host
@@ -975,6 +1019,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if len(toDestroy) == 0 {
 		fmt.Fprintf(o.Out, "Nothing to destroy: no services of %s (%s) have been applied.\n", o.Manifest.Project, opts.Env)
 		return nil
+	}
+	if err := o.checkDeleteData(ctx, opts, toDestroy, allocations); err != nil {
+		return err
 	}
 
 	// Komodo first, while the LXCs can still answer: take the Stacks
@@ -1141,6 +1188,9 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 		return "", fmt.Errorf("urbex.yaml declares no services - nothing to provision (frontend deploys, e.g. Cloudflare Pages/Firebase, are not handled by urbex plan/apply)")
 	}
 	if err := o.checkManifest(opts.Env); err != nil {
+		return "", err
+	}
+	if err := o.checkVolumes(); err != nil {
 		return "", err
 	}
 	if missing := o.Credentials.MissingForProvisioning(); len(missing) > 0 {

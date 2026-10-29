@@ -117,12 +117,14 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 	if warning != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+warning+".")
 	}
+	pve := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 	o := &provision.Orchestrator{
 		Manifest:    m,
 		Config:      cfg,
 		Credentials: creds,
 		Runner:      runner.ExecRunner{Stdout: out, Stderr: cmd.ErrOrStderr()},
-		Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
+		Proxmox:     pve,
+		Volumes:     pve,
 		Out:         out,
 		Images:      &imageref.Resolver{HTTP: &http.Client{Timeout: 30 * time.Second}},
 		SyncGitOps: func(ctx context.Context, path, message string) error {

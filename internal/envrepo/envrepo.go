@@ -250,12 +250,44 @@ func renderCompose(env, project string, svc manifest.Service, image string) stri
 		b.WriteString("    ports:\n")
 		fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
 	}
+	// A named volume is a Docker named volume on the folder its mount
+	// point of the LXC is (ADR-0028). Docker fills it, the first time,
+	// with what the image keeps at path and its owners, so an image that
+	// doesn't run as root can write to it. A container doesn't start
+	// when the folder isn't there, so it can't write to the LXC's own
+	// disk. A share is a folder of the node, bound as it is.
+	if len(svc.Volumes) > 0 {
+		b.WriteString("    volumes:\n")
+	}
+	for _, v := range svc.Volumes {
+		switch {
+		case v.Share != "":
+			ro := ""
+			if v.ReadOnly {
+				ro = ":ro"
+			}
+			fmt.Fprintf(&b, "      - %s:%s%s\n", svc.LXCPath(v), v.Path, ro)
+		default:
+			fmt.Fprintf(&b, "      - %s:%s\n", v.Name, v.Path)
+		}
+	}
 	if svc.Healthcheck != "" && svc.Port != 0 {
 		b.WriteString("    healthcheck:\n")
 		fmt.Fprintf(&b, "      test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://localhost:%d%s\"]\n", svc.Port, svc.Healthcheck)
 		b.WriteString("      interval: 30s\n")
 		b.WriteString("      timeout: 5s\n")
 		b.WriteString("      retries: 3\n")
+	}
+	if named := svc.NamedVolumes(); len(named) > 0 {
+		b.WriteString("volumes:\n")
+		for _, v := range named {
+			fmt.Fprintf(&b, "  %s:\n", v.Name)
+			b.WriteString("    driver: local\n")
+			b.WriteString("    driver_opts:\n")
+			b.WriteString("      type: none\n")
+			b.WriteString("      o: bind\n")
+			fmt.Fprintf(&b, "      device: %s\n", svc.LXCPath(v))
+		}
 	}
 	return b.String()
 }

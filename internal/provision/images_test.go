@@ -294,10 +294,10 @@ func TestCheckMajor_OnlyForApplicationsWithVolumes(t *testing.T) {
 
 func TestApply_RefusesWhatIsNotSupportedYet(t *testing.T) {
 	m := stackManifest()
-	m.Services[1].Volumes = []manifest.Volume{{Name: "data", Path: "/data"}}
+	m.Services[0].Uses = []string{"cache"}
 	o, _, _, _, _ := imagesOrchestrator(m)
 	err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "volumes are not supported yet") {
-		t.Errorf("expected volumes refused, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "provides and uses are not supported yet") {
+		t.Errorf("expected uses refused, got %v", err)
 	}
 }
