@@ -1,0 +1,45 @@
+# Block "api", with a wait service: it exits once the postgres of block "data"
+# accepts connections (or gives up after four minutes), and what the block
+# runs depends on it (depends_on), so Compose holds the block back.
+services:
+  wait:
+    image: docker.io/library/busybox:1.37
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - 'echo "$$(date +%s) wait start"; i=0; until nc -w 2 postgres 5432 </dev/null; do i=$$((i+1)); if [ $$i -ge 120 ]; then echo "$$(date +%s) wait: gave up waiting for postgres"; exit 1; fi; sleep 2; done; echo "$$(date +%s) wait done"'
+    networks: [pocnet]
+
+  migrate:
+    image: docker.io/library/busybox:1.37
+    restart: "no"
+    depends_on:
+      wait:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - 'echo "$$(date +%s) migrate start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) migrate: postgres missing"; exit 1; }; echo "$$(date +%s) migrate done"'
+    networks: [pocnet]
+
+  api:
+    image: docker.io/library/busybox:1.37
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - 'echo "$$(date +%s) api start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) api: postgres missing"; exit 1; }; mkdir -p /www; echo ok >/www/index.html; echo "$$(date +%s) api serving"; exec httpd -f -p 8080 -h /www'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [pocnet]
+
+networks:
+  pocnet:
+    external: true

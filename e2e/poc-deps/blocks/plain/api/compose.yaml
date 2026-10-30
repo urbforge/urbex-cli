@@ -1,0 +1,34 @@
+# Block "api": a one-shot migration and the api, which needs the postgres of
+# block "data". Inside the block Compose orders them (depends_on); between
+# blocks nothing does. A service that finds its dependency missing exits, as
+# many applications do, and its restart policy brings it back.
+services:
+  migrate:
+    image: docker.io/library/busybox:1.37
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - 'echo "$$(date +%s) migrate start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) migrate: postgres missing"; exit 1; }; echo "$$(date +%s) migrate done"'
+    networks: [pocnet]
+
+  api:
+    image: docker.io/library/busybox:1.37
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - 'echo "$$(date +%s) api start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) api: postgres missing"; exit 1; }; mkdir -p /www; echo ok >/www/index.html; echo "$$(date +%s) api serving"; exec httpd -f -p 8080 -h /www'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [pocnet]
+
+networks:
+  pocnet:
+    external: true
