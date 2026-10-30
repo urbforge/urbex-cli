@@ -7,10 +7,17 @@ different moments. A consumer that starts too early finds `/ready` missing
 and exits, as an application does when its dependency is not there.
 
   G1  a wait service in each block, probing `/ready` (the application's own readiness)
-  G2  the same, probing only the TCP port (ready, not healthy)
+  G2  the same, probing only the TCP port. A control: it must NOT keep the
+      order, which shows why the probe has to be the application's own
   G3  a driver outside the Stacks: topological order, health read from Komodo
-  G4  as G1, with acme-db failing and a 30 s timeout
-  G5  as G3, with acme-db failing and a 30 s timeout
+  G4  as G1, with acme-db failing
+  G5  as G3, with acme-db failing
+
+The time a block may wait is a budget per level of the graph, not a fixed
+number. With every Stack deployed at once, a block's wait starts at the
+beginning, so it has to cover the whole chain upstream of it: the budget
+times the longest path to it. The driver starts a block's clock when it
+deploys it, so one budget is enough.
 
 It is run by poc.py (`poc.py run G1 ...`) and shares its Komodo client and
 container monitor.
@@ -31,19 +38,20 @@ GRAPH = {
     "acme-db": {"deps": ["gitea"], "start": 10},
     "acme-api": {"deps": ["acme-db", "keycloak"], "start": 5},
 }
+BUDGET = 45  # seconds a block may wait per level of the graph
 TESTS = {
     "G1": {"mode": "waithttp", "driver": False, "fail": []},
-    "G2": {"mode": "waittcp", "driver": False, "fail": []},
+    "G2": {"mode": "waittcp", "driver": False, "fail": [], "control": True},
     "G3": {"mode": "plain", "driver": True, "fail": []},
-    "G4": {"mode": "waithttp", "driver": False, "fail": ["acme-db"], "timeout": 30},
-    "G5": {"mode": "plain", "driver": True, "fail": ["acme-db"], "timeout": 30},
+    "G4": {"mode": "waithttp", "driver": False, "fail": ["acme-db"]},
+    "G5": {"mode": "plain", "driver": True, "fail": ["acme-db"]},
 }
 DESCRIPTIONS = {
     "G1": "wait service in each block, probing the application's /ready",
-    "G2": "wait service in each block, probing only the TCP port",
+    "G2": "control, wait service probing only the TCP port (must not keep the order)",
     "G3": "driver outside Komodo, topological order, health read from Komodo",
-    "G4": "as G1 with acme-db failing, 30 s timeout",
-    "G5": "as G3 with acme-db failing, 30 s timeout",
+    "G4": "as G1 with acme-db failing, timeout per level of the graph",
+    "G5": "as G3 with acme-db failing",
 }
 
 
@@ -53,6 +61,12 @@ def stack(block):
 
 def container(block):
     return f"g-{block}/app"
+
+
+def depth(block):
+    """Blocks in the longest chain upstream of `block` (0 for a block with no dependencies)."""
+    deps = GRAPH[block]["deps"]
+    return max((1 + depth(d) for d in deps), default=0)
 
 
 def blocked_by(fail):
@@ -71,8 +85,9 @@ def blocked_by(fail):
 # ------------------------------------------------------------ The compose files
 
 
-def compose(block, mode, fail, timeout):
+def compose(block, mode, fail):
     spec = GRAPH[block]
+    timeout = depth(block) * BUDGET
     deps = spec["deps"]
     wait = mode != "plain" and deps
     probe = (
@@ -160,7 +175,7 @@ def write_blocks(test):
     for b in GRAPH:
         d = f"/etc/komodo/poc/graph-{test['name']}/{b}"
         os.makedirs(d, exist_ok=True)
-        open(f"{d}/compose.yaml", "w").write(compose(b, test["mode"], test["fail"], test.get("timeout", 300)))
+        open(f"{d}/compose.yaml", "w").write(compose(b, test["mode"], test["fail"]))
 
 
 def stack_config(test, block):
@@ -179,20 +194,51 @@ def stack_config(test, block):
 # ------------------------------------------------------------------- Readiness
 
 
+def find(obj, key):
+    """First value of `key` anywhere in a JSON document."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = find(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = find(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def services(block):
+    return ["app"] + (["db"] if GRAPH[block].get("db") else [])
+
+
 def komodo_ready(k, block, shown):
-    """What Komodo says about a block: every service healthy, or up when it has no healthcheck."""
-    items = k.call("read", "ListStackServices", {"stack": stack(block)})
-    if block not in shown:
-        shown[block] = items
-    if not items:
-        return False
-    for item in items:
-        text = json.dumps(item)
-        if "(healthy)" in text:
-            continue
-        if re.search(r"\bUp\b", text) and "(health" not in text and "starting" not in text.lower():
-            continue
-        return False
+    """What Komodo says about the block's containers, read from Docker at that moment.
+
+    Healthy when the container reports it, or running when it has no healthcheck.
+    (ListStackServices follows the Stack's refresh and arrives about 12 s late
+    for each level, so the driver asks the container itself.)"""
+    for service in services(block):
+        c = k.call("read", "InspectStackContainer", {"stack": stack(block), "service": service})
+        shown.setdefault(f"{block}/{service}", c)
+        state = find(c, "State")
+        if not isinstance(state, dict):  # an answer of another shape: read it as text
+            text = json.dumps(c)
+            if '"unhealthy"' in text or '"starting"' in text:
+                return False
+            if '"healthy"' in text or (GRAPH[block].get("healthcheck", True) is False and '"running"' in text):
+                continue
+            return False
+        health = (find(state, "Health") or {}).get("Status")
+        status = state.get("Status")
+        if health is not None:
+            if health != "healthy":
+                return False
+        elif status != "running":
+            return False
     return True
 
 
@@ -219,7 +265,6 @@ def deploy_parallel(k, test):
 
 def deploy_driver(k, test):
     """Topological order: a block deploys once every block it needs is healthy."""
-    timeout = test.get("timeout", 300)
     state = {b: "pending" for b in GRAPH}
     results, shown, decided = [], {}, {}
     lock = threading.Lock()
@@ -233,7 +278,7 @@ def deploy_driver(k, test):
         with lock:
             results.append(r)
         ok = r["ok"]
-        deadline = time.time() + timeout
+        deadline = time.time() + BUDGET
         while ok and time.time() < deadline:
             try:
                 if komodo_ready(k, block, shown):
@@ -266,7 +311,7 @@ def deploy_driver(k, test):
         time.sleep(0.5)
     for t in threads:
         t.join()
-    return results, {"driver_state": state, "driver_decided_after_s": decided}, {"list_stack_services": shown}
+    return results, {"driver_state": state, "driver_decided_after_s": decided}, {"inspect_stack_container": shown}
 
 
 # ------------------------------------------------------------------------ Test
@@ -298,7 +343,7 @@ def run_test(name, k):
             return False
         return v["health"] == "healthy" if GRAPH[b].get("healthcheck", True) else v["status"] == "running"
 
-    deadline = time.time() + (120 if test["fail"] else 300)
+    deadline = time.time() + 180
     converged_at = None
     while time.time() < deadline:
         snap = poc.snapshot()
@@ -333,7 +378,17 @@ def run_test(name, k):
             "expected_ready": b in expected,
             "never_started": first is None,
         }
+    ordered = all(x["started_after_deps_ready"] is not False for x in rows.values() if not x["never_started"])
+    # The failed block itself runs and fails on purpose; the ones that depend on it must never start.
+    held = all(rows[b]["never_started"] for b in blocked if b not in test["fail"])
+    ran = all(rows[b]["ready_at"] is not None for b in expected)
+    quiet = sum(rows[b]["restarts"] or 0 for b in expected) == 0
+    if test.get("control"):
+        verdict = (not ordered) or not quiet  # the control must show the TCP probe is not enough
+    else:
+        verdict = ordered and held and ran and quiet
     result = {
+        "verdict": bool(verdict),
         "test": name,
         "description": DESCRIPTIONS[name],
         "komodo": poc.VERSION,
@@ -359,6 +414,7 @@ def run_test(name, k):
 def write_md(r):
     lines = [f"# {r['test']}: {r['description']}", "", f"Komodo {r['komodo']}", ""]
     lines += [
+        f"- verdict: {'PASS' if r['verdict'] else 'FAIL'}" + (" (a control passes when the TCP probe breaks the order)" if TESTS[r["test"]].get("control") else ""),
         f"- deploys returned after {r['deploy_returned_after_s']} s; every expected block ready after {r['converged_after_s']} s (None = never)",
         f"- lines saying a dependency was not ready: {r['not_ready_lines']}",
         f"- Komodo's Stack states: {r['stack_states']}",
@@ -373,9 +429,9 @@ def write_md(r):
         lines.append(f"- {a['type']} {json.dumps(a.get('params'))}: ok={a['ok']} in {a['seconds']} s")
         if a.get("failure"):
             lines += ["", "```", a["failure"], "```", ""]
-    if r.get("komodo_view", {}).get("list_stack_services"):
-        lines += ["", "## ListStackServices, the first answer for each block", ""]
-        for b, v in r["komodo_view"]["list_stack_services"].items():
+    if r.get("komodo_view", {}).get("inspect_stack_container"):
+        lines += ["", "## InspectStackContainer, the first answer for each service", ""]
+        for b, v in r["komodo_view"]["inspect_stack_container"].items():
             lines += [f"`{b}`", "", "```", json.dumps(v)[:1200], "```", ""]
     lines += ["", "## Timeline (seconds from the start)", "", "| t | container | status | health | restarts | exit |", "|---|---|---|---|---|---|"]
     for e in r["events"][:250]:
@@ -391,14 +447,14 @@ def write_summary():
         r = json.load(open(f"{poc.RESULTS}/{f}"))
         ordered = all(x["started_after_deps_ready"] is not False for x in r["blocks"].values() if not x["never_started"])
         held = [b for b, x in r["blocks"].items() if not x["expected_ready"] and x["never_started"]]
-        restarts = sum(x["restarts"] or 0 for x in r["blocks"].values())
+        restarts = sum(x["restarts"] or 0 for x in r["blocks"].values() if x["expected_ready"])
         rows.append(
-            f"| {r['test']} | {r['description']} | {ordered} | {r['converged_after_s']} | {restarts} | {r['not_ready_lines']} | {held} | {r['stack_states']} |"
+            f"| {r['test']} | {'PASS' if r['verdict'] else 'FAIL'} | {r['description']} | {ordered} | {r['converged_after_s']} | {restarts} | {held} | {r['stack_states']} |"
         )
     if not rows:
         return ""
     return (
         f"\n# Graph summary, Komodo {poc.VERSION}\n\n"
-        "| test | construct | every block after its deps ready | all expected ready after s | restarts | not-ready lines | blocked blocks never started | Stack states |\n"
+        "| test | verdict | construct | every block after its deps ready | all expected ready after s | restarts | blocked blocks never started | Stack states |\n"
         "|---|---|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
     )
