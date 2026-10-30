@@ -9,7 +9,7 @@ services:
     command:
       - sh
       - -c
-      - 'echo "$$(date +%s) migrate start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) migrate: postgres missing"; exit 1; }; echo "$$(date +%s) migrate done"'
+      - 'echo "$$(date +%s) migrate start"; nc -w 2 pg 5432 </dev/null || { echo "$$(date +%s) migrate: postgres missing"; exit 1; }; echo "$$(date +%s) migrate done"'
     networks: [pocnet]
 
   api:
@@ -21,7 +21,7 @@ services:
     command:
       - sh
       - -c
-      - 'echo "$$(date +%s) api start"; nc -w 2 postgres 5432 </dev/null || { echo "$$(date +%s) api: postgres missing"; exit 1; }; mkdir -p /www; echo ok >/www/index.html; echo "$$(date +%s) api serving"; exec httpd -f -p 8080 -h /www'
+      - 'echo "$$(date +%s) api start"; nc -w 2 pg 5432 </dev/null || { echo "$$(date +%s) api: postgres missing"; exit 1; }; mkdir -p /www; echo ok >/www/index.html; echo "$$(date +%s) api serving"; exec httpd -f -p 8080 -h /www'
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
       interval: 2s

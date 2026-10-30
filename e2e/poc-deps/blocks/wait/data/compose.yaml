@@ -4,7 +4,7 @@
 # temporary initdb server listens only on the Unix socket, so nothing
 # answers on TCP until the real server starts.
 services:
-  postgres:
+  pg:
     image: docker.io/library/postgres:17-alpine
     restart: unless-stopped
     environment:

@@ -28,7 +28,7 @@ RESULTS = f"/poc/results/{VERSION}"
 STACKS = ["poc-data", "poc-api", "poc-web"]
 BLOCKS = {"poc-data": "data", "poc-api": "api", "poc-web": "web"}
 # The containers every healthy run ends with.
-HEALTHY = ["data/postgres", "data/cache", "api/api", "web/assets", "web/web"]
+HEALTHY = ["data/pg", "data/cache", "api/api", "web/assets", "web/web"]
 
 
 def sh(cmd, check=True, timeout=120):
@@ -249,7 +249,7 @@ def stack_config(variant, name, **extra):
 
 
 # What each consumer waits for, for the constructs that wait by themselves.
-WAITS = {"poc-api": ["postgres:5432"], "poc-web": ["api:8080", "cache:6379"]}
+WAITS = {"poc-api": ["pg:5432"], "poc-web": ["api:8080", "cache:6379"]}
 
 
 def waitfor(stack):
@@ -349,7 +349,7 @@ def build_test(name, k):
     if name == "T6":
         for s in STACKS:
             k.ensure("Stack", s, stack_config("plain", s))
-        k.ensure("Action", "poc-wait-data", {"file_contents": action_script("poc-data", ["postgres", "cache"])})
+        k.ensure("Action", "poc-wait-data", {"file_contents": action_script("poc-data", ["pg", "cache"])})
         k.ensure("Action", "poc-wait-api", {"file_contents": action_script("poc-api", ["api"])})
         k.ensure(
             "Procedure",
@@ -419,10 +419,11 @@ def run_test(name, k, converge_timeout):
     mon.join()
 
     ev = mon.events
-    pg_ok = mon.first("data/postgres", health="healthy")
+    pg_ok = mon.first("data/pg", health="healthy")
     cache_ok = mon.first("data/cache", health="healthy")
     api_ok = mon.first("api/api", health="healthy")
-    starts = {n: mon.first(n, status="running") for n in ["api/migrate", "api/api", "web/web"]}
+    # A one-shot can run and exit between two samples: its first exit counts as its start.
+    starts = {n: min((t for t in (mon.first(n, status="running"), mon.first(n, status="exited")) if t is not None), default=None) for n in ["api/migrate", "api/api", "web/web"]}
     final = snapshot()
     result = {
         "test": name,
