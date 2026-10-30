@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs inside the PoC machine: starts Komodo Core and Periphery, and puts
-# the blocks where Periphery reads them (/etc/komodo/poc/...).
+# Runs inside the PoC machine: starts Komodo Core and Periphery. The graph
+# tests write their blocks under /etc/komodo/poc/, where Periphery reads them.
 # usage: setup.sh <komodo-version>
 set -euo pipefail
 
@@ -11,10 +11,6 @@ docker network inspect pocnet >/dev/null 2>&1 || docker network create pocnet >/
 
 mkdir -p "$DIR" /etc/komodo/backups /etc/komodo/poc
 cp /poc/inside/komodo.compose.yaml "$DIR/compose.yaml"
-rm -rf /etc/komodo/poc/plain /etc/komodo/poc/wait
-cp -r /poc/blocks/plain /etc/komodo/poc/plain
-cp -r /poc/blocks/wait /etc/komodo/poc/wait
-install -m 0755 /poc/inside/waitfor.sh /etc/komodo/poc/waitfor.sh
 
 # The credentials are made once per machine and stay in it: never in the
 # repository.

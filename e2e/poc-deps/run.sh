@@ -1,29 +1,25 @@
 #!/usr/bin/env bash
-# PoC of dependencies between Komodo Stacks ("blocks"), with Komodo's own
-# constructs. It needs only podman. See README.md.
+# PoC of dependencies between Komodo Stacks ("blocks") on a graph of six
+# blocks, with Komodo's own constructs. It needs only podman. See README.md.
 #
-# usage: e2e/poc-deps/run.sh [--komodo-version 2.2.0] [--tests T0,T1,...]
-#                            [--reboot] [--clean] [--keep]
-#   --komodo-version  Komodo Core and Periphery version (default 2.2.0)
+# usage: e2e/poc-deps/run.sh [--komodo-version 2.3.4] [--tests G1,G2,...]
+#                            [--clean] [--keep]
+#   --komodo-version  Komodo Core and Periphery version (default 2.3.4)
 #   --tests           the tests to run (default all)
-#   --reboot          after each test, restart the machine as a reboot and
-#                     watch how the blocks come back
 #   --clean           start from a new machine and new volumes (use it when
 #                     the Komodo version changes)
 #   --keep            leave the machine running at the end
 set -euo pipefail
 
 cd "$(dirname "$0")"
-VERSION=2.2.0
-TESTS=T0,T1,T2,T3,T4,T5,T5b,T6
-REBOOT=false
+VERSION=2.3.4
+TESTS=G1,G2,G3,G4,G5
 CLEAN=false
 KEEP=false
 while [ $# -gt 0 ]; do
   case $1 in
     --komodo-version) VERSION=$2; shift ;;
     --tests) TESTS=$2; shift ;;
-    --reboot) REBOOT=true ;;
     --clean) CLEAN=true ;;
     --keep) KEEP=true ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
@@ -92,12 +88,6 @@ IFS=, read -r -a LIST <<<"$TESTS"
 for t in "${LIST[@]}"; do
   log "test $t"
   inside python3 /poc/inside/poc.py run "$t"
-  if $REBOOT; then
-    log "reboot after $t"
-    podman restart "$NAME" >/dev/null
-    wait_docker
-    inside python3 /poc/inside/poc.py after-reboot "$t"
-  fi
   collect
 done
 
