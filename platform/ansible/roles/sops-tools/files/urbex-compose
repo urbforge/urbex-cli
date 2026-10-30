@@ -7,13 +7,23 @@
 #
 # If the service has secrets, sops decrypts them with the platform's age
 # key (SOPS_AGE_KEY) into a temporary file that only exists while compose
-# runs, and hands its path to the compose file as URBEX_SECRETS_FILE.
-# Plaintext secrets are never written next to the repo. A service without
-# secrets still has the file - Komodo tracks it - but with no sops
-# metadata in it, and compose runs as is.
+# runs, and hands its path to the compose file as URBEX_SECRETS_FILE. The
+# values urbex generates (urbex.sops.env) go the same way, as
+# URBEX_GENERATED_SECRETS_FILE. Plaintext secrets are never written next
+# to the repo. A service without secrets still has the files - Komodo
+# tracks them - but with no sops metadata in them, and compose runs as is.
 set -eu
 
-if grep -q '^sops_' secrets.sops.env 2>/dev/null; then
-  exec /opt/urbex/bin/sops exec-file --no-fifo secrets.sops.env "URBEX_SECRETS_FILE={} $*"
-fi
-exec "$@"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+umask 077
+
+for pair in secrets.sops.env:URBEX_SECRETS_FILE urbex.sops.env:URBEX_GENERATED_SECRETS_FILE; do
+  file=${pair%%:*}
+  var=${pair##*:}
+  if grep -q '^sops_' "$file" 2>/dev/null; then
+    /opt/urbex/bin/sops decrypt --input-type dotenv --output-type dotenv "$file" >"$tmp/$file"
+    export "$var=$tmp/$file"
+  fi
+done
+"$@"

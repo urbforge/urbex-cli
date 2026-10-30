@@ -287,6 +287,31 @@ func TestSetupEnv_WritesFoldersAndDeclaresStacks(t *testing.T) {
 	}
 }
 
+func TestSetupEnv_ALinkedServiceTracksItsGeneratedFilesAndIgnoresItsWait(t *testing.T) {
+	k := &fakeKomodo{}
+	repo := envrepo.Repo{Path: t.TempDir()}
+	target := stagingTarget()
+	target.Links = map[string]*envrepo.Links{
+		"api": {Env: map[string]string{"PGHOST": "db"}, Waits: []envrepo.Wait{{Name: "db", Interface: "postgres", Host: "db", Port: 5432}}, WaitSeconds: 60},
+	}
+
+	if err := newRollout(&fakeGitea{}, k, &fakeGit{}).SetupEnv(context.Background(), target, repo); err != nil {
+		t.Fatalf("SetupEnv: %v", err)
+	}
+
+	api := k.stacks["my-app-api-staging"]
+	if len(api.ConfigFiles) != 4 || api.ConfigFiles[2].Path != "urbex.env" || api.ConfigFiles[3].Path != "urbex.sops.env" {
+		t.Errorf("expected the generated files tracked after the user's, got %+v", api.ConfigFiles)
+	}
+	if len(api.IgnoreServices) != 1 || api.IgnoreServices[0] != "wait" {
+		t.Errorf("expected the wait ignored, or Komodo shows the Stack unhealthy, got %v", api.IgnoreServices)
+	}
+	worker := k.stacks["my-app-worker-staging"]
+	if len(worker.ConfigFiles) != 2 || len(worker.IgnoreServices) != 0 {
+		t.Errorf("a service with no links is unchanged, got %+v", worker)
+	}
+}
+
 func TestSetupEnv_FailsWhenServersNeverConnect(t *testing.T) {
 	k := &fakeKomodo{waitErr: errors.New("komodo servers not connected: [my-app-api-staging]")}
 	err := newRollout(&fakeGitea{}, k, &fakeGit{}).SetupEnv(context.Background(), stagingTarget(), envrepo.Repo{Path: t.TempDir()})
@@ -325,7 +350,7 @@ func repoWithVersions(t *testing.T, version string) envrepo.Repo {
 	t.Helper()
 	repo := envrepo.Repo{Path: t.TempDir()}
 	for _, svc := range services() {
-		if err := repo.WriteService("staging", "my-app", svc, "img", false); err != nil {
+		if err := repo.WriteService("staging", "my-app", svc, "img", false, nil); err != nil {
 			t.Fatal(err)
 		}
 		if version != "" {
@@ -520,7 +545,7 @@ func TestReleases_OnlyVersionTags(t *testing.T) {
 func TestStatus_ReportsFollowingMain(t *testing.T) {
 	repo := envrepo.Repo{Path: t.TempDir()}
 	for _, svc := range services() {
-		if err := repo.WriteService("staging", "my-app", svc, "img", true); err != nil {
+		if err := repo.WriteService("staging", "my-app", svc, "img", true, nil); err != nil {
 			t.Fatal(err)
 		}
 		repo.SetVersion("staging", "my-app", svc.Name, envrepo.VersionFileState{Version: "a1b2c3d", Track: true})

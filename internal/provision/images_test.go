@@ -292,12 +292,12 @@ func TestCheckMajor_OnlyForApplicationsWithVolumes(t *testing.T) {
 	}
 }
 
-func TestApply_RefusesWhatIsNotSupportedYet(t *testing.T) {
+func TestApply_RefusesAUseOfAnUnknownApplication(t *testing.T) {
 	m := stackManifest()
-	m.Services[0].Uses = []string{"cache"}
+	m.Services[0].Uses = []string{"nowhere"}
 	o, _, _, _, _ := imagesOrchestrator(m)
 	err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "provides and uses are not supported yet") {
+	if err == nil || !strings.Contains(err.Error(), "uses nowhere, which urbex.yaml does not declare") {
 		t.Errorf("expected uses refused, got %v", err)
 	}
 }

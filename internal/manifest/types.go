@@ -34,8 +34,8 @@ type Service struct {
 	// environment (ADR-0028).
 	Image   string `yaml:"image,omitempty"`
 	Version string `yaml:"version,omitempty"`
-	// Provides and Uses are declared by the schema (ADR-0028, ADR-0030)
-	// but not acted on yet: see Unsupported.
+	// Provides is the interface the application implements and Uses the
+	// applications of the stack it needs (ADR-0028, ADR-0030).
 	Provides string   `yaml:"provides,omitempty"`
 	Uses     []string `yaml:"uses,omitempty"`
 	// Volumes are what the application keeps: named volumes, mount
@@ -275,8 +275,8 @@ func (m *Manifest) LeadingEnvironment() string {
 func (m *Manifest) SingleEnvironment() bool { return !m.HasEnvironment("staging") }
 
 // Unsupported returns what the manifest declares that the schema accepts
-// but urbex doesn't act on yet - refused rather than ignored, since an
-// application that expects a database would run without it - what an
+// but urbex doesn't act on yet - refused rather than ignored - what the
+// links between applications get wrong, what an
 // application from an image can't do without a port, and volumes that
 // would be mounted twice.
 func (m *Manifest) Unsupported() []string {
@@ -296,9 +296,6 @@ func (m *Manifest) Unsupported() []string {
 			}
 			names[key], paths[v.Path] = true, true
 		}
-		if svc.Provides != "" || len(svc.Uses) > 0 {
-			out = append(out, fmt.Sprintf("services %s: provides and uses are not supported yet (urbforge/urbex-cli#43)", svc.Name))
-		}
 		if svc.Port == 0 && svc.Public {
 			out = append(out, fmt.Sprintf("services %s: public needs a port", svc.Name))
 		}
@@ -306,7 +303,7 @@ func (m *Manifest) Unsupported() []string {
 			out = append(out, fmt.Sprintf("services %s: healthcheck needs a port", svc.Name))
 		}
 	}
-	return out
+	return append(out, m.linkErrors()...)
 }
 
 // Deployables returns what an environment of the project runs: its

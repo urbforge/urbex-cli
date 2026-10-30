@@ -31,7 +31,7 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
 	const image = "10.0.0.200:3000/urbex/my-app-api"
 
-	if err := repo.WriteService("staging", "my-app", service(), image, false); err != nil {
+	if err := repo.WriteService("staging", "my-app", service(), image, false, nil); err != nil {
 		t.Fatalf("WriteService: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 	changed := service()
 	changed.Port = 9090
 	changed.Healthcheck = ""
-	if err := repo.WriteService("staging", "my-app", changed, image, false); err != nil {
+	if err := repo.WriteService("staging", "my-app", changed, image, false, nil); err != nil {
 		t.Fatalf("WriteService: %v", err)
 	}
 	compose = read(t, filepath.Join(dir, ComposeFile))
@@ -87,7 +87,7 @@ func TestVersion(t *testing.T) {
 	if err := repo.SetVersion("prod", "my-app", "api", pinned); err == nil || !strings.Contains(err.Error(), "urbex apply prod") {
 		t.Errorf("expected setting a version before apply to fail with a hint, got %v", err)
 	}
-	if err := repo.WriteService("prod", "my-app", service(), "img", false); err != nil {
+	if err := repo.WriteService("prod", "my-app", service(), "img", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := repo.Version("prod", "my-app", "api"); err != nil || st != (VersionFileState{}) {
@@ -107,7 +107,7 @@ func TestVersion(t *testing.T) {
 
 func TestVersion_FollowingMain(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
-	if err := repo.WriteService("staging", "my-app", service(), "img", true); err != nil {
+	if err := repo.WriteService("staging", "my-app", service(), "img", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := repo.Version("staging", "my-app", "api"); st != (VersionFileState{Track: true}) {
@@ -126,7 +126,7 @@ func TestVersion_FollowingMain(t *testing.T) {
 		t.Errorf("Version = %+v, want %+v", st, following)
 	}
 	// ...and an existing version file is never reset by a re-apply.
-	if err := repo.WriteService("staging", "my-app", service(), "img", true); err != nil {
+	if err := repo.WriteService("staging", "my-app", service(), "img", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := repo.Version("staging", "my-app", "api"); st != following {
@@ -140,11 +140,11 @@ func TestEnvironmentsAndRemoveProject(t *testing.T) {
 		t.Errorf("Environments on an empty repo = %v, %v", envs, err)
 	}
 	for _, env := range []string{"staging", "prod"} {
-		if err := repo.WriteService(env, "my-app", service(), "img", false); err != nil {
+		if err := repo.WriteService(env, "my-app", service(), "img", false, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := repo.WriteService("staging", "other", service(), "img", false); err != nil {
+	if err := repo.WriteService("staging", "other", service(), "img", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if envs, _ := repo.Environments("my-app"); strings.Join(envs, ",") != "prod,staging" {
@@ -171,11 +171,11 @@ func TestDeploymentsAndPort(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	api := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
 	for _, env := range []string{"staging", "prod"} {
-		if err := repo.WriteService(env, "hello", api, "reg/urbex/hello-api", env == "staging"); err != nil {
+		if err := repo.WriteService(env, "hello", api, "reg/urbex/hello-api", env == "staging", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := repo.WriteService("staging", "other", manifest.Service{Name: "worker", Runtime: "go", Port: 9000}, "reg/urbex/other-worker", false); err != nil {
+	if err := repo.WriteService("staging", "other", manifest.Service{Name: "worker", Runtime: "go", Port: 9000}, "reg/urbex/other-worker", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Deployments()
@@ -200,7 +200,7 @@ func TestDeploymentsAndPort(t *testing.T) {
 func TestCompose_ExtraEnvironment(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	svc := manifest.Service{Name: "api", Runtime: "go", Port: 8080, Extra: map[string]string{"KEYCLOAK_ISSUER": "https://auth.example/realms/a-staging", "KEYCLOAK_REALM": "a-staging"}}
-	if err := repo.WriteService("staging", "a", svc, "reg/a-api", true); err != nil {
+	if err := repo.WriteService("staging", "a", svc, "reg/a-api", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/a/api/compose.yaml"))
@@ -217,7 +217,7 @@ func TestCompose_KindLabels(t *testing.T) {
 	api := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
 	web := manifest.Service{Name: manifest.WebService, Runtime: manifest.WebRuntime}
 	for _, svc := range []manifest.Service{api, web} {
-		if err := repo.WriteService("staging", "hello", svc, "reg/hello-"+svc.Name, true); err != nil {
+		if err := repo.WriteService("staging", "hello", svc, "reg/hello-"+svc.Name, true, nil); err != nil {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(filepath.Join(repo.Path, "environments/staging/hello", svc.Name, "compose.yaml"))
@@ -233,7 +233,7 @@ func TestWriteService_ApplicationFromAnImage(t *testing.T) {
 	dir := filepath.Join(repo.Path, "environments", "prod", "photos", "cache")
 	svc := manifest.Service{Name: "cache", Image: "valkey/valkey", Version: "9"}
 
-	if err := repo.WriteService("prod", "photos", svc, svc.Image, false); err != nil {
+	if err := repo.WriteService("prod", "photos", svc, svc.Image, false, nil); err != nil {
 		t.Fatalf("WriteService: %v", err)
 	}
 	compose := read(t, filepath.Join(dir, ComposeFile))
@@ -260,7 +260,7 @@ func TestWriteService_ApplicationFromAnImage(t *testing.T) {
 	}
 
 	svc.Port = 6379
-	if err := repo.WriteService("prod", "photos", svc, svc.Image, false); err != nil {
+	if err := repo.WriteService("prod", "photos", svc, svc.Image, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if compose := read(t, filepath.Join(dir, ComposeFile)); !strings.Contains(compose, `- "6379:6379"`) || strings.Contains(compose, "PORT") {
@@ -277,7 +277,7 @@ func TestCompose_Volumes(t *testing.T) {
 		{Name: "config", Path: "/config", Size: "5Gi"},
 		{Share: "media", Path: "/media", ReadOnly: true},
 	}}
-	if err := repo.WriteService("prod", "media", svc, svc.Image, false); err != nil {
+	if err := repo.WriteService("prod", "media", svc, svc.Image, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	compose := read(t, filepath.Join(repo.Path, "environments/prod/media/jellyfin", ComposeFile))
@@ -297,10 +297,124 @@ func TestCompose_Volumes(t *testing.T) {
 func TestCompose_NoVolumesNoVolumesBlock(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	svc := manifest.Service{Name: "api", Runtime: "go", Port: 8080}
-	if err := repo.WriteService("prod", "demo", svc, "reg/demo-api", false); err != nil {
+	if err := repo.WriteService("prod", "demo", svc, "reg/demo-api", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if compose := read(t, filepath.Join(repo.Path, "environments/prod/demo/api", ComposeFile)); strings.Contains(compose, "volumes:") {
 		t.Errorf("a service without volumes has none:\n%s", compose)
+	}
+}
+
+func linked() (manifest.Service, *Links) {
+	svc := manifest.Service{
+		Name: "api", Runtime: "go", Port: 8080, Uses: []string{"db", "ml"},
+		Env: map[string]map[string]string{"staging": {"LOG_LEVEL": "debug", "DB_PASSWORD": "${db.password}"}},
+	}
+	return svc, &Links{
+		Env: map[string]string{"PGHOST": "db.staging.my-app.lab", "ML_URL": "http://ml.staging.my-app.lab:3003"},
+		Waits: []Wait{
+			{Name: "db", Interface: manifest.InterfacePostgres, Host: "db.staging.my-app.lab", Port: 5432},
+			{Name: "ml", Host: "ml.staging.my-app.lab", Port: 3003},
+		},
+		WaitSeconds: 180,
+	}
+}
+
+func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc, links := linked()
+	if err := repo.WriteService("staging", "my-app", svc, "img", false, links); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
+	compose := read(t, filepath.Join(dir, ComposeFile))
+	for _, want := range []string{
+		"depends_on:\n      wait:\n        condition: service_completed_successfully",
+		"  wait:\n    image: " + WaitImage,
+		`restart: "no"`,
+		"end=$$(( $$(date +%s) + 180 ))",
+		"name=db; wait_for pg_isready -q -h db.staging.my-app.lab -p 5432 || exit 1",
+		"name=ml; wait_for sh -c 'nc -w 2 ml.staging.my-app.lab 3003 </dev/null >/dev/null 2>&1' || exit 1",
+		"      - urbex.env\n      - path: ${URBEX_GENERATED_SECRETS_FILE:-urbex.secrets.env}\n        required: false",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose is missing %q:\n%s", want, compose)
+		}
+	}
+	// The user's files come first, so the generated ones win.
+	if strings.Index(compose, "      - config.env") > strings.Index(compose, "      - urbex.env") {
+		t.Error("the generated file must load after the user's")
+	}
+	gen := read(t, filepath.Join(dir, GeneratedFile))
+	if !strings.Contains(gen, "PGHOST=db.staging.my-app.lab\n") || !strings.Contains(gen, "ML_URL=http://") {
+		t.Errorf("urbex.env:\n%s", gen)
+	}
+	if _, err := os.Stat(filepath.Join(dir, GeneratedSecretsFile)); err != nil {
+		t.Errorf("the generated secrets file must exist, Komodo tracks it: %v", err)
+	}
+	// A value that references what urbex generates is not in config.env.
+	cfg := read(t, filepath.Join(dir, ConfigFile))
+	if !strings.Contains(cfg, "LOG_LEVEL=debug") || strings.Contains(cfg, "DB_PASSWORD") {
+		t.Errorf("config.env:\n%s", cfg)
+	}
+}
+
+func TestWriteService_GeneratedFileIsRewrittenAndTheSecretsOneIsKept(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc, links := linked()
+	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
+	if err := repo.WriteService("staging", "my-app", svc, "img", false, links); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, GeneratedSecretsFile), []byte("DATABASE_URL=ENC[x]\nsops_version=3\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, GeneratedFile), []byte("STALE=1\n"), 0o644)
+	if err := repo.WriteService("staging", "my-app", svc, "img", false, links); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read(t, filepath.Join(dir, GeneratedFile)), "STALE") {
+		t.Error("urbex.env must be rewritten by every apply")
+	}
+	if !strings.Contains(read(t, filepath.Join(dir, GeneratedSecretsFile)), "DATABASE_URL=ENC[x]") {
+		t.Error("the encrypted generated file is not envrepo's to rewrite")
+	}
+	keys, err := repo.GeneratedKeys("staging", "my-app", "api")
+	if err != nil || strings.Join(keys, ",") != "ML_URL,PGHOST,DATABASE_URL" && strings.Join(keys, ",") != "PGHOST,ML_URL,DATABASE_URL" {
+		t.Errorf("GeneratedKeys = %v, %v", keys, err)
+	}
+}
+
+func TestWriteService_PostgresProviderPublishesAndChecksItself(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	db := manifest.Service{Name: "db", Image: "postgres", Version: "17", Provides: manifest.InterfacePostgres,
+		Volumes: []manifest.Volume{{Name: "data", Path: "/var/lib/postgresql"}}}
+	if err := repo.WriteService("staging", "my-app", db, "postgres", false, &Links{Env: map[string]string{"POSTGRES_USER": "urbex"}}); err != nil {
+		t.Fatal(err)
+	}
+	compose := read(t, filepath.Join(repo.Path, "environments", "staging", "my-app", "db", ComposeFile))
+	for _, want := range []string{
+		`- "5432:5432"`,
+		`pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB`,
+		"- data:/var/lib/postgresql",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose is missing %q:\n%s", want, compose)
+		}
+	}
+	if strings.Contains(compose, "  wait:") || strings.Contains(compose, "depends_on") {
+		t.Errorf("a provider that uses nothing waits for nothing:\n%s", compose)
+	}
+}
+
+func TestWriteService_AnUnlinkedServiceIsUnchanged(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	if err := repo.WriteService("staging", "my-app", service(), "img", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo.Path, "environments", "staging", "my-app", "api")
+	if _, err := os.Stat(filepath.Join(dir, GeneratedFile)); !os.IsNotExist(err) {
+		t.Error("an unlinked service has no generated file")
+	}
+	if strings.Contains(read(t, filepath.Join(dir, ComposeFile)), "      - urbex.env") {
+		t.Error("an unlinked service does not load the generated file")
 	}
 }

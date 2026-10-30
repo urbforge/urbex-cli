@@ -112,7 +112,7 @@ func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
 		if svc.FromImage() {
 			image, follow = svc.Image, false
 		}
-		if err := repo.WriteService(t.Env, t.Project, svc, image, follow); err != nil {
+		if err := repo.WriteService(t.Env, t.Project, svc, image, follow, t.Links[svc.Name]); err != nil {
 			return err
 		}
 	}
