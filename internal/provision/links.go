@@ -49,7 +49,7 @@ func (o *Orchestrator) linkedTarget(ctx context.Context, env string, repo envrep
 		l := &envrepo.Links{Env: plan.Plain[svc.Name], WaitSeconds: o.Manifest.WaitSeconds(svc.Name)}
 		for _, name := range svc.Uses {
 			provider, _ := o.Manifest.Service(name)
-			w := envrepo.Wait{Name: name, Interface: provider.Provides, Host: o.InternalHostname(env, provider), Port: provider.Port}
+			w := envrepo.Wait{Name: name, Interface: provider.Provides, Host: o.InternalHostname(env, provider), Port: provider.Port, Healthcheck: provider.Healthcheck}
 			if provider.Provides == manifest.InterfacePostgres {
 				w.Port = links.PostgresPort
 			}

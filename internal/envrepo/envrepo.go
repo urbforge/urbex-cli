@@ -484,13 +484,16 @@ type Links struct {
 }
 
 // Wait is an application another one uses, as the wait probes it: for
-// a postgres provider, that it takes connections; for any other, that
-// its port answers.
+// a postgres provider, that it takes connections; for any other, its
+// healthcheck, or that its port answers when it has none. A port answers
+// before the application can take calls, so it is only the fallback.
 type Wait struct {
 	Name      string
 	Interface string
 	Host      string
 	Port      int
+	// Healthcheck is the provider's HTTP healthcheck path, "" for none.
+	Healthcheck string
 }
 
 // writeEnvFiles lists the files compose loads, later ones winning: the
@@ -531,9 +534,12 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("          echo \"wait: $$name is ready\"\n")
 	b.WriteString("        }\n")
 	for _, w := range l.Waits {
-		if w.Interface == manifest.InterfacePostgres {
+		switch {
+		case w.Interface == manifest.InterfacePostgres:
 			fmt.Fprintf(b, "        name=%s; wait_for pg_isready -q -h %s -p %d || exit 1\n", w.Name, w.Host, w.Port)
-		} else {
+		case w.Healthcheck != "":
+			fmt.Fprintf(b, "        name=%s; wait_for wget -q --spider -T 2 http://%s:%d%s || exit 1\n", w.Name, w.Host, w.Port, w.Healthcheck)
+		default:
 			fmt.Fprintf(b, "        name=%s; wait_for sh -c 'nc -w 2 %s %d </dev/null >/dev/null 2>&1' || exit 1\n", w.Name, w.Host, w.Port)
 		}
 	}

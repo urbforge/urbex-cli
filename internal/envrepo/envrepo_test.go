@@ -307,7 +307,7 @@ func TestCompose_NoVolumesNoVolumesBlock(t *testing.T) {
 
 func linked() (manifest.Service, *Links) {
 	svc := manifest.Service{
-		Name: "api", Runtime: "go", Port: 8080, Uses: []string{"db", "ml"},
+		Name: "api", Runtime: "go", Port: 8080, Uses: []string{"db", "ml", "auth"},
 		Env: map[string]map[string]string{"staging": {"LOG_LEVEL": "debug", "DB_PASSWORD": "${db.password}"}},
 	}
 	return svc, &Links{
@@ -315,6 +315,7 @@ func linked() (manifest.Service, *Links) {
 		Waits: []Wait{
 			{Name: "db", Interface: manifest.InterfacePostgres, Host: "db.staging.my-app.lab", Port: 5432},
 			{Name: "ml", Host: "ml.staging.my-app.lab", Port: 3003},
+			{Name: "auth", Host: "auth.staging.my-app.lab", Port: 9000, Healthcheck: "/ready"},
 		},
 		WaitSeconds: 180,
 	}
@@ -335,6 +336,7 @@ func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
 		"end=$$(( $$(date +%s) + 180 ))",
 		"name=db; wait_for pg_isready -q -h db.staging.my-app.lab -p 5432 || exit 1",
 		"name=ml; wait_for sh -c 'nc -w 2 ml.staging.my-app.lab 3003 </dev/null >/dev/null 2>&1' || exit 1",
+		"name=auth; wait_for wget -q --spider -T 2 http://auth.staging.my-app.lab:9000/ready || exit 1",
 		"      - urbex.env\n      - path: ${URBEX_GENERATED_SECRETS_FILE:-urbex.secrets.env}\n        required: false",
 	} {
 		if !strings.Contains(compose, want) {
