@@ -26,4 +26,28 @@ for pair in secrets.sops.env:URBEX_SECRETS_FILE urbex.sops.env:URBEX_GENERATED_S
     export "$var=$tmp/$file"
   fi
 done
+
+# preflight <compose command>: for an `up` of a Stack with a wait (an
+# application that uses others, ADR-0028), runs the wait alone first. If
+# what the application uses isn't ready, the deploy stops here and the
+# running version stays up: compose would otherwise replace it at once
+# and leave the new one waiting, an outage the change didn't call for
+# (urbforge/urbex-cli#43). The reconciler deploys it once they are ready.
+preflight() {
+  grep -q '^  wait:$' compose.yaml 2>/dev/null || return 0
+  # $@ becomes the command up to `up` (docker compose -p ... -f ...). The
+  # list was expanded before the loop: rebuilding $@ in it is safe.
+  first=true found=false
+  for arg do
+    if $first; then set --; first=false; fi
+    if [ "$arg" = up ]; then found=true; break; fi
+    set -- "$@" "$arg"
+  done
+  $found || return 0
+  "$@" run --rm --no-deps -T wait
+}
+if ! preflight "$@"; then
+  echo "urbex: what this application uses is not ready - not deployed, the running version stays" >&2
+  exit 1
+fi
 "$@"

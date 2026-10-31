@@ -17,6 +17,32 @@ type serviceVars struct {
 	Cores     int    `json:"cores"`
 	MemoryMB  int    `json:"memory_mb"`
 	DiskGB    int    `json:"disk_gb"`
+	// When the LXC starts as the node boots (startupOrder).
+	StartupOrder   int `json:"startup_order"`
+	StartupUpDelay int `json:"startup_up_delay"`
+}
+
+// The applications' LXCs start, when the node boots, after the
+// platform's (1 and 2, platform/terraform/base): at appStartupOrder plus
+// their depth in the graph of `uses`, so that each starts after what it
+// uses. One that others use holds the next back for its ready_within, at
+// most maxStartupUpDelay: Proxmox waits that long after each LXC it
+// starts (urbforge/urbex-cli#43).
+const (
+	appStartupOrder   = 10
+	maxStartupUpDelay = 300
+)
+
+// startupOrder returns the boot order and delay of svc's LXC.
+func startupOrder(m *manifest.Manifest, svc manifest.Service) (order, upDelay int) {
+	for _, other := range m.Services {
+		for _, used := range other.Uses {
+			if used == svc.Name {
+				upDelay = min(svc.ReadySeconds(), maxStartupUpDelay)
+			}
+		}
+	}
+	return appStartupOrder + m.Depth(svc.Name), upDelay
 }
 
 // tfVars mirrors platform/terraform/project/variables.tf.
@@ -43,6 +69,7 @@ type tfVars struct {
 // nameservers are its LXCs' (Technitium, then its forwarders).
 func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int, nameservers []string, cloneVMID int) error {
 	svcVars := make(map[string]serviceVars, len(services))
+	graph := &manifest.Manifest{Services: services}
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
 		entry := allocations[hostname]
@@ -57,12 +84,15 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 			return err
 		}
 
+		order, upDelay := startupOrder(graph, svc)
 		svcVars[hostname] = serviceVars{
-			VMID:      entry.VMID,
-			IPAddress: entry.IP,
-			Cores:     resources.CPU,
-			MemoryMB:  memMB,
-			DiskGB:    diskGB,
+			VMID:           entry.VMID,
+			IPAddress:      entry.IP,
+			Cores:          resources.CPU,
+			MemoryMB:       memMB,
+			DiskGB:         diskGB,
+			StartupOrder:   order,
+			StartupUpDelay: upDelay,
 		}
 	}
 

@@ -1,6 +1,9 @@
 # Base-service LXCs. Fixed VMID offsets and resource sizing for a
 # personal-app-scale Proxmox host - see
 # docs/decisions/0009-one-lxc-per-service-per-env.md in urbforge/urbex.
+# When the node boots, Technitium starts first - every other LXC resolves
+# names through it - then the rest of the platform, then the
+# applications (startup_order, urbforge/urbex-cli#43).
 
 module "gitea" {
   source = "../modules/lxc"
@@ -22,6 +25,8 @@ module "gitea" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 2
+  startup_up_delay = 0
 }
 
 module "komodo" {
@@ -44,6 +49,8 @@ module "komodo" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 2
+  startup_up_delay = 0
 }
 
 module "technitium" {
@@ -66,6 +73,8 @@ module "technitium" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 1
+  startup_up_delay = 10
 }
 
 module "keycloak" {
@@ -88,6 +97,8 @@ module "keycloak" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 2
+  startup_up_delay = 0
 }
 
 module "observability" {
@@ -110,6 +121,8 @@ module "observability" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 2
+  startup_up_delay = 0
 }
 
 # The Cloudflare Tunnel connector: only on a platform that publishes
@@ -135,4 +148,6 @@ module "tunnel" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = 2
+  startup_up_delay = 0
 }

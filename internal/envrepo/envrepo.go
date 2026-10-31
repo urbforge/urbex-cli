@@ -54,8 +54,22 @@ const (
 	GeneratedSecretsEnvVar = "URBEX_GENERATED_SECRETS_FILE"
 
 	// WaitImage runs a Stack's wait for what its application uses: it has
-	// pg_isready and a busybox with nc.
+	// pg_isready and a busybox with wget.
 	WaitImage = "docker.io/library/postgres:17-alpine"
+)
+
+// The wait's probing of a provider (urbforge/urbex-cli#43).
+const (
+	// WaitGoodAnswers is how many good answers, two seconds apart, the
+	// wait needs from a provider: one that crashes within seconds of
+	// starting doesn't pass. One that crashes later does - the probe
+	// can't see restarts; the reconciler does (platform/komodo).
+	WaitGoodAnswers = 3
+	// WaitBadAnswers failed answers in a row start the count over.
+	WaitBadAnswers = 2
+	// WaitMaxBackoffSeconds caps the doubling wait between the probes of
+	// a provider that doesn't answer (plus up to as much again of jitter).
+	WaitMaxBackoffSeconds = 8
 )
 
 // Root is the environments tree, relative to the GitOps repo root.
@@ -485,8 +499,8 @@ type Links struct {
 
 // Wait is an application another one uses, as the wait probes it: for
 // a postgres provider, that it takes connections; for any other, its
-// healthcheck, or that its port answers when it has none. A port answers
-// before the application can take calls, so it is only the fallback.
+// healthcheck, which the manifest requires of it (a port answers before
+// the application can take calls).
 type Wait struct {
 	Name      string
 	Interface string
@@ -526,22 +540,31 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("      - -c\n")
 	b.WriteString("      - |\n")
 	fmt.Fprintf(b, "        end=$$(( $$(date +%%s) + %d ))\n", l.WaitSeconds)
+	// Ready after WaitGoodAnswers good answers, two seconds apart; one
+	// failed answer among them (a DNS hiccup) doesn't start the count
+	// over, WaitBadAnswers in a row do. While the provider doesn't
+	// answer, the probes back off exponentially, with jitter, so that
+	// the consumers of a provider that comes back don't all probe it at
+	// once.
 	b.WriteString("        wait_for() {\n")
-	b.WriteString("          until \"$$@\"; do\n")
+	b.WriteString("          good=0 bad=0 delay=1\n")
+	fmt.Fprintf(b, "          while [ $$good -lt %d ]; do\n", WaitGoodAnswers)
+	b.WriteString("            if \"$$@\"; then good=$$((good + 1)) bad=0 delay=1; else bad=$$((bad + 1)); fi\n")
+	fmt.Fprintf(b, "            [ $$bad -ge %d ] && good=0\n", WaitBadAnswers)
+	fmt.Fprintf(b, "            [ $$good -ge %d ] && break\n", WaitGoodAnswers)
 	b.WriteString("            [ $$(date +%s) -ge $$end ] && { echo \"wait: gave up waiting for $$name\"; return 1; }\n")
-	b.WriteString("            sleep 2\n")
+	b.WriteString("            if [ $$bad -eq 0 ]; then sleep 2; continue; fi\n")
+	b.WriteString("            sleep $$((delay + $$RANDOM % (delay + 1)))\n")
+	fmt.Fprintf(b, "            [ $$delay -lt %d ] && delay=$$((delay * 2))\n", WaitMaxBackoffSeconds)
 	b.WriteString("          done\n")
 	b.WriteString("          echo \"wait: $$name is ready\"\n")
 	b.WriteString("        }\n")
 	for _, w := range l.Waits {
-		switch {
-		case w.Interface == manifest.InterfacePostgres:
-			fmt.Fprintf(b, "        name=%s; wait_for pg_isready -q -h %s -p %d || exit 1\n", w.Name, w.Host, w.Port)
-		case w.Healthcheck != "":
-			fmt.Fprintf(b, "        name=%s; wait_for wget -q --spider -T 2 http://%s:%d%s || exit 1\n", w.Name, w.Host, w.Port, w.Healthcheck)
-		default:
-			fmt.Fprintf(b, "        name=%s; wait_for sh -c 'nc -w 2 %s %d </dev/null >/dev/null 2>&1' || exit 1\n", w.Name, w.Host, w.Port)
+		if w.Interface == manifest.InterfacePostgres {
+			fmt.Fprintf(b, "        name=%s; wait_for pg_isready -q -t 2 -h %s -p %d || exit 1\n", w.Name, w.Host, w.Port)
+			continue
 		}
+		fmt.Fprintf(b, "        name=%s; wait_for wget -q --spider -T 2 http://%s:%d%s || exit 1\n", w.Name, w.Host, w.Port, w.Healthcheck)
 	}
 }
 

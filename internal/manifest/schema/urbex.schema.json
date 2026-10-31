@@ -161,6 +161,12 @@
           "type": "string",
           "description": "HTTP path probed (GET, inside the container) to tell whether the service is healthy. No healthcheck when omitted."
         },
+        "ready_within": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(s|m)$",
+          "default": "60s",
+          "description": "How long the application may take to be ready after it starts (seconds or minutes, e.g. 90s, 5m): what the applications that use it wait for it, and how long Proxmox waits before starting them after a reboot. See urbforge/urbex-cli#43."
+        },
         "public": {
           "type": "boolean",
           "default": false,

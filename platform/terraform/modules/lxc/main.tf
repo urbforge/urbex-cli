@@ -11,6 +11,16 @@ resource "proxmox_virtual_environment_container" "this" {
   started       = true
   start_on_boot = true
 
+  # The order of the LXCs when the node boots: the platform first, then
+  # the applications, each after what it uses (urbforge/urbex-cli#43).
+  dynamic "startup" {
+    for_each = var.startup_order > 0 ? [1] : []
+    content {
+      order    = var.startup_order
+      up_delay = var.startup_up_delay
+    }
+  }
+
   # Empty means "no pool". On a Proxmox where the API token is scoped to a
   # pool (e.g. PVEVMAdmin on /pool/urbex), containers must be created in
   # that pool or the token can't see or manage them afterwards.

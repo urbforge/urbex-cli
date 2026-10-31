@@ -3,6 +3,7 @@ package manifest
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -61,8 +62,9 @@ func (s Service) Interface() string { return s.Provides }
 
 // linkErrors are what `uses` and the env references of the stack's
 // services get wrong: an application that isn't there, one that uses
-// itself, a cycle, a reference to something the service doesn't use or
-// to a value its interface doesn't export.
+// itself, one used with no way to tell it is ready (neither an interface
+// nor a healthcheck), a cycle, a reference to something the service
+// doesn't use or to a value its interface doesn't export.
 func (m *Manifest) linkErrors() []string {
 	var out []string
 	for _, svc := range m.Services {
@@ -75,8 +77,10 @@ func (m *Manifest) linkErrors() []string {
 				switch {
 				case !ok:
 					out = append(out, fmt.Sprintf("services %s: uses %s, which urbex.yaml does not declare", svc.Name, name))
-				case provider.Provides == "" && provider.Port == 0:
-					out = append(out, fmt.Sprintf("services %s: uses %s, which has no interface and no port to connect to", svc.Name, name))
+				case provider.Provides == "" && (provider.Healthcheck == "" || provider.Port == 0):
+					// The wait needs to tell when the provider can take
+					// calls: a port that answers doesn't say it.
+					out = append(out, fmt.Sprintf("services %s: uses %s, which has neither an interface nor a healthcheck: give %s a port and a healthcheck, so that %s starts once %s is ready", svc.Name, name, name, svc.Name, name))
 				}
 			}
 		}
@@ -161,10 +165,9 @@ func (m *Manifest) cycle() []string {
 }
 
 // Depth is how many applications there are in the longest chain of
-// `uses` upstream of name: 0 for one that uses nothing. An application
-// waits for the whole chain, because every Stack is deployed at once
-// and each one's wait starts at the beginning (urbforge/urbex-cli#43).
-// The manifest must have no cycle.
+// `uses` upstream of name: 0 for one that uses nothing. It orders the
+// LXCs' start after a reboot of the node (urbforge/urbex-cli#43). The
+// manifest must have no cycle.
 func (m *Manifest) Depth(name string) int {
 	svc, ok := m.service(name)
 	if !ok {
@@ -179,12 +182,46 @@ func (m *Manifest) Depth(name string) int {
 	return depth
 }
 
-// WaitBudgetSeconds is how long an application waits for each level of
-// the chain it depends on, a PostgreSQL's first start (initdb) included.
-const WaitBudgetSeconds = 60
+// DefaultReadyWithin is how long an application may take to be ready when
+// urbex.yaml doesn't say (ready_within), a PostgreSQL's first start
+// (initdb) included.
+const DefaultReadyWithin = "60s"
+
+// ReadySeconds is how long the application may take to be ready after it
+// starts: its ready_within, in seconds.
+func (s Service) ReadySeconds() int {
+	v := s.ReadyWithin
+	if v == "" {
+		v = DefaultReadyWithin
+	}
+	n, err := strconv.Atoi(v[:len(v)-1])
+	if err != nil || n <= 0 {
+		n, v = 60, "s" // the schema rejects anything else
+	}
+	if strings.HasSuffix(v, "m") {
+		return n * 60
+	}
+	return n
+}
 
 // WaitSeconds is how long the application named name waits for what it
-// uses before giving up: its depth in the graph times the budget.
+// uses before giving up: the longest chain of ready_within upstream of
+// it, since its wait starts with every other Stack's deploy. 0 for one
+// that uses nothing. The manifest must have no cycle.
 func (m *Manifest) WaitSeconds(name string) int {
-	return m.Depth(name) * WaitBudgetSeconds
+	svc, ok := m.service(name)
+	if !ok {
+		return 0
+	}
+	longest := 0
+	for _, dep := range svc.Uses {
+		provider, ok := m.service(dep)
+		if !ok {
+			continue
+		}
+		if w := provider.ReadySeconds() + m.WaitSeconds(dep); w > longest {
+			longest = w
+		}
+	}
+	return longest
 }

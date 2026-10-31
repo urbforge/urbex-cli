@@ -61,7 +61,7 @@ func TestApply_LinksGenerateCredentialsOnceAndWaitInTheConsumersStack(t *testing
 		strings.Contains(env, apiSecrets["PGPASSWORD"]) {
 		t.Errorf("api urbex.env:\n%s", env)
 	}
-	if compose := read("api", envrepo.ComposeFile); !strings.Contains(compose, "wait_for pg_isready -q -h db.staging.my-app.") ||
+	if compose := read("api", envrepo.ComposeFile); !strings.Contains(compose, "wait_for pg_isready -q -t 2 -h db.staging.my-app.") ||
 		!strings.Contains(compose, "+ 60 ))") {
 		t.Errorf("api compose:\n%s", compose)
 	}
@@ -94,6 +94,7 @@ func TestApply_AStackWithoutLinksNeedsNoSecretStore(t *testing.T) {
 func TestApply_RefusesACycle(t *testing.T) {
 	m := linkedManifest()
 	m.Services[1].Uses = []string{"api"}
+	m.Services[0].Healthcheck = "/healthz" // so that only the cycle is wrong
 	o, _, _, _, _ := imagesOrchestrator(m)
 	o.Secrets, o.Volumes = memStore{}, newFakeVolumes()
 	err := o.Apply(context.Background(), Options{Env: "staging", GitOpsRepoPath: t.TempDir()})

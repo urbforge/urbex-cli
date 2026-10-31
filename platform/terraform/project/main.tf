@@ -26,4 +26,6 @@ module "service" {
   keyctl           = var.keyctl
   network_bridge   = var.network_bridge
   dns_servers      = var.dns_servers
+  startup_order    = each.value.startup_order
+  startup_up_delay = each.value.startup_up_delay
 }

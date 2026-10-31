@@ -11,7 +11,7 @@ func stack() *manifest.Manifest {
 	return &manifest.Manifest{Project: "acme-app", Services: []manifest.Service{
 		{Name: "db", Image: "postgres", Version: "17", Provides: manifest.InterfacePostgres, Volumes: []manifest.Volume{{Name: "data", Path: "/var/lib/postgresql"}}},
 		{Name: "admin-ui", Runtime: "go", Port: 8080, Uses: []string{"db"}},
-		{Name: "ml", Image: "ml", Version: "1", Port: 3003},
+		{Name: "ml", Image: "ml", Version: "1", Port: 3003, Healthcheck: "/healthz"},
 		{Name: "api", Runtime: "go", Port: 8081, Uses: []string{"db", "ml"}, Env: map[string]map[string]string{
 			"staging": {"DB_HOSTNAME": "${db.host}", "DB_PASSWORD": "${db.password}", "ML": "${ml.url}", "PLAIN": "x"},
 		}},

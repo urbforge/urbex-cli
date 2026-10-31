@@ -43,6 +43,9 @@ type Service struct {
 	Volumes     []Volume `yaml:"volumes,omitempty"`
 	Port        int      `yaml:"port"`
 	Healthcheck string   `yaml:"healthcheck,omitempty"`
+	// ReadyWithin is how long the application may take to be ready after
+	// it starts ("90s", "5m"); "" is DefaultReadyWithin. See ReadySeconds.
+	ReadyWithin string `yaml:"ready_within,omitempty"`
 	// Public publishes the service on the internet, through the
 	// platform's Cloudflare Tunnel (ADR-0022).
 	Public    bool                         `yaml:"public,omitempty"`

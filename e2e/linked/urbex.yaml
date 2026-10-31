@@ -10,6 +10,9 @@ services:
     image: docker.io/library/postgres
     version: "17"
     provides: postgres
+    # Longer than the default 60 s: what uses it waits for the sum along
+    # the chain (api 90 s, web 90 + 60 s).
+    ready_within: 90s
     volumes:
       - { name: data, path: /var/lib/postgresql, size: 1Gi }
   - name: api

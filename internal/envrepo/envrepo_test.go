@@ -314,7 +314,7 @@ func linked() (manifest.Service, *Links) {
 		Env: map[string]string{"PGHOST": "db.staging.my-app.lab", "ML_URL": "http://ml.staging.my-app.lab:3003"},
 		Waits: []Wait{
 			{Name: "db", Interface: manifest.InterfacePostgres, Host: "db.staging.my-app.lab", Port: 5432},
-			{Name: "ml", Host: "ml.staging.my-app.lab", Port: 3003},
+			{Name: "ml", Host: "ml.staging.my-app.lab", Port: 3003, Healthcheck: "/healthz"},
 			{Name: "auth", Host: "auth.staging.my-app.lab", Port: 9000, Healthcheck: "/ready"},
 		},
 		WaitSeconds: 180,
@@ -334,9 +334,17 @@ func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
 		"  wait:\n    image: " + WaitImage,
 		`restart: "no"`,
 		"end=$$(( $$(date +%s) + 180 ))",
-		"name=db; wait_for pg_isready -q -h db.staging.my-app.lab -p 5432 || exit 1",
-		"name=ml; wait_for sh -c 'nc -w 2 ml.staging.my-app.lab 3003 </dev/null >/dev/null 2>&1' || exit 1",
+		"name=db; wait_for pg_isready -q -t 2 -h db.staging.my-app.lab -p 5432 || exit 1",
+		"name=ml; wait_for wget -q --spider -T 2 http://ml.staging.my-app.lab:3003/healthz || exit 1",
 		"name=auth; wait_for wget -q --spider -T 2 http://auth.staging.my-app.lab:9000/ready || exit 1",
+		// A provider passes after three good answers; two failures in a
+		// row start the count over; a provider that doesn't answer is
+		// probed less and less often, with jitter.
+		"while [ $$good -lt 3 ]; do",
+		"if \"$$@\"; then good=$$((good + 1)) bad=0 delay=1; else bad=$$((bad + 1)); fi",
+		"[ $$bad -ge 2 ] && good=0",
+		"sleep $$((delay + $$RANDOM % (delay + 1)))",
+		"[ $$delay -lt 8 ] && delay=$$((delay * 2))",
 		"      - urbex.env\n      - path: ${URBEX_GENERATED_SECRETS_FILE:-urbex.secrets.env}\n        required: false",
 	} {
 		if !strings.Contains(compose, want) {
