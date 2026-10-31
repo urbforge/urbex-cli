@@ -3,10 +3,12 @@ package rollout
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -86,6 +88,10 @@ type fakeKomodo struct {
 	reconciles int
 	actions    []map[string]any
 	actionFail bool
+	// variables are Komodo variables by name; deletedVariables, the
+	// names DeleteVariable was called with.
+	variables        map[string]string
+	deletedVariables []string
 	// onReconcile lets a test change status when Komodo is nudged.
 	onReconcile func()
 }
@@ -134,6 +140,22 @@ func (f *fakeKomodo) RunAction(ctx context.Context, name string, args map[string
 }
 func (f *fakeKomodo) DestroyStack(ctx context.Context, name string) error {
 	f.destroyed = append(f.destroyed, name)
+	return nil
+}
+func (f *fakeKomodo) EnsureVariable(ctx context.Context, name, value string, secret bool) error {
+	if f.variables == nil {
+		f.variables = map[string]string{}
+	}
+	f.variables[name] = value
+	return nil
+}
+func (f *fakeKomodo) Variable(ctx context.Context, name string) (string, bool, error) {
+	v, ok := f.variables[name]
+	return v, ok, nil
+}
+func (f *fakeKomodo) DeleteVariable(ctx context.Context, name string) error {
+	delete(f.variables, name)
+	f.deletedVariables = append(f.deletedVariables, name)
 	return nil
 }
 func (f *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ...string) error {
@@ -309,6 +331,73 @@ func TestSetupEnv_ALinkedServiceTracksItsGeneratedFilesAndIgnoresItsWait(t *test
 	worker := k.stacks["my-app-worker-staging"]
 	if len(worker.ConfigFiles) != 2 || len(worker.IgnoreServices) != 0 {
 		t.Errorf("a service with no links is unchanged, got %+v", worker)
+	}
+}
+
+func TestSetupEnv_KeepsTheGraphForTheReconciler(t *testing.T) {
+	k := &fakeKomodo{}
+	target := Target{Project: "shop", Env: "prod", Services: []manifest.Service{
+		{Name: "db", Image: "postgres", Version: "17", Provides: manifest.InterfacePostgres, ReadyWithin: "5m"},
+		{Name: "api", Image: "caddy", Version: "2", Port: 80, Healthcheck: "/", Uses: []string{"db"}},
+		{Name: "web", Image: "caddy", Version: "2", Port: 80},
+	}, Links: map[string]*envrepo.Links{
+		"db":  {Env: map[string]string{}},
+		"api": {Env: map[string]string{}, WaitSeconds: 300},
+	}}
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	if err := r.SetupEnv(context.Background(), target, envrepo.Repo{Path: t.TempDir()}); err != nil {
+		t.Fatalf("SetupEnv: %v", err)
+	}
+	var g Graph
+	if err := json.Unmarshal([]byte(k.variables["URBEX_GRAPH_SHOP_PROD"]), &g); err != nil {
+		t.Fatalf("no graph in URBEX_GRAPH_SHOP_PROD: %v (%v)", err, k.variables)
+	}
+	want := map[string]GraphStack{
+		"shop-db-prod":  {Uses: []string{}, ReadyWithin: 300, Wait: 0},
+		"shop-api-prod": {Uses: []string{"shop-db-prod"}, ReadyWithin: 60, Wait: 300},
+	}
+	if !reflect.DeepEqual(g.Stacks, want) || g.Project != "shop" || g.Env != "prod" {
+		t.Errorf("graph = %+v, want %+v", g, want)
+	}
+
+	// No links anymore: the graph goes, and with the environment.
+	target.Links = nil
+	if err := r.SetupEnv(context.Background(), target, envrepo.Repo{Path: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := k.variables["URBEX_GRAPH_SHOP_PROD"]; ok {
+		t.Error("an environment without links should have no graph")
+	}
+	k.deletedVariables = nil
+	if err := r.RemoveEnv(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.deletedVariables) != 1 || k.deletedVariables[0] != "URBEX_GRAPH_SHOP_PROD" {
+		t.Errorf("RemoveEnv should delete the graph, deleted %v", k.deletedVariables)
+	}
+}
+
+func TestReconcilerStatus_TheDeadMansSwitchAndTheOpenCircuits(t *testing.T) {
+	k := &fakeKomodo{variables: map[string]string{
+		"URBEX_GRAPH_SHOP_PROD": `{"project":"shop","env":"prod","stacks":{"shop-db-prod":{"uses":[]},"shop-api-prod":{"uses":["shop-db-prod"]}}}`,
+	}}
+	r := newRollout(&fakeGitea{}, k, &fakeGit{})
+	now := time.Now()
+
+	st, err := r.ReconcilerStatus(context.Background(), "shop", "prod")
+	if err != nil || !st.Linked || !st.Stale(now) {
+		t.Errorf("a reconciler that never ran is stale: %+v, %v", st, err)
+	}
+	k.variables["URBEX_RECONCILE_STATE"] = fmt.Sprintf(`{"heartbeat":%d,"stacks":{"shop-api-prod":{"breaker":"open"},"shop-db-prod":{"breaker":"closed","unstable":true},"other-x-prod":{"breaker":"open"}}}`, now.Add(-time.Minute).UnixMilli())
+	st, err = r.ReconcilerStatus(context.Background(), "shop", "prod")
+	if err != nil || st.Stale(now) || !reflect.DeepEqual(st.Open, []string{"shop-api-prod"}) || !reflect.DeepEqual(st.Unstable, []string{"shop-db-prod"}) {
+		t.Errorf("status = %+v, %v", st, err)
+	}
+	if !st.Stale(now.Add(ReconcilerStaleAfter)) {
+		t.Error("a run older than ReconcilerStaleAfter is stale")
+	}
+	if st, _ := r.ReconcilerStatus(context.Background(), "site", "prod"); st.Linked || st.Stale(now) {
+		t.Errorf("an environment without links has nothing to say: %+v", st)
 	}
 }
 

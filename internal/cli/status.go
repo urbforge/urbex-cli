@@ -176,20 +176,26 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 	}
 
 	// What the GitOps repo asks for and what Komodo runs, when this
-	// machine has been bootstrapped.
+	// machine has been bootstrapped; and what the reconciler says of the
+	// environment, if its applications use each other.
 	deployed := map[string]rollout.Deployed{}
+	var reconciler rollout.ReconcilerStatus
 	if len(creds.MissingForPlatform()) == 0 {
 		ep, err := bootstrap.EndpointsFor(cfg)
 		if err != nil {
 			return err
 		}
 		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
-		list, err := newRollout(cfg, creds, ep, "", out).Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
+		r := newRollout(cfg, creds, ep, "", out)
+		list, err := r.Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
 		if err != nil {
 			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
 		}
 		for _, d := range list {
 			deployed[d.Service] = d
+		}
+		if reconciler, err = r.ReconcilerStatus(cmd.Context(), m.Project, env); err != nil {
+			fmt.Fprintf(out, "(could not read the reconciler's state: %v)\n", err)
 		}
 	}
 
@@ -230,6 +236,7 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		}
 		fmt.Fprintln(out)
 	}
+	printReconciler(out, reconciler, time.Now())
 	// Where each service is reached: its LXC on the LAN and, if it is
 	// public or a web frontend, its HTTPS address.
 	o := &provision.Orchestrator{Manifest: m, Config: cfg}
@@ -262,4 +269,28 @@ func yesno(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// printReconciler says what the reconciler (Komodo Action
+// urbex-reconcile) did lately for an environment whose applications use
+// each other: when it last ran - a dead man's switch, it runs every
+// minute - and what it holds back.
+func printReconciler(out io.Writer, st rollout.ReconcilerStatus, now time.Time) {
+	if !st.Linked {
+		return
+	}
+	switch {
+	case st.LastRun.IsZero():
+		fmt.Fprintf(out, "\nReconciler: has never run - is the Komodo Action %s scheduled?\n", bootstrap.ReconcileAction)
+	case st.Stale(now):
+		fmt.Fprintf(out, "\nReconciler: last heard from %s ago - not running: is the Komodo Action %s scheduled, and Komodo Core up?\n", now.Sub(st.LastRun).Round(time.Second), bootstrap.ReconcileAction)
+	default:
+		fmt.Fprintf(out, "\nReconciler: running, last heard from %s ago.\n", now.Sub(st.LastRun).Round(time.Second))
+	}
+	if len(st.Open) > 0 {
+		fmt.Fprintf(out, "  circuit open, not deployed until it cools down: %s (see the Action's last runs in Komodo)\n", strings.Join(st.Open, ", "))
+	}
+	if len(st.Unstable) > 0 {
+		fmt.Fprintf(out, "  restarting (crash loop), what uses them waits: %s\n", strings.Join(st.Unstable, ", "))
+	}
 }

@@ -1,0 +1,75 @@
+# Managed by urbex bootstrap (Stack urbex-observability, ADR-0027).
+#
+# The alerts of the reconciler, the Komodo Action urbex-reconcile
+# (platform/komodo/reconcile.ts, urbforge/urbex-cli#43): it sends a line to
+# Loki on every run, once a minute, and an error line for every circuit
+# breaker it holds open and every provider it sees in a crash loop.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: urbex-reconcile
+    folder: urbex
+    interval: 1m
+    rules:
+      # The dead man's switch: no run for five minutes - the Action is not
+      # scheduled, or Komodo Core is down - and the applications that use
+      # others aren't looked after.
+      - uid: urbex-reconcile-not-running
+        title: The reconciler is not running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: urbex-loki
+            model:
+              refId: A
+              queryType: instant
+              expr: 'sum(count_over_time({kind="platform", service="komodo", source="urbex-reconcile"}[5m]))'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+        # No line at all is no data: that is the alert.
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        labels: { kind: platform, service: komodo }
+        annotations:
+          summary: The Komodo Action urbex-reconcile has not run for five minutes.
+          description: Is it scheduled, and is Komodo Core up? Until it runs, an application that uses another and goes down stays down.
+      # What it holds back: a circuit breaker open (a Stack whose deploys
+      # keep failing), a provider in a crash loop.
+      - uid: urbex-reconcile-errors
+        title: The reconciler holds applications back
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: urbex-loki
+            model:
+              refId: A
+              queryType: instant
+              expr: 'sum(count_over_time({kind="platform", service="komodo", source="urbex-reconcile", level="error"}[5m]))'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels: { kind: platform, service: komodo }
+        annotations:
+          summary: The reconciler holds applications back.
+          description: 'Its error lines in Grafana ({source="urbex-reconcile", level="error"}) and urbex status <env> say which: a circuit open, a provider restarting.'

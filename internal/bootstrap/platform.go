@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
@@ -34,7 +35,43 @@ const (
 	// docs/decisions/0020-trunk-releases-gitops-environments.md.
 	ReleaseAction   = "urbex-release"
 	GitOpsProcedure = "urbex-gitops"
+	// ReconcileAction is the Komodo Action that, every minute, deploys
+	// again the applications that use others and are down, once what
+	// they use is ready: after a wait that gave up, a reboot, a provider
+	// back late. ReconcileStateVariable is where it keeps its backoffs,
+	// circuit breakers and heartbeat. See platform/komodo/reconcile.ts
+	// and urbforge/urbex-cli#43.
+	ReconcileAction        = "urbex-reconcile"
+	ReconcileStateVariable = "URBEX_RECONCILE_STATE"
+	// ReconcileSchedule runs it every minute (cron, with seconds).
+	ReconcileSchedule = "0 * * * * *"
 )
+
+// GraphVariable is the Komodo variable where urbex apply keeps an
+// environment's graph of links, for the reconciler: URBEX_GRAPH_<PROJECT>_<ENV>.
+func GraphVariable(project, env string) string {
+	return "URBEX_GRAPH_" + strings.ToUpper(strings.ReplaceAll(project+"_"+env, "-", "_"))
+}
+
+// ReconcileScript is the reconciler's code: its logic, without the
+// exports that only its tests need, then what drives it from Komodo.
+func ReconcileScript() (string, error) {
+	logic, err := platformassets.Komodo.ReadFile("komodo/reconcile_logic.ts")
+	if err != nil {
+		return "", err
+	}
+	driver, err := platformassets.Komodo.ReadFile("komodo/reconcile.ts")
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(string(logic), "\n") {
+		b.WriteString(strings.TrimPrefix(line, "export "))
+	}
+	b.WriteString("\n")
+	b.Write(driver)
+	return b.String(), nil
+}
 
 // Scopes of the Gitea token bootstrap creates, used by the CLI and by
 // Komodo, which clones repos and pushes/pulls images with it.
@@ -318,6 +355,9 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		{"URBEX_GITEA_USER", GiteaAdminUser, false},
 		{"URBEX_GITEA_TOKEN", creds.GiteaToken, true},
 		{"URBEX_ORG", o.Config.Git.Org, false},
+		// Where the reconciler sends its heartbeat and its errors, which
+		// Grafana alerts on.
+		{"URBEX_LOKI_PUSH_URL", internal.LokiPushURL, false},
 	}
 	if o.Config.Cloudflare.Enabled() {
 		// What the web frontends' Stacks deploy to Cloudflare Workers with.
@@ -342,6 +382,18 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		return err
 	}
 	if err := k.EnsureAction(ctx, ReleaseAction, komodo.ActionConfig{FileContents: string(script), WebhookEnabled: true}); err != nil {
+		return err
+	}
+	reconcile, err := ReconcileScript()
+	if err != nil {
+		return err
+	}
+	if err := k.EnsureAction(ctx, ReconcileAction, komodo.ActionConfig{
+		FileContents:    reconcile,
+		ScheduleFormat:  "Cron",
+		Schedule:        ReconcileSchedule,
+		ScheduleEnabled: true,
+	}); err != nil {
 		return err
 	}
 	// On every push to the GitOps repo (its webhook), and every 15

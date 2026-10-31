@@ -301,11 +301,54 @@ func (c *Client) EnsureVariable(ctx context.Context, name, value string, secret 
 	return nil
 }
 
+// Variable returns the named Komodo variable's value, and whether it
+// exists.
+func (c *Client) Variable(ctx context.Context, name string) (string, bool, error) {
+	var vars []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
+		return "", false, fmt.Errorf("listing komodo variables: %w", err)
+	}
+	for _, v := range vars {
+		if v.Name == name {
+			return v.Value, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// DeleteVariable deletes the named Komodo variable; one that doesn't
+// exist is already gone.
+func (c *Client) DeleteVariable(ctx context.Context, name string) error {
+	var vars []struct {
+		Name string `json:"name"`
+	}
+	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
+		return fmt.Errorf("listing komodo variables: %w", err)
+	}
+	for _, v := range vars {
+		if v.Name == name {
+			if err := c.call(ctx, "write", "DeleteVariable", map[string]any{"name": name}, nil); err != nil {
+				return fmt.Errorf("deleting komodo variable %s: %w", name, err)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
 // ActionConfig is the subset of Komodo's ActionConfig urbex sets.
 type ActionConfig struct {
 	// FileContents is the TypeScript the Action runs.
 	FileContents   string `json:"file_contents"`
 	WebhookEnabled bool   `json:"webhook_enabled"`
+	// Schedule is a cron expression with seconds, as a Procedure's, used
+	// when ScheduleEnabled.
+	ScheduleFormat  string `json:"schedule_format,omitempty"`
+	Schedule        string `json:"schedule,omitempty"`
+	ScheduleEnabled bool   `json:"schedule_enabled"`
 }
 
 // EnsureAction creates the named Action with cfg, or updates it in place.

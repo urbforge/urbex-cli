@@ -21,9 +21,12 @@ package rollout
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,6 +83,9 @@ type Komodo interface {
 	DeleteResource(ctx context.Context, kind, name string) error
 	WaitIdle(ctx context.Context, builds []string, action string, timeout time.Duration) error
 	TagResource(ctx context.Context, kind, name string, tags ...string) error
+	EnsureVariable(ctx context.Context, name, value string, secret bool) error
+	DeleteVariable(ctx context.Context, name string) error
+	Variable(ctx context.Context, name string) (string, bool, error)
 }
 
 // Git is the subset of git operations a rollout uses on the app repo.
@@ -355,7 +361,122 @@ func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) err
 			return err
 		}
 	}
-	return nil
+	return r.writeGraph(ctx, t)
+}
+
+// writeGraph keeps the environment's graph of links where the reconciler
+// reads it (a Komodo variable, see bootstrap.ReconcileAction), or removes
+// it once no application of the environment uses another.
+func (r *Rollout) writeGraph(ctx context.Context, t Target) error {
+	name := bootstrap.GraphVariable(t.Project, t.Env)
+	graph := t.Graph()
+	if len(graph.Stacks) == 0 {
+		return r.Komodo.DeleteVariable(ctx, name)
+	}
+	data, err := json.Marshal(graph)
+	if err != nil {
+		return err
+	}
+	return r.Komodo.EnsureVariable(ctx, name, string(data), false)
+}
+
+// ReconcilerStaleAfter is the dead man's switch on the reconciler, as
+// urbex status shows it: it runs every minute and refreshes its
+// heartbeat at least every four, so a last run older than this means it
+// isn't running (its Action unscheduled, Komodo Core down). Grafana
+// alerts on the same after five minutes, from its lines in Loki.
+const ReconcilerStaleAfter = 10 * time.Minute
+
+// ReconcilerStatus is what the reconciler says of an environment.
+type ReconcilerStatus struct {
+	// Linked: the environment has applications that use others, which
+	// the reconciler looks after.
+	Linked bool
+	// LastRun is when it last ran, zero if never.
+	LastRun time.Time
+	// Open are its Stacks whose circuit breaker is open; Unstable, those
+	// it saw restarting (a crash loop).
+	Open, Unstable []string
+}
+
+// Stale reports whether the reconciler should have run since LastRun.
+func (s ReconcilerStatus) Stale(now time.Time) bool {
+	return s.Linked && now.Sub(s.LastRun) > ReconcilerStaleAfter
+}
+
+// ReconcilerStatus reads the reconciler's state for an environment.
+func (r *Rollout) ReconcilerStatus(ctx context.Context, project, env string) (ReconcilerStatus, error) {
+	var st ReconcilerStatus
+	text, ok, err := r.Komodo.Variable(ctx, bootstrap.GraphVariable(project, env))
+	if err != nil || !ok {
+		return st, err
+	}
+	var graph Graph
+	if err := json.Unmarshal([]byte(text), &graph); err != nil {
+		return st, fmt.Errorf("reading %s: %w", bootstrap.GraphVariable(project, env), err)
+	}
+	st.Linked = true
+	text, ok, err = r.Komodo.Variable(ctx, bootstrap.ReconcileStateVariable)
+	if err != nil || !ok {
+		return st, err
+	}
+	var state struct {
+		Heartbeat int64 `json:"heartbeat"`
+		Stacks    map[string]struct {
+			Breaker  string `json:"breaker"`
+			Unstable bool   `json:"unstable"`
+		} `json:"stacks"`
+	}
+	if err := json.Unmarshal([]byte(text), &state); err != nil {
+		return st, fmt.Errorf("reading %s: %w", bootstrap.ReconcileStateVariable, err)
+	}
+	if state.Heartbeat > 0 {
+		st.LastRun = time.UnixMilli(state.Heartbeat)
+	}
+	for _, name := range slices.Sorted(maps.Keys(graph.Stacks)) {
+		s := state.Stacks[name]
+		if s.Breaker == "open" {
+			st.Open = append(st.Open, name)
+		}
+		if s.Unstable {
+			st.Unstable = append(st.Unstable, name)
+		}
+	}
+	return st, nil
+}
+
+// Graph is what the reconciler knows of an environment: its Stacks that
+// provide or use something, by Komodo name.
+type Graph struct {
+	Project string                `json:"project"`
+	Env     string                `json:"env"`
+	Stacks  map[string]GraphStack `json:"stacks"`
+}
+
+// GraphStack is one of them: the Stacks it uses, how long it may take to
+// be ready (ready_within), and how long its wait waits for what it uses,
+// in seconds.
+type GraphStack struct {
+	Uses        []string `json:"uses"`
+	ReadyWithin int      `json:"ready_within"`
+	Wait        int      `json:"wait"`
+}
+
+// Graph returns the target's graph of links.
+func (t Target) Graph() Graph {
+	g := Graph{Project: t.Project, Env: t.Env, Stacks: map[string]GraphStack{}}
+	for _, svc := range t.Services {
+		l, ok := t.Links[svc.Name]
+		if !ok {
+			continue
+		}
+		s := GraphStack{Uses: []string{}, ReadyWithin: svc.ReadySeconds(), Wait: l.WaitSeconds}
+		for _, used := range svc.Uses {
+			s.Uses = append(s.Uses, ResourceName(t.Project, used, t.Env))
+		}
+		g.Stacks[ResourceName(t.Project, svc.Name, t.Env)] = s
+	}
+	return g
 }
 
 // DeployTelemetry has Komodo deploy the target's telemetry agents, from
@@ -609,6 +730,10 @@ func (r *Rollout) RemoveEnv(ctx context.Context, t Target) error {
 	}
 	for _, host := range t.TelemetryHosts() {
 		names = append(names, bootstrap.TelemetryStackName(host))
+	}
+	// The reconciler first, so that it doesn't deploy what goes.
+	if err := r.Komodo.DeleteVariable(ctx, bootstrap.GraphVariable(t.Project, t.Env)); err != nil {
+		return err
 	}
 	for _, name := range names {
 		if err := r.Komodo.DestroyStack(ctx, name); err != nil {
