@@ -83,6 +83,14 @@ runner and fails the test on the first assertion that doesn't hold:
     replaced; a bigger `size` grows it, a smaller one is
     refused; `destroy` refuses without `--delete-data`, naming the
     volume, and removes everything with it.
+16. A third stack, `shop`, of applications linked together (`e2e/linked`):
+    a PostgreSQL, an api that uses it and a web that uses both, as in
+    the dependency PoC (`e2e/poc-deps`). Each consumer's wait sees what
+    it uses ready (`pg_isready`, the api's healthcheck) and exits 0, the
+    application starts only then and never restarts, Komodo shows every
+    Stack running, and the consumers get their connection variables
+    and `${api.url}` resolved, with no password in plaintext in the
+    GitOps repo.
 
 ## When a step fails
 

@@ -1,0 +1,28 @@
+# A stack of applications linked together (ADR-0028), in production only:
+# a PostgreSQL, an api that uses it, and a web that uses both: a chain
+# with a diamond, as in the dependency PoC (e2e/poc-deps). Each consumer's
+# Stack holds it back until what it uses is ready.
+apiVersion: urbex/v1
+project: shop
+environments: [prod]
+services:
+  - name: db
+    image: docker.io/library/postgres
+    version: "17"
+    provides: postgres
+    volumes:
+      - { name: data, path: /var/lib/postgresql, size: 1Gi }
+  - name: api
+    image: docker.io/library/caddy
+    version: "2.10"
+    port: 80
+    healthcheck: /
+    uses: [db]
+  - name: web
+    image: docker.io/library/caddy
+    version: "2.10"
+    port: 80
+    uses: [api, db]
+    env:
+      prod:
+        API_ADDRESS: ${api.url}
