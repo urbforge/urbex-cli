@@ -14,7 +14,10 @@
 //     odd look acts on nothing;
 //   - a crash loop detector: a provider whose container restarted since
 //     the last run is unstable, not ready, until it stays put for
-//     `ready_runs` runs; its consumers aren't deployed meanwhile;
+//     `ready_runs` runs; its consumers aren't deployed meanwhile. A
+//     restart is told from the uptime Docker reports in the container's
+//     status, as ListStackServices lists it: the container's environment,
+//     which docker inspect would show with its secrets, is never read;
 //   - exponential backoff with jitter between the deploys of a Stack
 //     that fail;
 //   - a circuit breaker per Stack: after `failure_threshold` failed
@@ -39,7 +42,13 @@ export interface Observation {
   state: "running" | "created" | "exited" | "restarting" | "paused" | "dead" | "missing";
   /** "none" when the container has no healthcheck. */
   health: "healthy" | "unhealthy" | "starting" | "none";
-  restarts: number;
+  /** The container's id, "" when there is none. */
+  container: string;
+  /** When a running container started, as far as its status tells (ms): no
+   *  earlier than started_after, no later than started_before; 0 when not
+   *  running or unknown. */
+  started_after: number;
+  started_before: number;
   /** A Komodo operation on the Stack is in progress. */
   busy: boolean;
   /** The GitOps repo has a version of the Stack's files it hasn't deployed. */
@@ -54,8 +63,10 @@ export interface StackState {
   breaker: "closed" | "open" | "half_open";
   opened_at: number;
   next_attempt_at: number;
-  /** RestartCount at the last run; -1 before the first. */
-  restarts: number;
+  /** The container seen running at the last run, "" if none. */
+  container: string;
+  /** The latest it can have started (ms), 0 if not known. */
+  started_before: number;
   ready_runs: number;
   unready_runs: number;
   unstable: boolean;
@@ -118,7 +129,7 @@ export function emptyState(): State {
 export function freshStack(): StackState {
   return {
     failures: 0, breaker: "closed", opened_at: 0, next_attempt_at: 0,
-    restarts: -1, ready_runs: 0, unready_runs: 0, unstable: false, stable_runs: 0, in_flight: "",
+    container: "", started_before: 0, ready_runs: 0, unready_runs: 0, unstable: false, stable_runs: 0, in_flight: "",
   };
 }
 
@@ -138,24 +149,64 @@ export function parseState(text: string | undefined): State {
   return emptyState();
 }
 
+// How old Komodo's view of the containers can be: it polls them every 15 s.
+const STATUS_STALE_MS = 30_000;
+
+// The units of Docker's human durations ("Up 3 minutes", go-units'
+// HumanDuration), in seconds; hours and above are rounded, not truncated.
+const UNITS: Record<string, number> = {
+  second: 1, minute: 60, hour: 3600, day: 86400, week: 7 * 86400, month: 30 * 86400, year: 365 * 86400,
+};
+
+/** The bounds of an uptime as Docker writes it, in seconds; undefined if unreadable. */
+export function uptime(text: string): [number, number] | undefined {
+  if (text === "Less than a second") return [0, 1];
+  const about = text.match(/^About an? (minute|hour)$/);
+  if (about) return about[1] === "minute" ? [60, 120] : [3600, 5400];
+  const m = text.match(/^(\d+) (second|minute|hour|day|week|month|year)s?$/);
+  if (!m) return undefined;
+  const n = Number(m[1]), unit = UNITS[m[2]];
+  if (unit < 3600) return [n * unit, (n + 1) * unit];
+  // Rounded to the nearest hour, then truncated to the unit.
+  return [Math.max(0, n * unit - 1800), (n + 1) * unit + 1800];
+}
+
+/** What a container's status (e.g. "Up 13 hours (healthy)") tells, seen at `now`. */
+export function fromStatus(status: string | undefined, now: number): Pick<Observation, "health" | "started_after" | "started_before"> {
+  const m = (status ?? "").match(/^Up (.+?)(?: \((.+)\))?$/);
+  const health = m?.[2] === "healthy" ? "healthy" : m?.[2] === "unhealthy" ? "unhealthy" : m?.[2] === "health: starting" ? "starting" : "none";
+  const up = m ? uptime(m[1]) : undefined;
+  if (!up) return { health, started_after: 0, started_before: 0 };
+  // Komodo's view may be older than now: a start can only be earlier.
+  return { health, started_after: now - STATUS_STALE_MS - up[1] * 1000, started_before: now - up[0] * 1000 };
+}
+
+/** Whether the container restarted since the last run: the same one, started after it was last seen running. */
+function restarted(s: StackState, o: Observation): boolean {
+  if (o.state === "restarting") return true;
+  return o.container !== "" && o.container === s.container && s.started_before > 0 && o.started_after > s.started_before;
+}
+
 function healthy(o: Observation): boolean {
   return o.state === "running" && (o.health === "healthy" || o.health === "none");
 }
 
 /** Takes this run's observations into the state: hysteresis, crash loops. */
-export function observe(prev: State, graphs: Graph[], seen: Record<string, Observation | undefined>, cfg: Config = DEFAULTS): { state: State; alerts: string[] } {
+export function observe(prev: State, graphs: Graph[], seen: Record<string, Observation | undefined>, now: number, cfg: Config = DEFAULTS): { state: State; alerts: string[] } {
   const state: State = { ...prev, stacks: {} };
   const alerts: string[] = [];
   for (const g of graphs) {
-    for (const name of Object.keys(g.stacks)) {
-      const s: StackState = { ...freshStack(), ...(prev.stacks[name] ?? {}) };
+    for (const [name, node] of Object.entries(g.stacks)) {
+      const { restarts: _, ...kept } = (prev.stacks[name] ?? {}) as StackState & { restarts?: number };
+      const s: StackState = { ...freshStack(), ...kept };
       const o = seen[name];
       state.stacks[name] = s;
       if (!o) continue; // not observed: nothing learnt
-      // A new container starts from 0: only a count that grows is a restart.
-      // The counters stop at what they are compared with: a state that
-      // doesn't change isn't written again (reconcile.ts).
-      if (s.restarts >= 0 && o.restarts > s.restarts) {
+      // A new container (a deploy) is not a restart, nor one that was down
+      // at the last run. The counters stop at what they are compared with: a
+      // state that doesn't change isn't written again (reconcile.ts).
+      const again = restarted(s, o);
+      if (again) {
         s.unstable = true;
         s.stable_runs = 0;
       } else if (s.unstable) {
@@ -163,10 +214,25 @@ export function observe(prev: State, graphs: Graph[], seen: Record<string, Obser
         if (s.stable_runs >= cfg.ready_runs) s.unstable = false;
       }
       if (!s.unstable) s.stable_runs = 0;
-      s.restarts = o.restarts;
+      if (o.state === "restarting" && o.container !== "") {
+        // It starts again after now: any start seen later is a restart.
+        Object.assign(s, { container: o.container, started_before: now });
+      } else if (o.state === "running" && o.started_before > 0) {
+        const same = o.container === s.container && s.started_before > 0 && !again;
+        Object.assign(s, { container: o.container, started_before: same ? Math.min(s.started_before, o.started_before) : o.started_before });
+      } else {
+        Object.assign(s, { container: "", started_before: 0 });
+      }
       if (s.unstable) alerts.push(`${name} is restarting (crash loop): what uses it waits`);
+      // Still within its ready_within, its healthcheck not yet passed: not
+      // ready, and not down either - a deploy now would start it over.
+      const settling = o.state === "running" && o.health === "starting" && o.started_before > 0 &&
+        now - o.started_before < node.ready_within * 1000;
       if (healthy(o) && !s.unstable) {
         s.ready_runs = Math.min(s.ready_runs + 1, cfg.ready_runs);
+        s.unready_runs = 0;
+      } else if (settling && !s.unstable) {
+        s.ready_runs = 0;
         s.unready_runs = 0;
       } else {
         s.unready_runs = Math.min(s.unready_runs + 1, cfg.unready_runs);
@@ -179,7 +245,7 @@ export function observe(prev: State, graphs: Graph[], seen: Record<string, Obser
 
 /** What to deploy this run, consumers in the order of the graph. */
 export function decide(prev: State, graphs: Graph[], seen: Record<string, Observation | undefined>, now: number, cfg: Config = DEFAULTS): Decision {
-  const { state, alerts } = observe(prev, graphs, seen, cfg);
+  const { state, alerts } = observe(prev, graphs, seen, now, cfg);
   const deploys: Deploy[] = [];
   const held: Record<string, string> = {};
   const perServer: Record<string, number> = {};

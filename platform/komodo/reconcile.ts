@@ -87,14 +87,15 @@ async function pendingFiles(name: string): Promise<boolean> {
 }
 
 async function look(name: string, info: any, consumer: boolean): Promise<Observation | undefined> {
-  // Whether the application has a container at all (a wait that gave up
-  // leaves one "created"; one removed by hand, none), then its state.
+  // The application's container as Komodo lists it (a wait that gave up
+  // leaves one "created"; one removed by hand, none): its state, and its
+  // status for the health and the uptime. Not docker inspect, which
+  // carries the container's environment, secrets included.
   let container: any;
+  const at = Date.now();
   try {
     const services: any[] = await deadline(komodo.read("ListStackServices", { stack: name }), CALL_TIMEOUT_MS, `services of ${name}`);
-    if (services.find((s) => s.service === "app")?.container) {
-      container = await deadline(komodo.read("InspectStackContainer", { stack: name, service: "app" }), CALL_TIMEOUT_MS, `inspecting ${name}`);
-    }
+    container = services.find((s) => s.service === "app")?.container;
   } catch (err) {
     console.log(`${name}: could not look at it (${message(err)}): left alone`);
     return undefined;
@@ -107,7 +108,7 @@ async function look(name: string, info: any, consumer: boolean): Promise<Observa
     console.log(`${name}: could not tell whether it is busy (${message(err)}): left alone`);
     return undefined;
   }
-  const state: Observation["state"] = container?.State?.Status ?? "missing";
+  const state: Observation["state"] = container?.state ?? "missing";
   let stopped = false;
   if (state !== "running") {
     // Only the Stacks that are down: an operator's stop is respected.
@@ -140,8 +141,8 @@ async function look(name: string, info: any, consumer: boolean): Promise<Observa
   }
   return {
     state,
-    health: container?.State?.Health?.Status ?? "none",
-    restarts: Number(container?.RestartCount ?? 0),
+    container: container?.id ?? "",
+    ...fromStatus(state === "running" ? container?.status : undefined, at),
     busy,
     pending,
     stopped_by_operator: stopped,

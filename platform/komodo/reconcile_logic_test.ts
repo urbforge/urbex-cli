@@ -4,11 +4,13 @@ import {
   decide,
   DEFAULTS,
   emptyState,
+  fromStatus,
   type Graph,
   type Observation,
   parseState,
   recordOutcome,
   type State,
+  uptime,
 } from "./reconcile_logic.ts";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -29,10 +31,13 @@ const graph: Graph = {
   },
 };
 
+// Running since before the first run, at 0 (a start time of 0 is unknown).
 const up = (server: string, o: Partial<Observation> = {}): Observation => ({
-  state: "running", health: "healthy", restarts: 0, busy: false, pending: false,
-  stopped_by_operator: false, server, ...o,
+  state: "running", health: "healthy", container: `c-${server}`, started_after: 1, started_before: 2,
+  busy: false, pending: false, stopped_by_operator: false, server, ...o,
 });
+/** The same container, started again a few seconds before `t`. */
+const restartedBy = (t: number): Partial<Observation> => ({ started_after: t - 40_000, started_before: t - 5_000 });
 const all = (o: Record<string, Partial<Observation>> = {}) => ({
   "shop-db-prod": up("db", o["shop-db-prod"]),
   "shop-api-prod": up("api", o["shop-api-prod"]),
@@ -61,6 +66,22 @@ Deno.test("hysteresis: a consumer seen down once is left alone, twice is deploye
   eq(d.deploys[0].if_changed, false, "a down consumer is deployed, changed or not");
 });
 
+Deno.test("a container starting within its ready_within is not down: it isn't deployed again", () => {
+  const missing = all({ "shop-api-prod": { state: "missing", health: "none", container: "", started_after: 0, started_before: 0 } });
+  let d = settle(missing);
+  eq(d.deploys.map((x) => x.stack), ["shop-api-prod"], "deployed when missing");
+  // A run later it runs, its healthcheck not passed yet (ready_within 60 s).
+  const starting = (since: number) =>
+    all({ "shop-api-prod": { health: "starting", container: "c-new", started_after: since - 1_000, started_before: since } });
+  d = decide(d.state, [graph], starting(100_000), 120_000);
+  eq(d.deploys, [], "deploys while it starts");
+  eq(d.state.stacks["shop-api-prod"].unready_runs, 0, "not counted down");
+  // Still starting past its ready_within: down, deployed again two runs on.
+  d = decide(d.state, [graph], starting(100_000), 180_000);
+  d = decide(d.state, [graph], starting(100_000), 240_000);
+  eq(d.deploys.map((x) => x.stack), ["shop-api-prod"], "deployed once it overstays");
+});
+
 Deno.test("a consumer waits while what it uses isn't ready", () => {
   const d = settle(all({ "shop-db-prod": { state: "exited", health: "none" }, "shop-api-prod": { state: "created", health: "none" } }));
   eq(d.deploys, [], "deploys");
@@ -72,25 +93,64 @@ Deno.test("a version not deployed (the preflight stopped it) is deployed if chan
   eq(d.deploys, [{ stack: "shop-api-prod", if_changed: true, reason: "a version not deployed" }], "deploys");
 });
 
-Deno.test("crash loop: a provider whose restarts grow is not ready, with an alert, until it stays put", () => {
-  let d = settle(all({ "shop-api-prod": { state: "created", health: "none" } }), 1);
-  d = decide(d.state, [graph], all({ "shop-db-prod": { restarts: 3 }, "shop-api-prod": { state: "created", health: "none" } }), 60_000);
+Deno.test("crash loop: a provider that started again since the last run is not ready, with an alert, until it stays put", () => {
+  const api = { state: "created", health: "none" } as Partial<Observation>;
+  let d = settle(all({ "shop-api-prod": api }), 1);
+  d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(60_000), "shop-api-prod": api }), 60_000);
   eq(d.deploys, [], "deploys while db crash loops");
   assert(d.alerts.some((a) => a.includes("shop-db-prod is restarting")), `alerts: ${d.alerts}`);
   // Two runs without a new restart: stable again, then ready after two more.
   let state = d.state;
   for (let i = 2; i < 6; i++) {
-    d = decide(state, [graph], all({ "shop-db-prod": { restarts: 3 }, "shop-api-prod": { state: "created", health: "none" } }), i * 60_000);
+    d = decide(state, [graph], all({ "shop-db-prod": restartedBy(60_000), "shop-api-prod": api }), i * 60_000);
     state = d.state;
   }
   eq(d.deploys.map((x) => x.stack), ["shop-api-prod"], "deploys once db is stable and ready");
   eq(d.alerts, [], "no alert once stable");
 });
 
-Deno.test("a recreated provider (restart count back to 0) is not a crash loop", () => {
-  let d = settle(all({ "shop-db-prod": { restarts: 4 } }));
-  d = decide(d.state, [graph], all({ "shop-db-prod": { restarts: 0 } }), 120_000);
-  eq(d.state.stacks["shop-db-prod"].unstable, false, "unstable");
+Deno.test("a provider seen restarting, then up again, is in a crash loop", () => {
+  let d = settle(all());
+  d = decide(d.state, [graph], all({ "shop-db-prod": { state: "restarting", health: "none", started_after: 0, started_before: 0 } }), 120_000);
+  eq(d.state.stacks["shop-db-prod"].unstable, true, "while restarting");
+  d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(180_000) }), 180_000);
+  eq(d.state.stacks["shop-db-prod"].stable_runs, 0, "started again after it was seen restarting");
+});
+
+Deno.test("not a crash loop: a recreated provider, one that came back from down, an uptime too coarse to tell", () => {
+  let d = settle(all());
+  d = decide(d.state, [graph], all({ "shop-db-prod": { container: "c-new", ...restartedBy(120_000) } }), 120_000);
+  eq(d.state.stacks["shop-db-prod"].unstable, false, "recreated by a deploy");
+
+  d = decide(d.state, [graph], all({ "shop-db-prod": { state: "exited", health: "none", started_after: 0, started_before: 0 } }), 180_000);
+  d = decide(d.state, [graph], all({ "shop-db-prod": { container: "c-new", ...restartedBy(240_000) } }), 240_000);
+  eq(d.state.stacks["shop-db-prod"].unstable, false, "started after it was down");
+
+  // "Up 2 hours" a run apart: the bounds overlap, nothing to tell.
+  const a = fromStatus("Up 2 hours (healthy)", 300_000), b = fromStatus("Up 2 hours (healthy)", 360_000);
+  d = decide(d.state, [graph], all({ "shop-db-prod": { container: "c-old", ...a } }), 300_000);
+  d = decide(d.state, [graph], all({ "shop-db-prod": { container: "c-old", ...b } }), 360_000);
+  eq(d.state.stacks["shop-db-prod"].unstable, false, "a long uptime");
+});
+
+Deno.test("the status Komodo lists: health and uptime, as Docker writes them", () => {
+  eq(fromStatus("Up 13 hours (healthy)", 0).health, "healthy", "healthy");
+  eq(fromStatus("Up 5 seconds (health: starting)", 0).health, "starting", "starting");
+  eq(fromStatus("Up 2 minutes (unhealthy)", 0).health, "unhealthy", "unhealthy");
+  eq(fromStatus("Up 3 days", 0).health, "none", "no healthcheck");
+  eq(fromStatus("Exited (1) 3 seconds ago", 0), { health: "none", started_after: 0, started_before: 0 }, "not running");
+  eq(fromStatus("Up whenever", 0).started_before, 0, "an uptime it can't read tells nothing");
+  eq(uptime("Less than a second"), [0, 1], "under a second");
+  eq(uptime("1 second"), [1, 2], "one second");
+  eq(uptime("45 seconds"), [45, 46], "seconds");
+  eq(uptime("About a minute"), [60, 120], "a minute");
+  eq(uptime("7 minutes"), [420, 480], "minutes");
+  eq(uptime("About an hour"), [3600, 5400], "an hour");
+  eq(uptime("13 hours"), [13 * 3600 - 1800, 14 * 3600 + 1800], "hours, rounded");
+  eq(uptime("3 days"), [3 * 86400 - 1800, 4 * 86400 + 1800], "days");
+  // Komodo's view may be up to its poll behind: the start can be earlier.
+  const s = fromStatus("Up 10 seconds", 100_000);
+  assert(s.started_after <= 90_000 - 15_000 && s.started_before === 90_000, JSON.stringify(s));
 });
 
 Deno.test("backoff: a failed deploy waits, longer each time, with jitter", () => {
@@ -165,8 +225,8 @@ Deno.test("fail safe: busy, stopped by an operator, or not observed is left alon
     eq(d.held["shop-api-prod"], why, "why");
   }
   let crash = settle(all(), 1);
-  crash = decide(crash.state, [graph], all({ "shop-api-prod": { state: "restarting", health: "none", restarts: 2 } }), 60_000);
-  crash = decide(crash.state, [graph], all({ "shop-api-prod": { state: "restarting", health: "none", restarts: 4 } }), 120_000);
+  crash = decide(crash.state, [graph], all({ "shop-api-prod": { state: "restarting", health: "none", started_after: 0, started_before: 0 } }), 60_000);
+  crash = decide(crash.state, [graph], all({ "shop-api-prod": { state: "restarting", health: "none", started_after: 0, started_before: 0 } }), 120_000);
   eq(crash.deploys, [], "deploys of a consumer in a crash loop of its own");
   eq(crash.held["shop-api-prod"], "restarting by itself (crash loop)", "why");
 
