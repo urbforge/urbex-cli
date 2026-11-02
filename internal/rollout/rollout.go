@@ -395,8 +395,9 @@ type ReconcilerStatus struct {
 	// LastRun is when it last ran, zero if never.
 	LastRun time.Time
 	// Open are its Stacks whose circuit breaker is open; Unstable, those
-	// it saw restarting (a crash loop).
-	Open, Unstable []string
+	// it saw restart and holds until they stay up; Looping, those of them
+	// that restart again and again (a crash loop).
+	Open, Unstable, Looping []string
 }
 
 // Stale reports whether the reconciler should have run since LastRun.
@@ -425,6 +426,7 @@ func (r *Rollout) ReconcilerStatus(ctx context.Context, project, env string) (Re
 		Stacks    map[string]struct {
 			Breaker  string `json:"breaker"`
 			Unstable bool   `json:"unstable"`
+			Looping  bool   `json:"looping"`
 		} `json:"stacks"`
 	}
 	if err := json.Unmarshal([]byte(text), &state); err != nil {
@@ -438,7 +440,10 @@ func (r *Rollout) ReconcilerStatus(ctx context.Context, project, env string) (Re
 		if s.Breaker == "open" {
 			st.Open = append(st.Open, name)
 		}
-		if s.Unstable {
+		switch {
+		case s.Looping:
+			st.Looping = append(st.Looping, name)
+		case s.Unstable:
 			st.Unstable = append(st.Unstable, name)
 		}
 	}

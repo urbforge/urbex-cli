@@ -388,9 +388,9 @@ func TestReconcilerStatus_TheDeadMansSwitchAndTheOpenCircuits(t *testing.T) {
 	if err != nil || !st.Linked || !st.Stale(now) {
 		t.Errorf("a reconciler that never ran is stale: %+v, %v", st, err)
 	}
-	k.variables["URBEX_RECONCILE_STATE"] = fmt.Sprintf(`{"heartbeat":%d,"stacks":{"shop-api-prod":{"breaker":"open"},"shop-db-prod":{"breaker":"closed","unstable":true},"other-x-prod":{"breaker":"open"}}}`, now.Add(-time.Minute).UnixMilli())
+	k.variables["URBEX_RECONCILE_STATE"] = fmt.Sprintf(`{"heartbeat":%d,"stacks":{"shop-api-prod":{"breaker":"open","unstable":true,"looping":true},"shop-db-prod":{"breaker":"closed","unstable":true},"other-x-prod":{"breaker":"open"}}}`, now.Add(-time.Minute).UnixMilli())
 	st, err = r.ReconcilerStatus(context.Background(), "shop", "prod")
-	if err != nil || st.Stale(now) || !reflect.DeepEqual(st.Open, []string{"shop-api-prod"}) || !reflect.DeepEqual(st.Unstable, []string{"shop-db-prod"}) {
+	if err != nil || st.Stale(now) || !reflect.DeepEqual(st.Open, []string{"shop-api-prod"}) || !reflect.DeepEqual(st.Unstable, []string{"shop-db-prod"}) || !reflect.DeepEqual(st.Looping, []string{"shop-api-prod"}) {
 		t.Errorf("status = %+v, %v", st, err)
 	}
 	if !st.Stale(now.Add(ReconcilerStaleAfter)) {

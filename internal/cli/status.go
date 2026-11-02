@@ -290,7 +290,10 @@ func printReconciler(out io.Writer, st rollout.ReconcilerStatus, now time.Time) 
 	if len(st.Open) > 0 {
 		fmt.Fprintf(out, "  circuit open, not deployed until it cools down: %s (see the Action's last runs in Komodo)\n", strings.Join(st.Open, ", "))
 	}
+	if len(st.Looping) > 0 {
+		fmt.Fprintf(out, "  restarting (crash loop), what uses them waits: %s\n", strings.Join(st.Looping, ", "))
+	}
 	if len(st.Unstable) > 0 {
-		fmt.Fprintf(out, "  restarting (crash loop), what uses them waits: %s\n", strings.Join(st.Unstable, ", "))
+		fmt.Fprintf(out, "  restarted, what uses them waits until they stay up: %s\n", strings.Join(st.Unstable, ", "))
 	}
 }

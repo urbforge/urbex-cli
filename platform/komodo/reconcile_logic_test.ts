@@ -93,28 +93,69 @@ Deno.test("a version not deployed (the preflight stopped it) is deployed if chan
   eq(d.deploys, [{ stack: "shop-api-prod", if_changed: true, reason: "a version not deployed" }], "deploys");
 });
 
-Deno.test("crash loop: a provider that started again since the last run is not ready, with an alert, until it stays put", () => {
+Deno.test("crash loop: a provider that restarts again within loop_window_ms alerts, and is not ready until it stays put", () => {
   const api = { state: "created", health: "none" } as Partial<Observation>;
   let d = settle(all({ "shop-api-prod": api }), 1);
   d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(60_000), "shop-api-prod": api }), 60_000);
+  eq(d.alerts, [], "alerts after one restart");
+  d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(120_000), "shop-api-prod": api }), 120_000);
   eq(d.deploys, [], "deploys while db crash loops");
-  assert(d.alerts.some((a) => a.includes("shop-db-prod is restarting")), `alerts: ${d.alerts}`);
+  assert(d.alerts.some((a) => a.includes("shop-db-prod is restarting (crash loop)")), `alerts: ${d.alerts}`);
   // Two runs without a new restart: stable again, then ready after two more.
   let state = d.state;
-  for (let i = 2; i < 6; i++) {
-    d = decide(state, [graph], all({ "shop-db-prod": restartedBy(60_000), "shop-api-prod": api }), i * 60_000);
+  for (let i = 3; i < 7; i++) {
+    d = decide(state, [graph], all({ "shop-db-prod": restartedBy(120_000), "shop-api-prod": api }), i * 60_000);
     state = d.state;
   }
   eq(d.deploys.map((x) => x.stack), ["shop-api-prod"], "deploys once db is stable and ready");
   eq(d.alerts, [], "no alert once stable");
 });
 
-Deno.test("a provider seen restarting, then up again, is in a crash loop", () => {
+Deno.test("one restart is no crash loop: what uses it waits until it stays put, with no alert", () => {
+  const api = { state: "created", health: "none" } as Partial<Observation>;
+  let d = settle(all({ "shop-api-prod": api }), 1);
+  for (let i = 1; i < 5; i++) {
+    d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(60_000), "shop-api-prod": api }), i * 60_000);
+    eq(d.alerts, [], `alerts at run ${i}`);
+    if (i < 4) eq(d.deploys, [], `deploys at run ${i}, db not yet ready`);
+  }
+  eq(d.deploys.map((x) => x.stack), ["shop-api-prod"], "deploys once db stayed put");
+});
+
+Deno.test("seen restarting, then up again: one restart, not a crash loop", () => {
   let d = settle(all());
   d = decide(d.state, [graph], all({ "shop-db-prod": { state: "restarting", health: "none", started_after: 0, started_before: 0 } }), 120_000);
   eq(d.state.stacks["shop-db-prod"].unstable, true, "while restarting");
   d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(180_000) }), 180_000);
   eq(d.state.stacks["shop-db-prod"].stable_runs, 0, "started again after it was seen restarting");
+  eq(d.alerts, [], "alerts");
+  d = decide(d.state, [graph], all({ "shop-db-prod": { state: "restarting", health: "none", started_after: 0, started_before: 0 } }), 240_000);
+  assert(d.alerts.some((a) => a.includes("shop-db-prod is restarting (crash loop)")), `restarting again: ${d.alerts}`);
+});
+
+Deno.test("restarts farther apart than loop_window_ms are no crash loop", () => {
+  let d = settle(all());
+  const window = DEFAULTS.loop_window_ms;
+  d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(120_000) }), 120_000);
+  for (let t = 180_000; t <= 120_000 + window; t += 60_000) {
+    d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(120_000) }), t);
+  }
+  const later = 120_000 + window + 60_000;
+  d = decide(d.state, [graph], all({ "shop-db-prod": restartedBy(later) }), later);
+  eq(d.state.stacks["shop-db-prod"].unstable, true, "held after the second restart");
+  eq(d.alerts, [], "alerts");
+});
+
+Deno.test("a reboot restarts every Stack at once: what uses them waits, and nothing alerts", () => {
+  let d = settle(all());
+  // Periphery down while the node reboots: nothing observed.
+  d = decide(d.state, [graph], {}, 120_000);
+  d = decide(d.state, [graph], all({
+    "shop-db-prod": restartedBy(180_000), "shop-api-prod": restartedBy(180_000), "shop-web-prod": restartedBy(180_000),
+  }), 180_000);
+  eq(d.alerts, [], "alerts");
+  eq(d.deploys, [], "deploys");
+  eq(d.held["shop-api-prod"], undefined, "api is up: nothing to hold");
 });
 
 Deno.test("not a crash loop: a recreated provider, one that came back from down, an uptime too coarse to tell", () => {
@@ -198,6 +239,15 @@ Deno.test("circuit breaker: opens after the threshold, half opens after the cool
   recordOutcome(d.state.stacks["shop-api-prod"], true, 3 * cfg.cooldown_ms, cfg);
   eq(d.state.stacks["shop-api-prod"].breaker, "closed", "closed");
   eq(d.state.stacks["shop-api-prod"].failures, 0, "failures");
+});
+
+Deno.test("a consumer back by itself after failed deploys starts over: the next failures don't open the circuit sooner", () => {
+  const down = all({ "shop-api-prod": { state: "created", health: "none" } });
+  const state = settle(down).state;
+  for (let i = 0; i < 2; i++) recordOutcome(state.stacks["shop-api-prod"], false, 0, DEFAULTS, () => 0.5);
+  const d = decide(state, [graph], all(), 120_000);
+  eq(d.state.stacks["shop-api-prod"].failures, 0, "failures once healthy");
+  eq(d.state.stacks["shop-api-prod"].next_attempt_at, 0, "backoff once healthy");
 });
 
 Deno.test("retry budget and bulkhead: at most so many deploys a run, one per server", () => {

@@ -14,7 +14,8 @@
 // is being deployed, so nothing is deployed twice even if two runs
 // overlap; the lease keeps them from both starting deploys. The run fails,
 // so that Komodo shows it, and sends its alerts to Loki, when a circuit
-// is open or a provider is in a crash loop.
+// is open or a provider is in a crash loop (restarted again within
+// loop_window_ms: a single restart only holds what uses it).
 
 const STATE_VARIABLE = "URBEX_RECONCILE_STATE";
 // Every run sends a line to Loki, and an error line per alert: Grafana's
@@ -86,7 +87,28 @@ async function pendingFiles(name: string): Promise<boolean> {
   return Array.isArray(remote) && remote.length > 0 && files(remote) !== files(stack?.info?.deployed_contents);
 }
 
+/** Whether Komodo reaches a server's Periphery: asked once a run. */
+const reachable = new Map<string, Promise<boolean>>();
+function serverUp(id: string): Promise<boolean> {
+  if (!reachable.has(id)) {
+    reachable.set(id, deadline(komodo.read("GetServerState", { server: id }), CALL_TIMEOUT_MS, `state of server ${id}`).then((s: any) => s?.status === "Ok"));
+  }
+  return reachable.get(id)!;
+}
+
 async function look(name: string, info: any, consumer: boolean): Promise<Observation | undefined> {
+  // A server Komodo can't reach lists no container, so its Stacks would
+  // look gone, and a deploy there fails: its LXC or its node is down or
+  // rebooting, and Docker brings them back with it. Not observed.
+  try {
+    if (!(await serverUp(info.server_id ?? ""))) {
+      console.log(`${name}: its server is unreachable: left alone`);
+      return undefined;
+    }
+  } catch (err) {
+    console.log(`${name}: could not tell whether its server is up (${message(err)}): left alone`);
+    return undefined;
+  }
   // The application's container as Komodo lists it (a wait that gave up
   // leaves one "created"; one removed by hand, none): its state, and its
   // status for the health and the uptime. Not docker inspect, which

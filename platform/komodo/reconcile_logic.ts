@@ -14,7 +14,9 @@
 //     odd look acts on nothing;
 //   - a crash loop detector: a provider whose container restarted since
 //     the last run is unstable, not ready, until it stays put for
-//     `ready_runs` runs; its consumers aren't deployed meanwhile. A
+//     `ready_runs` runs; its consumers aren't deployed meanwhile. Only a
+//     provider seen restarting again within `loop_window_ms` is in a
+//     crash loop, and alerts: one restart, a reboot, is no alarm. A
 //     restart is told from the uptime Docker reports in the container's
 //     status, as ListStackServices lists it: the container's environment,
 //     which docker inspect would show with its secrets, is never read;
@@ -26,7 +28,8 @@
 //     again;
 //   - a retry budget per run, and a bulkhead per server: a reboot doesn't
 //     turn into a storm of deploys;
-//   - fail safe: a Stack it couldn't observe, a Stack being deployed,
+//   - fail safe: a Stack it couldn't observe (its server unreachable
+//     included: a node that reboots), a Stack being deployed,
 //     one an operator stopped, or one in a crash loop of its own is left
 //     alone. It only ever deploys: it never stops anything.
 
@@ -71,6 +74,12 @@ export interface StackState {
   unready_runs: number;
   unstable: boolean;
   stable_runs: number;
+  /** When a run last saw it restart (ms), 0 if never. */
+  last_restart_at: number;
+  /** Seen restarting at the last run: its next start is that same restart. */
+  restarting: boolean;
+  /** Restarted again within loop_window_ms: a crash loop, which alerts. */
+  looping: boolean;
   /** The Komodo update of a deploy started and not yet seen finished, "" if none. */
   in_flight: string;
 }
@@ -93,6 +102,7 @@ export interface Config {
   max_deploys_per_server: number;
   ready_runs: number;
   unready_runs: number;
+  loop_window_ms: number;
 }
 
 export const DEFAULTS: Config = {
@@ -104,6 +114,7 @@ export const DEFAULTS: Config = {
   max_deploys_per_server: 1,
   ready_runs: 2,
   unready_runs: 2,
+  loop_window_ms: 10 * 60_000,
 };
 
 export interface Deploy {
@@ -129,7 +140,8 @@ export function emptyState(): State {
 export function freshStack(): StackState {
   return {
     failures: 0, breaker: "closed", opened_at: 0, next_attempt_at: 0,
-    container: "", started_before: 0, ready_runs: 0, unready_runs: 0, unstable: false, stable_runs: 0, in_flight: "",
+    container: "", started_before: 0, ready_runs: 0, unready_runs: 0, unstable: false, stable_runs: 0,
+    last_restart_at: 0, restarting: false, looping: false, in_flight: "",
   };
 }
 
@@ -206,6 +218,12 @@ export function observe(prev: State, graphs: Graph[], seen: Record<string, Obser
       // at the last run. The counters stop at what they are compared with: a
       // state that doesn't change isn't written again (reconcile.ts).
       const again = restarted(s, o);
+      // One restart seen as "restarting", then running again, is one restart.
+      if (again && !(s.restarting && o.state === "running")) {
+        if (s.last_restart_at > 0 && now - s.last_restart_at <= cfg.loop_window_ms) s.looping = true;
+        s.last_restart_at = now;
+      }
+      s.restarting = o.state === "restarting";
       if (again) {
         s.unstable = true;
         s.stable_runs = 0;
@@ -213,7 +231,7 @@ export function observe(prev: State, graphs: Graph[], seen: Record<string, Obser
         s.stable_runs = Math.min(s.stable_runs + 1, cfg.ready_runs);
         if (s.stable_runs >= cfg.ready_runs) s.unstable = false;
       }
-      if (!s.unstable) s.stable_runs = 0;
+      if (!s.unstable) Object.assign(s, { stable_runs: 0, looping: false });
       if (o.state === "restarting" && o.container !== "") {
         // It starts again after now: any start seen later is a restart.
         Object.assign(s, { container: o.container, started_before: now });
@@ -223,7 +241,7 @@ export function observe(prev: State, graphs: Graph[], seen: Record<string, Obser
       } else {
         Object.assign(s, { container: "", started_before: 0 });
       }
-      if (s.unstable) alerts.push(`${name} is restarting (crash loop): what uses it waits`);
+      if (s.looping) alerts.push(`${name} is restarting (crash loop): what uses it waits`);
       // Still within its ready_within, its healthcheck not yet passed: not
       // ready, and not down either - a deploy now would start it over.
       const settling = o.state === "running" && o.health === "starting" && o.started_before > 0 &&
@@ -263,7 +281,8 @@ export function decide(prev: State, graphs: Graph[], seen: Record<string, Observ
     const down = s.unready_runs >= cfg.unready_runs;
     const update = o.pending && o.state === "running";
     if (!down && !update) {
-      if (s.breaker !== "closed" && healthy(o)) Object.assign(s, { breaker: "closed", failures: 0, next_attempt_at: 0 });
+      // Back by itself (Docker restarted it): its failed deploys count no more.
+      if ((s.breaker !== "closed" || s.failures > 0) && healthy(o)) Object.assign(s, { breaker: "closed", failures: 0, next_attempt_at: 0 });
       continue;
     }
     if (o.busy || s.in_flight) {
@@ -276,7 +295,7 @@ export function decide(prev: State, graphs: Graph[], seen: Record<string, Observ
     }
     if (s.unstable) {
       // Docker restarts it already; a deploy wouldn't help.
-      held[name] = "restarting by itself (crash loop)";
+      held[name] = s.looping ? "restarting by itself (crash loop)" : "restarted by itself: left alone until it stays up";
       continue;
     }
     const waiting = node.uses.filter((p) => (state.stacks[p]?.ready_runs ?? 0) < cfg.ready_runs);

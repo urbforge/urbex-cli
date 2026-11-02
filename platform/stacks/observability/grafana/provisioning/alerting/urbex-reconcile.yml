@@ -3,7 +3,8 @@
 # The alerts of the reconciler, the Komodo Action urbex-reconcile
 # (platform/komodo/reconcile.ts, urbforge/urbex-cli#43): it sends a line to
 # Loki on every run, once a minute, and an error line for every circuit
-# breaker it holds open and every provider it sees in a crash loop.
+# breaker it holds open and every provider it sees in a crash loop, one
+# that restarts again within ten minutes: a single restart is no alert.
 apiVersion: 1
 groups:
   - orgId: 1
