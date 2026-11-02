@@ -566,6 +566,126 @@ step "linked applications: each starts once what it uses is ready, with what it 
   [ "$healthy" = 2 ] || fail "db and api should be healthy in Prometheus, $healthy are"
   echo "ok: db, then api, then web, each once what it uses was ready, with no restart; a provider without a healthcheck is refused"'
 
+step "the reconciler: a change waits for what it needs, a late provider is handled" '
+  on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.$1 "$2"; }
+  app() { on $1 "docker inspect -f {{.State.Status}}/{{.Id}}/{{.RestartCount}} shop-$2-prod-app-1" 2>/dev/null; }
+  expect_running() { # expect_running <octet> <service> <timeout-seconds>
+    _end=$(( $(date +%s) + $3 ))
+    until app $1 $2 | grep -q "^running/"; do
+      [ "$(date +%s)" -ge "$_end" ] && fail "$2 did not come back by itself: $(app $1 $2)"
+      sleep 10
+    done
+  }
+  cd /work/shop
+  urbex status prod | grep -q "Reconciler: running, last heard from .* ago\.$" || fail "the reconciler should have run lately: $(urbex status prod | grep -A2 Reconciler)"
+  # Its lines reach Loki, and Grafana alerts on them: when they stop
+  # coming, and on what it holds back.
+  [ "$(loki_lines "{kind=\"platform\", service=\"komodo\", source=\"urbex-reconcile\"}")" -gt 0 ] || fail "no line of the reconciler in Loki"
+  for uid in urbex-reconcile-not-running urbex-reconcile-errors; do
+    curl -sf -u "admin:$(cred grafanaAdminPassword)" http://$NET.204:3000/api/v1/provisioning/alert-rules/$uid >/dev/null || fail "Grafana lacks the alert rule $uid"
+  done
+
+  # 1. A change to api while db is down: the preflight keeps the running
+  # api (compose would have replaced it with one waiting for db), and the
+  # reconciler deploys the change once db is back.
+  before=$(app 215 api)
+  on 214 "docker stop shop-db-prod-app-1" >/dev/null
+  sleep 6
+  cd /work/gitops && git pull -q "$(gitops_remote)" main 2>/dev/null
+  echo "RECONCILE_MARK=1" >>environments/prod/shop/api/config.env
+  git commit -qam "Change api while db is down" && git push -q "$(gitops_remote)" HEAD:main 2>/dev/null
+  # Longer than the preflight waits for db (110 s), from the push on.
+  for _ in $(seq 1 30); do
+    [ "$(app 215 api)" = "$before" ] || fail "api was touched while db was down: $before -> $(app 215 api)"
+    sleep 5
+  done
+  on 214 "docker start shop-db-prod-app-1" >/dev/null
+  # The reconciler deploys it within a minute or two, unless the GitOps
+  # Procedure (every quarter of an hour) happens to run first: either way
+  # the change lands.
+  _deadline=$(( $(date +%s) + 360 ))
+  until [ "$(on 215 "docker exec shop-api-prod-app-1 printenv RECONCILE_MARK" 2>/dev/null)" = 1 ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "the change to api was not deployed once db was back; the reconciler: $(reconciler_runs | head -n 3)"
+    sleep 10
+  done
+
+  # 2. api gone while db is down; db back later than api would wait: the
+  # reconciler brings api back, through its wait, once db is ready.
+  on 214 "docker stop shop-db-prod-app-1" >/dev/null
+  on 215 "docker rm -f shop-api-prod-app-1" >/dev/null
+  sleep 150
+  [ -z "$(app 215 api)" ] || fail "api should stay down while db is: $(app 215 api)"
+  reconciler_runs | head -n 1 | grep -q "shop-api-prod: waiting for shop-db-prod" || fail "the reconciler should hold api for db: $(reconciler_runs | head -n 1)"
+  on 214 "docker start shop-db-prod-app-1" >/dev/null
+  expect_running 215 api 360
+  expect_reconciler "shop-api-prod: missing - DeployStack started" 60
+  expect_reconciler "shop-api-prod: the deploy started earlier succeeded" 240
+  [ "$(app 215 api | cut -d/ -f3)" = 0 ] || fail "api restarted: $(app 215 api)"
+
+  # What the reboot, next, must not recreate.
+  on 215 "docker inspect -f {{.Id}} shop-api-prod-app-1" >/work/api-before-reboot
+  on 216 "docker inspect -f {{.Id}} shop-web-prod-app-1" >/work/web-before-reboot
+  echo "ok: a change waited for db and a late db was handled, with no deploy on what was not ready"'
+
+# The node of shop reboots: its LXCs are down for a while - long enough
+# for the reconciler to run twice without reaching their Periphery - then
+# start again, with Docker, Periphery and the applications. One restart
+# is no crash loop, and a Stack on an unreachable server is left alone.
+podman stop -t 10 e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
+sleep 150
+podman start e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
+for m in db api web; do
+  podman exec e2e-shop-$m-prod sh -c "printf 'nameserver $NET.202\nnameserver $NET.1\n' >/etc/resolv.conf"
+done
+podman exec e2e-shop-db-prod sh -c 'mount --bind /srv/volumes/db/data /srv/volumes/db/data'
+
+step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
+  on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.$1 "$2"; }
+  app() { on $1 "docker inspect -f {{.State.Status}}/{{.Id}}/{{.RestartCount}} shop-$2-prod-app-1" 2>/dev/null; }
+  expect_running() { # expect_running <octet> <service> <timeout-seconds>
+    _end=$(( $(date +%s) + $3 ))
+    until app $1 $2 | grep -q "^running/"; do
+      [ "$(date +%s)" -ge "$_end" ] && fail "$2 did not come back by itself: $(app $1 $2)"
+      sleep 10
+    done
+  }
+  cd /work/shop
+
+  # 3. After the reboot, the applications come back by themselves: the
+  # runs while their servers were unreachable leave them alone, and the
+  # runs that see them back do not fail, call nothing a crash loop and
+  # deploy nothing - api and web are the containers they were.
+  _deadline=$(( $(date +%s) + 180 ))
+  until [ "$(on 214 "docker inspect -f {{.State.Health.Status}} shop-db-prod-app-1" 2>/dev/null)" = healthy ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "db did not come back healthy after the reboot: $(app 214 db)"
+    sleep 5
+  done
+  expect_running 215 api 60
+  expect_running 216 web 60
+  # Five runs from then: the ones that see them back, and well past the
+  # two they stay unstable for; and the runs while they were down.
+  sleep 300
+  runs=$(reconciler_runs | head -n 12)
+  if echo "$runs" | grep -q "^FAILED"; then fail "a run failed after a reboot: $runs"; fi
+  if echo "$runs" | grep -q "crash loop"; then fail "a reboot was called a crash loop: $runs"; fi
+  if echo "$runs" | grep -q "DeployStack"; then fail "a reboot should deploy nothing: $runs"; fi
+  echo "$runs" | grep -q "its server is unreachable: left alone" || fail "the runs during the reboot should leave the Stacks alone: $runs"
+  if urbex status prod | grep -q "crash loop"; then fail "urbex status calls a reboot a crash loop: $(urbex status prod | grep -A3 Reconciler)"; fi
+  [ "$(on 215 "docker inspect -f {{.Id}} shop-api-prod-app-1")" = "$(cat /work/api-before-reboot)" ] || fail "api was recreated after the reboot"
+  [ "$(on 216 "docker inspect -f {{.Id}} shop-web-prod-app-1")" = "$(cat /work/web-before-reboot)" ] || fail "web was recreated after the reboot"
+
+  # 4. api in a crash loop: web, gone, is not deployed on it, and the runs
+  # fail - Komodo shows it; once api stays up, web comes back.
+  on 216 "docker rm -f shop-web-prod-app-1" >/dev/null
+  on 215 "for i in \$(seq 1 18); do docker exec shop-api-prod-app-1 kill 1 2>/dev/null; sleep 10; done" &
+  killer=$!
+  expect_reconciler "shop-api-prod is restarting (crash loop): what uses it waits" 240
+  reconciler_runs | grep "crash loop" | head -n 1 | grep -q "^FAILED" || fail "a run that sees a crash loop should fail"
+  [ -z "$(app 216 web)" ] || fail "web should not be deployed on a crash-looping api: $(app 216 web)"
+  wait $killer
+  expect_running 216 web 480
+  echo "ok: a reboot of the node alerted and deployed nothing; a crash-looping api held web back and failed the runs"'
+
 log "PASSED ($STEP steps)"
 if $KEEP; then
   echo "Machines left running (podman ps --filter name=e2e-); the next run removes them."

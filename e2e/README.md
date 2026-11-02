@@ -94,6 +94,20 @@ runner and fails the test on the first assertion that doesn't hold:
     the 20 s each provider must answer without a failure; an
     api without a healthcheck is refused, and the healthchecks reach
     Prometheus (`container_health_state`).
+17. The reconciler (Komodo Action `urbex-reconcile`), on `shop`:
+    `urbex status` shows it ran lately; a change to api pushed while db
+    is down leaves the running api alone (the preflight of
+    `urbex-compose`) and is deployed once db is back; api removed while
+    db is down is held, then brought back through its wait once db is
+    ready.
+18. The node of shop reboots: its three LXCs are down for two and a
+    half minutes, then start again. The runs while they are down leave
+    the Stacks alone; db, api and web come back by themselves; no run
+    fails, nothing is called a crash loop and nothing is deployed. Then,
+    while api is in a crash loop, web is not deployed on it and
+    the runs fail, and web comes back once api stays up. The circuit
+    breaker and the backoff are covered by `deno test platform/komodo`:
+    opening one takes five failed deploys over a quarter of an hour.
 
 ## When a step fails
 
