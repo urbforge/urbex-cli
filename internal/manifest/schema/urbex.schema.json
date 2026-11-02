@@ -124,7 +124,7 @@
         },
         "uses": {
           "type": "array",
-          "description": "Names of the applications of the stack this one needs: deployed first, and their connection passed (DATABASE_URL and PG* for a postgres provider).",
+          "description": "Names of the applications of the stack this one needs. Its Stack waits until they are healthy before it starts, and their connection is passed (DATABASE_URL and PG* for a postgres provider, <APP>_HOST, <APP>_PORT and <APP>_URL for any other). See docs/decisions/0031-readiness-between-stacks.md.",
           "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
           "uniqueItems": true
         },
