@@ -512,8 +512,10 @@ func (o *Orchestrator) connectPlatformServers(ctx context.Context, clients Clien
 	if err := k.TagResource(ctx, "Builder", KomodoServerName, PlatformTag); err != nil {
 		return err
 	}
-	if err := k.TagResource(ctx, "Action", ReleaseAction, PlatformTag); err != nil {
-		return err
+	for _, action := range []string{ReleaseAction, ReconcileAction} {
+		if err := k.TagResource(ctx, "Action", action, PlatformTag); err != nil {
+			return err
+		}
 	}
 	return k.TagResource(ctx, "Procedure", GitOpsProcedure, PlatformTag)
 }

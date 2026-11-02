@@ -240,7 +240,7 @@ func TestRun_ConnectsAndTagsThePlatformInKomodo(t *testing.T) {
 	if strings.Join(fp.waitedServers, ",") != "urbex-gitea,urbex-technitium,urbex-keycloak,urbex-observability" {
 		t.Errorf("waited for %v", fp.waitedServers)
 	}
-	for _, r := range []string{"Server urbex-gitea", "Server urbex-komodo", "Server urbex-observability", "Builder urbex-komodo", "Action urbex-release", "Procedure urbex-gitops"} {
+	for _, r := range []string{"Server urbex-gitea", "Server urbex-komodo", "Server urbex-observability", "Builder urbex-komodo", "Action urbex-release", "Action urbex-reconcile", "Procedure urbex-gitops"} {
 		if strings.Join(fp.tags[r], ",") != "platform" {
 			t.Errorf("%s tags = %v, want platform", r, fp.tags[r])
 		}
