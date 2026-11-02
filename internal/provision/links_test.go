@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +62,8 @@ func TestApply_LinksGenerateCredentialsOnceAndWaitInTheConsumersStack(t *testing
 		strings.Contains(env, apiSecrets["PGPASSWORD"]) {
 		t.Errorf("api urbex.env:\n%s", env)
 	}
-	if compose := read("api", envrepo.ComposeFile); !strings.Contains(compose, "wait_for pg_isready -q -t 2 -h db.staging.my-app.") ||
-		!strings.Contains(compose, "+ 60 ))") {
+	if compose := read("api", envrepo.ComposeFile); !strings.Contains(compose, "name=db host=db.staging.my-app.") ||
+		!strings.Contains(compose, fmt.Sprintf("+ %d ))", 60+manifest.ReadyStableSeconds)) {
 		t.Errorf("api compose:\n%s", compose)
 	}
 	if env := read("db", envrepo.GeneratedFile); !strings.Contains(env, "POSTGRES_DB=my_app") || !strings.Contains(env, "PGDATA=/var/lib/postgresql/pgdata") {

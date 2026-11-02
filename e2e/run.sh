@@ -538,9 +538,9 @@ step "linked applications: each starts once what it uses is ready, with what it 
 
   # The probes: the PostgreSQL takes connections, the api answers its
   # healthcheck (a port that answers is not enough); a budget per level.
-  grep -q "wait_for pg_isready -q -h db.shop.urbex.urbex.test -p 5432" $dir/api/compose.yaml || fail "api should wait for db with pg_isready"
-  grep -q "wait_for wget -q --spider -T 2 http://api.shop.urbex.urbex.test:80/ " $dir/web/compose.yaml || fail "web should probe the healthcheck of api: $(grep wait_for $dir/web/compose.yaml)"
-  grep -q "+ 60 ))" $dir/api/compose.yaml && grep -q "+ 120 ))" $dir/web/compose.yaml || fail "the wait should be 60 s per level of the graph"
+  grep -q "host=db.shop.urbex.urbex.test; probe() { pg_isready -q -t 2 -h \"\$\$1\" -p 5432; }" $dir/api/compose.yaml || fail "api should wait for db with pg_isready: $(grep wait_for $dir/api/compose.yaml)"
+  grep -q "host=api.shop.urbex.urbex.test; probe() { wget -q --spider -T 2 --header \"Host: api.shop.urbex.urbex.test:80\" \"http://\$\$1:80/\"; }" $dir/web/compose.yaml || fail "web should probe the healthcheck of api: $(grep wait_for $dir/web/compose.yaml)"
+  grep -q "+ 110 ))" $dir/api/compose.yaml && grep -q "+ 190 ))" $dir/web/compose.yaml || fail "the wait should be the ready_within along the chain (db 90 s, api 60 s) plus the stable window per level"
   if grep -q wait_for $dir/db/compose.yaml; then fail "db uses nothing and should not wait"; fi
 
   # What the consumers get to reach what they use.
@@ -549,7 +549,22 @@ step "linked applications: each starts once what it uses is ready, with what it 
   [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_ADDRESS")" = http://api.shop.urbex.urbex.test:80 ] || fail "the reference to api.url did not resolve"
   [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_URL")" = http://api.shop.urbex.urbex.test:80 ] || fail "web has no API_URL"
   if grep -rq "$(on 215 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" $dir; then fail "a generated password is in plaintext in the GitOps repo"; fi
-  echo "ok: db, then api, then web, each once what it uses was ready, with no restart"'
+
+  # A provider with no way to tell it is ready is refused: without its
+  # healthcheck, api could only be probed on its port.
+  rm -rf /tmp/noprobe && cp -r /work/shop /tmp/noprobe && sed -i "/healthcheck: \//d" /tmp/noprobe/urbex.yaml
+  (cd /tmp/noprobe && urbex apply prod) >/tmp/noprobe.log 2>&1 && fail "a provider without a healthcheck should be refused"
+  grep -q "uses api, which has neither an interface nor a healthcheck" /tmp/noprobe.log || fail "the refusal should name api: $(cat /tmp/noprobe.log)"
+  [ "$(komodo_stack_state shop-web-prod)" = running ] || fail "a refused apply should leave the stacks alone"
+
+  # The healthchecks reach Prometheus, for dashboards and alerts.
+  for _ in $(seq 1 12); do
+    healthy=$(prom_series "container_health_state{kind=\"app\", project=\"shop\", service=~\"db|api\", env=\"prod\"} == 1")
+    [ "$healthy" = 2 ] && break
+    sleep 5
+  done
+  [ "$healthy" = 2 ] || fail "db and api should be healthy in Prometheus, $healthy are"
+  echo "ok: db, then api, then web, each once what it uses was ready, with no restart; a provider without a healthcheck is refused"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

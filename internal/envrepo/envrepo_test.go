@@ -334,15 +334,11 @@ func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
 		"  wait:\n    image: " + WaitImage,
 		`restart: "no"`,
 		"end=$$(( $$(date +%s) + 180 ))",
-		"name=db; wait_for pg_isready -q -t 2 -h db.staging.my-app.lab -p 5432 || exit 1",
-		"name=ml; wait_for wget -q --spider -T 2 http://ml.staging.my-app.lab:3003/healthz || exit 1",
-		"name=auth; wait_for wget -q --spider -T 2 http://auth.staging.my-app.lab:9000/ready || exit 1",
-		// A provider passes after three good answers; two failures in a
-		// row start the count over; a provider that doesn't answer is
-		// probed less and less often, with jitter.
-		"while [ $$good -lt 3 ]; do",
-		"if \"$$@\"; then good=$$((good + 1)) bad=0 delay=1; else bad=$$((bad + 1)); fi",
-		"[ $$bad -ge 2 ] && good=0",
+		`name=db host=db.staging.my-app.lab; probe() { pg_isready -q -t 2 -h "$$1" -p 5432; }; wait_for || exit 1`,
+		`name=ml host=ml.staging.my-app.lab; probe() { wget -q --spider -T 2 --header "Host: ml.staging.my-app.lab:3003" "http://$$1:3003/healthz"; }; wait_for || exit 1`,
+		`name=auth host=auth.staging.my-app.lab; probe() { wget -q --spider -T 2 --header "Host: auth.staging.my-app.lab:9000" "http://$$1:9000/ready"; }; wait_for || exit 1`,
+		// How it decides is TestWait_*; a provider that doesn't answer
+		// is probed less and less often, with jitter.
 		"sleep $$((delay + $$RANDOM % (delay + 1)))",
 		"[ $$delay -lt 8 ] && delay=$$((delay * 2))",
 		"      - urbex.env\n      - path: ${URBEX_GENERATED_SECRETS_FILE:-urbex.secrets.env}\n        required: false",

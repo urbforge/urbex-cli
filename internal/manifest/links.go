@@ -204,10 +204,19 @@ func (s Service) ReadySeconds() int {
 	return n
 }
 
+// ReadyStableSeconds is how long a provider must answer without a single
+// failure before the wait calls it ready: one in a crash loop that stays
+// up less than this doesn't pass. One that stays up longer does - the
+// probe can't see restarts; the reconciler does, and alerts
+// (platform/komodo, urbforge/urbex-cli#43). Every level of the graph
+// starts this much later.
+const ReadyStableSeconds = 20
+
 // WaitSeconds is how long the application named name waits for what it
-// uses before giving up: the longest chain of ready_within upstream of
-// it, since its wait starts with every other Stack's deploy. 0 for one
-// that uses nothing. The manifest must have no cycle.
+// uses before giving up: the longest chain of ready_within, plus
+// ReadyStableSeconds per level, upstream of it, since its wait starts
+// with every other Stack's deploy. 0 for one that uses nothing. The
+// manifest must have no cycle.
 func (m *Manifest) WaitSeconds(name string) int {
 	svc, ok := m.service(name)
 	if !ok {
@@ -219,7 +228,7 @@ func (m *Manifest) WaitSeconds(name string) int {
 		if !ok {
 			continue
 		}
-		if w := provider.ReadySeconds() + m.WaitSeconds(dep); w > longest {
+		if w := provider.ReadySeconds() + ReadyStableSeconds + m.WaitSeconds(dep); w > longest {
 			longest = w
 		}
 	}

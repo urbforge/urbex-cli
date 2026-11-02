@@ -71,8 +71,8 @@ func TestLinks_Depth(t *testing.T) {
 			t.Errorf("Depth(%s) = %d, want %d", name, got, depth)
 		}
 	}
-	if got := m.WaitSeconds("photos"); got != 3*60 {
-		t.Errorf("WaitSeconds(photos) = %d, want the default ready_within of three levels", got)
+	if got := m.WaitSeconds("photos"); got != 3*(60+ReadyStableSeconds) {
+		t.Errorf("WaitSeconds(photos) = %d, want the default ready_within and the stable window of three levels", got)
 	}
 	if got := m.WaitSeconds("dns"); got != 0 {
 		t.Errorf("WaitSeconds(dns) = %d", got)
@@ -81,15 +81,16 @@ func TestLinks_Depth(t *testing.T) {
 
 func TestLinks_WaitSecondsSumsTheLongestChainOfReadyWithin(t *testing.T) {
 	// web waits for api (90 s) after db (5 m), or for db alone: the
-	// longer of the two.
+	// longer of the two; each level answering steadily for
+	// ReadyStableSeconds.
 	m := stack()
 	m.Services[0].ReadyWithin = "5m"
 	m.Services[1].ReadyWithin = "90s"
-	if got := m.WaitSeconds("web"); got != 300+90 {
-		t.Errorf("WaitSeconds(web) = %d, want 390", got)
+	if got, want := m.WaitSeconds("web"), 300+90+2*ReadyStableSeconds; got != want {
+		t.Errorf("WaitSeconds(web) = %d, want %d", got, want)
 	}
-	if got := m.WaitSeconds("api"); got != 300 {
-		t.Errorf("WaitSeconds(api) = %d, want 300", got)
+	if got, want := m.WaitSeconds("api"), 300+ReadyStableSeconds; got != want {
+		t.Errorf("WaitSeconds(api) = %d, want %d", got, want)
 	}
 	for v, want := range map[string]int{"": 60, "45s": 45, "2m": 120} {
 		if got := (Service{ReadyWithin: v}).ReadySeconds(); got != want {

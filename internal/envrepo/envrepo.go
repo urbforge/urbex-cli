@@ -60,13 +60,11 @@ const (
 
 // The wait's probing of a provider (urbforge/urbex-cli#43).
 const (
-	// WaitGoodAnswers is how many good answers, two seconds apart, the
-	// wait needs from a provider: one that crashes within seconds of
-	// starting doesn't pass. One that crashes later does - the probe
-	// can't see restarts; the reconciler does (platform/komodo).
-	WaitGoodAnswers = 3
-	// WaitBadAnswers failed answers in a row start the count over.
-	WaitBadAnswers = 2
+	// WaitProbeInterval is the time between two probes of a provider
+	// that answers, while the wait watches it for
+	// manifest.ReadyStableSeconds (a sleep argument): short enough to
+	// see a restart that lasts less than a second.
+	WaitProbeInterval = "0.25"
 	// WaitMaxBackoffSeconds caps the doubling wait between the probes of
 	// a provider that doesn't answer (plus up to as much again of jitter).
 	WaitMaxBackoffSeconds = 8
@@ -540,20 +538,31 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("      - -c\n")
 	b.WriteString("      - |\n")
 	fmt.Fprintf(b, "        end=$$(( $$(date +%%s) + %d ))\n", l.WaitSeconds)
-	// Ready after WaitGoodAnswers good answers, two seconds apart; one
-	// failed answer among them (a DNS hiccup) doesn't start the count
-	// over, WaitBadAnswers in a row do. While the provider doesn't
-	// answer, the probes back off exponentially, with jitter, so that
-	// the consumers of a provider that comes back don't all probe it at
-	// once.
+	// Ready once the provider has answered every probe, a quarter of a
+	// second apart, for manifest.ReadyStableSeconds: a failed answer
+	// starts the window over, so a provider in a crash loop shorter than
+	// the window never passes. Every failure counts, a DNS hiccup too:
+	// asking again would step over a restart as short as the time between
+	// the two. The address is looked up when a window starts and probed
+	// as is through it, so that a probe is quick and the probes close
+	// together. While the provider doesn't answer, the probes back off
+	// exponentially, with jitter, so that the consumers of a provider
+	// that comes back don't all probe it at once. Each provider's probe
+	// is the function probe, given the address.
 	b.WriteString("        wait_for() {\n")
-	b.WriteString("          good=0 bad=0 delay=1\n")
-	fmt.Fprintf(b, "          while [ $$good -lt %d ]; do\n", WaitGoodAnswers)
-	b.WriteString("            if \"$$@\"; then good=$$((good + 1)) bad=0 delay=1; else bad=$$((bad + 1)); fi\n")
-	fmt.Fprintf(b, "            [ $$bad -ge %d ] && good=0\n", WaitBadAnswers)
-	fmt.Fprintf(b, "            [ $$good -ge %d ] && break\n", WaitGoodAnswers)
+	b.WriteString("          since= delay=1\n")
+	b.WriteString("          while :; do\n")
+	b.WriteString("            now=$$(date +%s)\n")
+	b.WriteString("            [ -z \"$$since\" ] && ip=$$(getent hosts \"$$host\" | awk '{ print $$1; exit }')\n")
+	b.WriteString("            if [ -n \"$$ip\" ] && probe \"$$ip\"; then\n")
+	b.WriteString("              [ -z \"$$since\" ] && since=$$now\n")
+	fmt.Fprintf(b, "              [ $$((now - since)) -ge %d ] && break\n", manifest.ReadyStableSeconds)
+	b.WriteString("              delay=1\n")
+	b.WriteString("            else\n")
+	b.WriteString("              since=\n")
+	b.WriteString("            fi\n")
 	b.WriteString("            [ $$(date +%s) -ge $$end ] && { echo \"wait: gave up waiting for $$name\"; return 1; }\n")
-	b.WriteString("            if [ $$bad -eq 0 ]; then sleep 2; continue; fi\n")
+	fmt.Fprintf(b, "            if [ -n \"$$since\" ]; then sleep %s; continue; fi\n", WaitProbeInterval)
 	b.WriteString("            sleep $$((delay + $$RANDOM % (delay + 1)))\n")
 	fmt.Fprintf(b, "            [ $$delay -lt %d ] && delay=$$((delay * 2))\n", WaitMaxBackoffSeconds)
 	b.WriteString("          done\n")
@@ -561,10 +570,12 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("        }\n")
 	for _, w := range l.Waits {
 		if w.Interface == manifest.InterfacePostgres {
-			fmt.Fprintf(b, "        name=%s; wait_for pg_isready -q -t 2 -h %s -p %d || exit 1\n", w.Name, w.Host, w.Port)
+			fmt.Fprintf(b, "        name=%s host=%s; probe() { pg_isready -q -t 2 -h \"$$1\" -p %d; }; wait_for || exit 1\n", w.Name, w.Host, w.Port)
 			continue
 		}
-		fmt.Fprintf(b, "        name=%s; wait_for wget -q --spider -T 2 http://%s:%d%s || exit 1\n", w.Name, w.Host, w.Port, w.Healthcheck)
+		// To the address, as the provider's name.
+		fmt.Fprintf(b, "        name=%s host=%s; probe() { wget -q --spider -T 2 --header \"Host: %s:%d\" \"http://$$1:%d%s\"; }; wait_for || exit 1\n",
+			w.Name, w.Host, w.Host, w.Port, w.Port, w.Healthcheck)
 	}
 }
 
