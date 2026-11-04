@@ -6,6 +6,8 @@ import {
   emptyState,
   fromStatus,
   type Graph,
+  graphVariable,
+  graphVariables,
   type Observation,
   parseState,
   recordOutcome,
@@ -304,4 +306,21 @@ Deno.test("the state survives the variable, and anything unreadable starts over"
   eq(parseState(JSON.stringify(s)), s, "round trip");
   eq(parseState("not json"), emptyState(), "garbage");
   eq(parseState(undefined), emptyState(), "missing");
+});
+
+Deno.test("the graph variables are named from the Stacks' names and tags, as urbex apply names them", () => {
+  eq(graphVariable("my-shop", "prod"), "URBEX_GRAPH_MY_SHOP_PROD", "as bootstrap.GraphVariable");
+  const tags = { t1: "app", t2: "my-shop", t3: "prod", t4: "staging", t5: "agent", t6: "platform" };
+  const stacks = [
+    { name: "my-shop-db-prod", tags: ["t3", "t1", "t2"] },
+    { name: "my-shop-api-prod", tags: ["t1", "t2", "t3"] },
+    { name: "my-shop-db-staging", tags: ["t1", "t2", "t4"] },
+    { name: "urbex-telemetry-my-shop-db-prod", tags: ["t5", "t2", "t3"] },
+    { name: "urbex-observability", tags: ["t6"] },
+    { name: "untagged-stack-prod", tags: [] },
+    { name: "my-shop-prod", tags: ["t1", "t2", "t3"] },
+  ];
+  eq(graphVariables(stacks, tags), ["URBEX_GRAPH_MY_SHOP_PROD", "URBEX_GRAPH_MY_SHOP_STAGING"], "one per environment");
+  eq(graphVariables([{ name: "app-web-prod", tags: ["t1", "t3"] }], tags), ["URBEX_GRAPH_APP_PROD"], "a project named app");
+  eq(graphVariables([{ name: "my-shop-db-prod", tags: ["gone", "t2", "t3"] }], tags), ["URBEX_GRAPH_MY_SHOP_PROD"], "an unknown tag");
 });

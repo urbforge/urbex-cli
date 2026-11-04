@@ -280,19 +280,15 @@ func (c *Client) RunAction(ctx context.Context, name string, args map[string]any
 // Secret variables are hidden in Komodo's UI and logs; resources use
 // either kind as [[NAME]].
 func (c *Client) EnsureVariable(ctx context.Context, name, value string, secret bool) error {
-	var vars []struct {
-		Name string `json:"name"`
+	_, exists, err := c.Variable(ctx, name)
+	if err != nil {
+		return err
 	}
-	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
-		return fmt.Errorf("listing komodo variables: %w", err)
-	}
-	for _, v := range vars {
-		if v.Name == name {
-			if err := c.call(ctx, "write", "UpdateVariableValue", map[string]any{"name": name, "value": value}, nil); err != nil {
-				return fmt.Errorf("updating komodo variable %s: %w", name, err)
-			}
-			return c.call(ctx, "write", "UpdateVariableIsSecret", map[string]any{"name": name, "is_secret": secret}, nil)
+	if exists {
+		if err := c.call(ctx, "write", "UpdateVariableValue", map[string]any{"name": name, "value": value}, nil); err != nil {
+			return fmt.Errorf("updating komodo variable %s: %w", name, err)
 		}
+		return c.call(ctx, "write", "UpdateVariableIsSecret", map[string]any{"name": name, "is_secret": secret}, nil)
 	}
 	params := map[string]any{"name": name, "value": value, "is_secret": secret, "description": "Managed by urbex bootstrap"}
 	if err := c.call(ctx, "write", "CreateVariable", params, nil); err != nil {
@@ -301,40 +297,31 @@ func (c *Client) EnsureVariable(ctx context.Context, name, value string, secret 
 	return nil
 }
 
+// noVariable is how Komodo answers for a variable that doesn't exist.
+// Variables are read by name, never listed: Komodo lists every variable
+// to an admin with the values of the secret ones (urbforge/urbex-cli#55).
+const noVariable = "no variable found"
+
 // Variable returns the named Komodo variable's value, and whether it
 // exists.
 func (c *Client) Variable(ctx context.Context, name string) (string, bool, error) {
-	var vars []struct {
-		Name  string `json:"name"`
+	var v struct {
 		Value string `json:"value"`
 	}
-	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
-		return "", false, fmt.Errorf("listing komodo variables: %w", err)
-	}
-	for _, v := range vars {
-		if v.Name == name {
-			return v.Value, true, nil
+	if err := c.call(ctx, "read", "GetVariable", map[string]any{"name": name}, &v); err != nil {
+		if strings.Contains(err.Error(), noVariable) {
+			return "", false, nil
 		}
+		return "", false, fmt.Errorf("reading komodo variable %s: %w", name, err)
 	}
-	return "", false, nil
+	return v.Value, true, nil
 }
 
 // DeleteVariable deletes the named Komodo variable; one that doesn't
 // exist is already gone.
 func (c *Client) DeleteVariable(ctx context.Context, name string) error {
-	var vars []struct {
-		Name string `json:"name"`
-	}
-	if err := c.call(ctx, "read", "ListVariables", map[string]any{}, &vars); err != nil {
-		return fmt.Errorf("listing komodo variables: %w", err)
-	}
-	for _, v := range vars {
-		if v.Name == name {
-			if err := c.call(ctx, "write", "DeleteVariable", map[string]any{"name": name}, nil); err != nil {
-				return fmt.Errorf("deleting komodo variable %s: %w", name, err)
-			}
-			return nil
-		}
+	if err := c.call(ctx, "write", "DeleteVariable", map[string]any{"name": name}, nil); err != nil && !strings.Contains(err.Error(), noVariable) {
+		return fmt.Errorf("deleting komodo variable %s: %w", name, err)
 	}
 	return nil
 }
