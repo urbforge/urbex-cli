@@ -170,6 +170,36 @@ for s in json.load(urllib.request.urlopen(req)):
 PY
 }
 
+# reconciler_runs: the reconciler's last runs (Komodo Action
+# urbex-reconcile), newest first, one per line: "ok" or "FAILED", then
+# what it logged.
+reconciler_runs() {
+  python3 - "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+import json, sys, urllib.request
+url, key, secret = sys.argv[1:]
+def call(path, body):
+    req = urllib.request.Request(f"{url}/{path}", json.dumps(body).encode(),
+        {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req))
+action = call("read/GetAction", {"action": "urbex-reconcile"})["_id"]["$oid"]
+page = call("read/ListUpdates", {"query": {"target.type": "Action", "target.id": action}})
+for u in page.get("updates", [])[:15]:
+    full = call("read/GetUpdate", {"id": u["id"]})
+    text = " ".join(l.get("stdout", "") + " " + l.get("stderr", "") for l in full.get("logs", []))
+    print(("ok " if full.get("success") else "FAILED ") + " ".join(text.split()))
+PY
+}
+
+# expect_reconciler <text> <timeout-seconds>: poll until one of the
+# reconciler's last runs logged text.
+expect_reconciler() {
+  _deadline=$(( $(date +%s) + $2 ))
+  until reconciler_runs | grep -qF "$1"; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "the reconciler never said \"$1\"; its last runs: $(reconciler_runs | head -n 3)"
+    sleep 10
+  done
+}
+
 komodo_tags() {
   python3 - "$1" "$2" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
 import json, sys, urllib.request

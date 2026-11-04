@@ -17,6 +17,8 @@ age = "1.2.1"
 python = "3.12.15"
 uv = "0.12.23"
 "pipx:ansible-core" = "2.21.5"
+# The runtime of Komodo's Actions: tests the reconciler's logic.
+deno = "2.9.7"
 
 [settings]
 # Install Python tools (ansible-core) with uv.
@@ -28,12 +30,16 @@ run = "go build -o urbex ./cmd/urbex"
 
 [tasks.test]
 description = "Run the unit tests"
-run = "go test ./..."
+run = [
+  "go test ./...",
+  "deno test --no-prompt platform/komodo",
+]
 
 [tasks.lint]
-description = "go vet, and check the code is gofmt-formatted"
+description = "go vet, deno check, and check the code is gofmt-formatted"
 run = [
   "go vet ./...",
+  "deno check platform/komodo/reconcile_logic.ts platform/komodo/reconcile_logic_test.ts",
   'test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "not formatted - run: mise run fmt" >&2; exit 1; }',
 ]
 

@@ -238,7 +238,7 @@ internal/status/             urbex status: Proxmox presence + allocation-ledger 
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
 platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends
-platform/komodo/             the Komodo Action that builds main, moves staging, and publishes release tags
+platform/komodo/             the Komodo Actions urbex-release, which builds main, moves staging and publishes release tags, and urbex-reconcile, which brings linked applications back
 e2e/                         end-to-end test of the real binary (podman)
 tools/operator/              urbex-op: urbex and its tools in a container, run against a workspace
 ```
