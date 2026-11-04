@@ -108,6 +108,10 @@ runner and fails the test on the first assertion that doesn't hold:
     the runs fail, and web comes back once api stays up. The circuit
     breaker and the backoff are covered by `deno test platform/komodo`:
     opening one takes five failed deploys over a quarter of an hour.
+19. `destroy prod --delete-data` of `shop` removes its graph, and the
+    next run of the reconciler finds no environment with links and
+    succeeds: it reads the graphs by name, from the Stacks Komodo lists,
+    and a missing one, as for `hello`, which has no links, is skipped.
 
 ## When a step fails
 
