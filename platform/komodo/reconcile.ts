@@ -23,7 +23,6 @@ const STATE_VARIABLE = "URBEX_RECONCILE_STATE";
 // (platform/stacks/observability/grafana/provisioning/alerting).
 const LOKI_PUSH_URL = "[[URBEX_LOKI_PUSH_URL]]";
 const LOKI_LABELS = { kind: "platform", service: "komodo", source: "urbex-reconcile" };
-const GRAPH_PREFIX = "URBEX_GRAPH_";
 // Every call to Komodo has a deadline: a hung call can't hold the run,
 // whose lease (a little under the schedule) would expire under it.
 const CALL_TIMEOUT_MS = 15_000;
@@ -172,18 +171,44 @@ async function look(name: string, info: any, consumer: boolean): Promise<Observa
   };
 }
 
-async function readVariables(): Promise<{ graphs: Graph[]; state: State; kept: boolean }> {
-  const vars: any[] = await deadline(komodo.read("ListVariables", {}), CALL_TIMEOUT_MS, "listing variables");
+// Variables are read by name, never listed: Komodo lists every variable
+// to an admin, as the Action's user is, with the values of the secret
+// ones too (urbforge/urbex-cli#55). GetVariable answers this for
+// one that doesn't exist.
+const NO_VARIABLE = "no variable found";
+
+/** The named variable's value; undefined if it doesn't exist. */
+async function variable(name: string): Promise<string | undefined> {
+  try {
+    const v: any = await deadline(komodo.read("GetVariable", { name }), CALL_TIMEOUT_MS, `reading ${name}`);
+    return String(v?.value ?? "");
+  } catch (err) {
+    if (message(err).includes(NO_VARIABLE)) return undefined;
+    throw err;
+  }
+}
+
+async function readState(): Promise<{ state: State; kept: boolean }> {
+  const value = await variable(STATE_VARIABLE);
+  return { state: parseState(value), kept: value !== undefined };
+}
+
+/** The graphs of the environments of the Stacks Komodo lists. */
+async function readGraphs(stacks: any[]): Promise<Graph[]> {
+  const tags: any[] = await deadline(komodo.read("ListTags", {}), CALL_TIMEOUT_MS, "listing tags");
+  const tagNames: Record<string, string> = {};
+  for (const t of tags) tagNames[t._id?.$oid ?? t.id ?? ""] = t.name;
   const graphs: Graph[] = [];
-  for (const v of vars.filter((v) => v.name.startsWith(GRAPH_PREFIX))) {
+  for (const name of graphVariables(stacks.map((s) => ({ name: s.name, tags: s.tags ?? [] })), tagNames)) {
+    const value = await variable(name);
+    if (value === undefined) continue; // an environment without links
     try {
-      graphs.push(JSON.parse(v.value));
+      graphs.push(JSON.parse(value));
     } catch (err) {
-      console.log(`${v.name}: not a graph (${message(err)}): skipped`);
+      console.log(`${name}: not a graph (${message(err)}): skipped`);
     }
   }
-  const kept = vars.find((v) => v.name === STATE_VARIABLE);
-  return { graphs, state: parseState(kept?.value), kept: kept !== undefined };
+  return graphs;
 }
 
 // The state is written only when it changed, or to refresh the heartbeat
@@ -232,17 +257,17 @@ async function land(state: State, info: Record<string, any>, log: (line: string)
 /** Takes the lease for starting deploys; false if another run holds it. */
 async function lease(state: State, owner: string): Promise<boolean> {
   const held = (s: State) => s.lease_until > Date.now() && s.lease_owner !== owner;
-  const fresh = await readVariables();
+  const fresh = await readState();
   if (held(fresh.state)) return false;
   state.lease_owner = owner;
   state.lease_until = Date.now() + LEASE_MS;
   await saveState(state, fresh.kept);
   // Written without a compare-and-set: read it back, the last writer wins.
-  return !held((await readVariables()).state);
+  return !held((await readState()).state);
 }
 
 async function main(): Promise<void> {
-  const { graphs, state: kept, kept: exists } = await readVariables();
+  const { state: kept, kept: exists } = await readState();
   const before = JSON.stringify(kept.stacks);
   const now = Date.now();
   const lines: string[] = [];
@@ -251,6 +276,7 @@ async function main(): Promise<void> {
     lines.push(line);
   };
   const stacks: any[] = await deadline(komodo.read("ListStacks", {}), CALL_TIMEOUT_MS, "listing stacks");
+  const graphs = await readGraphs(stacks);
   const info: Record<string, any> = {};
   for (const s of stacks) info[s.name] = { id: s.id, ...s.info };
   await land(kept, info, log);

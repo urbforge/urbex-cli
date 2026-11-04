@@ -377,3 +377,70 @@ func TestEnsureStack_WaitsWhileTheStackIsBusy(t *testing.T) {
 		t.Errorf("expected 3 attempts, got %d", updates)
 	}
 }
+
+func TestVariables_ReadByNameNeverListed(t *testing.T) {
+	vars := map[string]string{"URBEX_GRAPH_SHOP_PROD": "{}"}
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		var body struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		_, ok := vars[body.Name]
+		missing := func() {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"no variable found with given name: ` + body.Name + `","trace":[]}`))
+		}
+		switch r.URL.Path {
+		case "/read/GetVariable":
+			if !ok {
+				missing()
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"name": body.Name, "value": vars[body.Name]})
+		case "/write/CreateVariable", "/write/UpdateVariableValue":
+			vars[body.Name] = body.Value
+			w.Write([]byte(`{}`))
+		case "/write/UpdateVariableIsSecret":
+			w.Write([]byte(`{}`))
+		case "/write/DeleteVariable":
+			if !ok {
+				missing()
+				return
+			}
+			delete(vars, body.Name)
+			w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	c := New(server.URL, "k", "s")
+	if v, ok, err := c.Variable(ctx, "URBEX_GRAPH_SHOP_PROD"); err != nil || !ok || v != "{}" {
+		t.Fatalf("Variable = %q, %v, %v", v, ok, err)
+	}
+	if _, ok, err := c.Variable(ctx, "GONE"); err != nil || ok {
+		t.Fatalf("Variable(missing) = %v, %v", ok, err)
+	}
+	if err := c.EnsureVariable(ctx, "NEW", "1", false); err != nil {
+		t.Fatalf("EnsureVariable(new): %v", err)
+	}
+	if err := c.EnsureVariable(ctx, "NEW", "2", false); err != nil || vars["NEW"] != "2" {
+		t.Fatalf("EnsureVariable(existing): %v, %q", err, vars["NEW"])
+	}
+	if err := c.DeleteVariable(ctx, "NEW"); err != nil {
+		t.Fatalf("DeleteVariable: %v", err)
+	}
+	if err := c.DeleteVariable(ctx, "NEW"); err != nil {
+		t.Fatalf("DeleteVariable(missing): %v", err)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "ListVariables") {
+			t.Errorf("listed the variables: %v", calls)
+		}
+	}
+}

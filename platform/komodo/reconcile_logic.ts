@@ -145,6 +145,35 @@ export function freshStack(): StackState {
   };
 }
 
+/** The Komodo variable of an environment's graph (bootstrap.GraphVariable). */
+export function graphVariable(project: string, env: string): string {
+  return "URBEX_GRAPH_" + `${project}_${env}`.replaceAll("-", "_").toUpperCase();
+}
+
+/**
+ * The graph variables of the environments that have Stacks, read by name
+ * so that no call lists every variable, secret ones included
+ * (urbforge/urbex-cli#55). urbex apply names a Stack
+ * <project>-<application>-<env> and tags it with the project and the
+ * environment: the pair of its tags that frames its name is the
+ * environment. An environment without links has no variable.
+ */
+export function graphVariables(stacks: { name: string; tags: string[] }[], tagNames: Record<string, string>): string[] {
+  const names = new Set<string>();
+  for (const s of stacks) {
+    const tags = s.tags.map((id) => tagNames[id]).filter((t): t is string => Boolean(t));
+    for (const project of tags) {
+      for (const env of tags) {
+        if (project !== env && s.name.length > project.length + env.length + 2 &&
+          s.name.startsWith(`${project}-`) && s.name.endsWith(`-${env}`)) {
+          names.add(graphVariable(project, env));
+        }
+      }
+    }
+  }
+  return [...names].sort();
+}
+
 /** The state as kept in the Komodo variable; anything unreadable starts over. */
 export function parseState(text: string | undefined): State {
   try {

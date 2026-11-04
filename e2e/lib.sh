@@ -170,31 +170,47 @@ for s in json.load(urllib.request.urlopen(req)):
 PY
 }
 
-# reconciler_runs: the reconciler's last runs (Komodo Action
+# reconciler_runs [since-ms]: the reconciler's last runs (Komodo Action
 # urbex-reconcile), newest first, one per line: "ok" or "FAILED", then
-# what it logged.
+# what it logged; only those started since since-ms, when given.
 reconciler_runs() {
-  python3 - "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+  python3 - "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" "${1:-0}" <<'PY'
 import json, sys, urllib.request
-url, key, secret = sys.argv[1:]
+url, key, secret, since = sys.argv[1:]
 def call(path, body):
     req = urllib.request.Request(f"{url}/{path}", json.dumps(body).encode(),
         {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
     return json.load(urllib.request.urlopen(req))
 action = call("read/GetAction", {"action": "urbex-reconcile"})["_id"]["$oid"]
 page = call("read/ListUpdates", {"query": {"target.type": "Action", "target.id": action}})
-for u in page.get("updates", [])[:15]:
+for u in [u for u in page.get("updates", []) if u.get("start_ts", 0) >= int(since)][:15]:
     full = call("read/GetUpdate", {"id": u["id"]})
     text = " ".join(l.get("stdout", "") + " " + l.get("stderr", "") for l in full.get("logs", []))
     print(("ok " if full.get("success") else "FAILED ") + " ".join(text.split()))
 PY
 }
 
-# expect_reconciler <text> <timeout-seconds>: poll until one of the
-# reconciler's last runs logged text.
+# komodo_variable <name>: the value of the Komodo variable, or nothing
+# when there is no such variable. Read by name, as urbex does.
+komodo_variable() {
+  python3 - "$1" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+import json, sys, urllib.error, urllib.request
+name, url, key, secret = sys.argv[1:]
+req = urllib.request.Request(f"{url}/read/GetVariable", json.dumps({"name": name}).encode(),
+    {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
+try:
+    print(json.load(urllib.request.urlopen(req)).get("value", ""))
+except urllib.error.HTTPError as e:
+    if "no variable found" not in e.read().decode():
+        raise
+PY
+}
+
+# expect_reconciler <text> <timeout-seconds> [since-ms]: poll until one
+# of the reconciler's last runs (since since-ms) logged text.
 expect_reconciler() {
   _deadline=$(( $(date +%s) + $2 ))
-  until reconciler_runs | grep -qF "$1"; do
+  until reconciler_runs "${3:-0}" | grep -qF "$1"; do
     [ "$(date +%s)" -ge "$_deadline" ] && fail "the reconciler never said \"$1\"; its last runs: $(reconciler_runs | head -n 3)"
     sleep 10
   done

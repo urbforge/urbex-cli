@@ -610,7 +610,9 @@ step "the reconciler: a change waits for what it needs, a late provider is handl
   done
 
   # 2. api gone while db is down; db back later than api would wait: the
-  # reconciler brings api back, through its wait, once db is ready.
+  # reconciler brings api back, through its wait, once db is ready. Only
+  # its runs from now on count: the change above logged the same success.
+  since=$(date +%s)000
   on 214 "docker stop shop-db-prod-app-1" >/dev/null
   on 215 "docker rm -f shop-api-prod-app-1" >/dev/null
   sleep 150
@@ -618,13 +620,15 @@ step "the reconciler: a change waits for what it needs, a late provider is handl
   reconciler_runs | head -n 1 | grep -q "shop-api-prod: waiting for shop-db-prod" || fail "the reconciler should hold api for db: $(reconciler_runs | head -n 1)"
   on 214 "docker start shop-db-prod-app-1" >/dev/null
   expect_running 215 api 360
-  expect_reconciler "shop-api-prod: missing - DeployStack started" 60
-  expect_reconciler "shop-api-prod: the deploy started earlier succeeded" 240
+  expect_reconciler "shop-api-prod: missing - DeployStack started" 60 "$since"
+  expect_reconciler "shop-api-prod: the deploy started earlier succeeded" 240 "$since"
   [ "$(app 215 api | cut -d/ -f3)" = 0 ] || fail "api restarted: $(app 215 api)"
 
   # What the reboot, next, must not recreate.
   on 215 "docker inspect -f {{.Id}} shop-api-prod-app-1" >/work/api-before-reboot
   on 216 "docker inspect -f {{.Id}} shop-web-prod-app-1" >/work/web-before-reboot
+  # The runs the next step looks at: from the reboot on.
+  date +%s000 >/work/reboot-at
   echo "ok: a change waited for db and a late db was handled, with no deploy on what was not ready"'
 
 # The node of shop reboots: its LXCs are down for a while - long enough
@@ -663,9 +667,10 @@ step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   expect_running 215 api 60
   expect_running 216 web 60
   # Five runs from then: the ones that see them back, and well past the
-  # two they stay unstable for; and the runs while they were down.
+  # two they stay unstable for; and the runs while they were down, all
+  # from the reboot on (the last run before it may still deploy).
   sleep 300
-  runs=$(reconciler_runs | head -n 12)
+  runs=$(reconciler_runs "$(cat /work/reboot-at)")
   if echo "$runs" | grep -q "^FAILED"; then fail "a run failed after a reboot: $runs"; fi
   if echo "$runs" | grep -q "crash loop"; then fail "a reboot was called a crash loop: $runs"; fi
   if echo "$runs" | grep -q "DeployStack"; then fail "a reboot should deploy nothing: $runs"; fi
@@ -685,6 +690,23 @@ step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   wait $killer
   expect_running 216 web 480
   echo "ok: a reboot of the node alerted and deployed nothing; a crash-looping api held web back and failed the runs"'
+
+step "the reconciler: an environment destroyed is no longer looked after, its graph read by name" '
+  cd /work/shop
+  [ -n "$(komodo_variable URBEX_GRAPH_SHOP_PROD)" ] || fail "the graph of shop prod should be in Komodo"
+  urbex destroy prod --delete-data >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy prod of the linked stack failed"; }
+  [ -z "$(komodo_variable URBEX_GRAPH_SHOP_PROD)" ] || fail "destroy should remove the graph of shop prod"
+  # The next run reads no graph: hello prod, still there, has no links,
+  # so the variable it asks for by name does not exist.
+  _deadline=$(( $(date +%s) + 180 ))
+  until reconciler_runs | head -n 1 | grep -qF "0 environment(s) with links: nothing to do."; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "the reconciler still looks after shop prod: $(reconciler_runs | head -n 1)"
+    sleep 10
+  done
+  latest=$(reconciler_runs | head -n 1)
+  echo "$latest" | grep -q "^ok " || fail "the run after the destroy failed: $latest"
+  if echo "$latest" | grep -q "shop-"; then fail "the run after the destroy still names shop: $latest"; fi
+  echo "ok: the graph went with the environment, and the reconciler found no other"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then
