@@ -86,3 +86,15 @@ variable "clone_vm_id" {
   default     = 0
   description = "VMID of urbex's prepared LXC template to clone new containers from; 0 creates them from template_file_id."
 }
+
+variable "startup_order" {
+  type        = number
+  default     = 0
+  description = "Where the LXC starts when the node boots: lower first; 0 leaves it unordered (Proxmox starts those last)."
+}
+
+variable "startup_up_delay" {
+  type        = number
+  default     = 0
+  description = "Seconds Proxmox waits, after starting the LXC at boot, before the next one: how long what runs in it may take to be ready."
+}

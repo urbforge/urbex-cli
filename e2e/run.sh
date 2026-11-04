@@ -112,6 +112,13 @@ git -C "$WORK/site" init -q -b main
 git -C "$WORK/site" add -A
 git -C "$WORK/site" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "site"
 
+# A third stack, of applications linked together, in a repo of its own.
+mkdir -p "$WORK/shop"
+cp e2e/linked/urbex.yaml "$WORK/shop/"
+git -C "$WORK/shop" init -q -b main
+git -C "$WORK/shop" add -A
+git -C "$WORK/shop" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "shop"
+
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
 octet=200
@@ -488,6 +495,76 @@ YAML
   urbex destroy prod --delete-data
   [ -z "$(komodo_stack_state site-web-prod)" ] || fail "the stack should be gone after destroy --delete-data"
   echo "ok: the volume was mounted, kept, grown, never shrunk, and deleted only with --delete-data"'
+
+# One machine per application, at the addresses apply allocates in the
+# manifest's order.
+machine shop-db-prod 214
+machine shop-api-prod 215
+machine shop-web-prod 216
+printf '%s\n' shop-db-prod shop-api-prod shop-web-prod >>"$WORK/pve-containers.txt"
+# The PostgreSQL's volume, a mount point as Proxmox makes it (see the
+# volumes step).
+podman exec e2e-shop-db-prod sh -c 'mkdir -p /srv/volumes/db/data/lost+found && mount --bind /srv/volumes/db/data /srv/volumes/db/data'
+step "linked applications: each starts once what it uses is ready, with what it needs to reach it" '
+  cd /work/shop
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the linked stack failed"; }
+  cat /tmp/apply.log
+  on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.$1 "$2"; }
+  # first <octet> <container> <event>: when the container first did it, in
+  # ns. Docker events, not inspect: every deploy of the Stack runs the
+  # one-shot wait again (it exits at once), and inspect keeps only the last.
+  first() { on $1 "docker events --since 2h --until $(date +%s) --filter container=$2 --filter event=$3 --format {{.TimeNano}}" | head -n 1; }
+  later() { [ -n "$1" ] && [ -n "$2" ] && [ "$1" -ge "$2" ]; }
+  dir=/work/gitops/environments/prod/shop
+
+  # What the PoC measured, for each consumer: its wait saw each provider
+  # ready and exited 0, the application started only then, and never
+  # restarted.
+  consumer() { # consumer <octet> <service> <provider>...
+    octet=$1 svc=$2; shift 2
+    for p in "$@"; do
+      on $octet "docker logs shop-$svc-prod-wait-1" 2>&1 | grep -q "wait: $p is ready" || fail "$svc: the wait did not see $p ready: $(on $octet "docker logs shop-$svc-prod-wait-1" 2>&1)"
+    done
+    [ "$(on $octet "docker inspect -f {{.State.ExitCode}} shop-$svc-prod-wait-1")" = 0 ] || fail "$svc: the wait did not exit 0"
+    later "$(first $octet shop-$svc-prod-app-1 start)" "$(first $octet shop-$svc-prod-wait-1 die)" || fail "$svc started before its wait was done"
+    [ "$(on $octet "docker inspect -f {{.RestartCount}} shop-$svc-prod-app-1")" = 0 ] || fail "$svc restarted"
+    [ "$(komodo_stack_state shop-$svc-prod)" = running ] || fail "$svc: Komodo shows the Stack $(komodo_stack_state shop-$svc-prod), not running (ignore_services)"
+  }
+  consumer 215 api db
+  consumer 216 web api db
+  [ "$(komodo_stack_state shop-db-prod)" = running ] || fail "db: Komodo shows the Stack $(komodo_stack_state shop-db-prod)"
+  later "$(first 215 shop-api-prod-app-1 start)" "$(first 214 shop-db-prod-app-1 start)" || fail "api started before db"
+  later "$(first 216 shop-web-prod-app-1 start)" "$(first 215 shop-api-prod-app-1 start)" || fail "web started before api"
+
+  # The probes: the PostgreSQL takes connections, the api answers its
+  # healthcheck (a port that answers is not enough); a budget per level.
+  grep -q "host=db.shop.urbex.urbex.test; probe() { pg_isready -q -t 2 -h \"\$\$1\" -p 5432; }" $dir/api/compose.yaml || fail "api should wait for db with pg_isready: $(grep wait_for $dir/api/compose.yaml)"
+  grep -q "host=api.shop.urbex.urbex.test; probe() { wget -q --spider -T 2 --header \"Host: api.shop.urbex.urbex.test:80\" \"http://\$\$1:80/\"; }" $dir/web/compose.yaml || fail "web should probe the healthcheck of api: $(grep wait_for $dir/web/compose.yaml)"
+  grep -q "+ 110 ))" $dir/api/compose.yaml && grep -q "+ 190 ))" $dir/web/compose.yaml || fail "the wait should be the ready_within along the chain (db 90 s, api 60 s) plus the stable window per level"
+  if grep -q wait_for $dir/db/compose.yaml; then fail "db uses nothing and should not wait"; fi
+
+  # What the consumers get to reach what they use.
+  [ "$(on 215 "docker exec shop-api-prod-app-1 printenv PGHOST")" = db.shop.urbex.urbex.test ] || fail "api has no PGHOST"
+  on 215 "docker exec shop-api-prod-app-1 printenv DATABASE_URL" | grep -q "^postgres://api:.*@db.shop.urbex.urbex.test:5432/shop$" || fail "api has no DATABASE_URL"
+  [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_ADDRESS")" = http://api.shop.urbex.urbex.test:80 ] || fail "the reference to api.url did not resolve"
+  [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_URL")" = http://api.shop.urbex.urbex.test:80 ] || fail "web has no API_URL"
+  if grep -rq "$(on 215 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" $dir; then fail "a generated password is in plaintext in the GitOps repo"; fi
+
+  # A provider with no way to tell it is ready is refused: without its
+  # healthcheck, api could only be probed on its port.
+  rm -rf /tmp/noprobe && cp -r /work/shop /tmp/noprobe && sed -i "/healthcheck: \//d" /tmp/noprobe/urbex.yaml
+  (cd /tmp/noprobe && urbex apply prod) >/tmp/noprobe.log 2>&1 && fail "a provider without a healthcheck should be refused"
+  grep -q "uses api, which has neither an interface nor a healthcheck" /tmp/noprobe.log || fail "the refusal should name api: $(cat /tmp/noprobe.log)"
+  [ "$(komodo_stack_state shop-web-prod)" = running ] || fail "a refused apply should leave the stacks alone"
+
+  # The healthchecks reach Prometheus, for dashboards and alerts.
+  for _ in $(seq 1 12); do
+    healthy=$(prom_series "container_health_state{kind=\"app\", project=\"shop\", service=~\"db|api\", env=\"prod\"} == 1")
+    [ "$healthy" = 2 ] && break
+    sleep 5
+  done
+  [ "$healthy" = 2 ] || fail "db and api should be healthy in Prometheus, $healthy are"
+  echo "ok: db, then api, then web, each once what it uses was ready, with no restart; a provider without a healthcheck is refused"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

@@ -124,7 +124,7 @@
         },
         "uses": {
           "type": "array",
-          "description": "Names of the applications of the stack this one needs: deployed first, and their connection passed (DATABASE_URL and PG* for a postgres provider).",
+          "description": "Names of the applications of the stack this one needs. Its Stack waits until they are healthy before it starts, and their connection is passed (DATABASE_URL and PG* for a postgres provider, <APP>_HOST, <APP>_PORT and <APP>_URL for any other). See docs/decisions/0031-readiness-between-stacks.md.",
           "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" },
           "uniqueItems": true
         },
@@ -160,6 +160,12 @@
         "healthcheck": {
           "type": "string",
           "description": "HTTP path probed (GET, inside the container) to tell whether the service is healthy. No healthcheck when omitted."
+        },
+        "ready_within": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(s|m)$",
+          "default": "60s",
+          "description": "How long the application may take to be ready after it starts (seconds or minutes, e.g. 90s, 5m): what the applications that use it wait for it, and how long Proxmox waits before starting them after a reboot. See urbforge/urbex-cli#43."
         },
         "public": {
           "type": "boolean",

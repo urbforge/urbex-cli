@@ -266,7 +266,11 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
-	target, repo := o.target(opts.Env), envrepo.Repo{Path: opts.GitOpsRepoPath}
+	repo := envrepo.Repo{Path: opts.GitOpsRepoPath}
+	target, err := o.linkedTarget(ctx, opts.Env, repo)
+	if err != nil {
+		return err
+	}
 	if err := o.Rollout.SetupEnv(ctx, target, repo); err != nil {
 		return err
 	}
@@ -416,7 +420,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, opts Options) error {
 	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
-	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
+	target, err := o.linkedTarget(ctx, opts.Env, repo)
+	if err != nil {
+		return err
+	}
+	if err := o.Rollout.WriteEnv(target, repo); err != nil {
 		return err
 	}
 	before, err := o.versions(repo, opts.Env)
@@ -448,7 +456,11 @@ func (o *Orchestrator) followMain(ctx context.Context, opts Options, repo envrep
 	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
-	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
+	target, err := o.linkedTarget(ctx, opts.Env, repo)
+	if err != nil {
+		return err
+	}
+	if err := o.Rollout.WriteEnv(target, repo); err != nil {
 		return err
 	}
 	current, err := o.versions(repo, opts.Env)
@@ -568,7 +580,11 @@ func (o *Orchestrator) deployImages(ctx context.Context, opts Options, repo envr
 	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
-	if err := o.Rollout.WriteEnv(o.target(opts.Env), repo); err != nil {
+	target, err := o.linkedTarget(ctx, opts.Env, repo)
+	if err != nil {
+		return err
+	}
+	if err := o.Rollout.WriteEnv(target, repo); err != nil {
 		return err
 	}
 	var changed []manifest.Service

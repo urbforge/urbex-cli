@@ -7,13 +7,47 @@
 #
 # If the service has secrets, sops decrypts them with the platform's age
 # key (SOPS_AGE_KEY) into a temporary file that only exists while compose
-# runs, and hands its path to the compose file as URBEX_SECRETS_FILE.
-# Plaintext secrets are never written next to the repo. A service without
-# secrets still has the file - Komodo tracks it - but with no sops
-# metadata in it, and compose runs as is.
+# runs, and hands its path to the compose file as URBEX_SECRETS_FILE. The
+# values urbex generates (urbex.sops.env) go the same way, as
+# URBEX_GENERATED_SECRETS_FILE. Plaintext secrets are never written next
+# to the repo. A service without secrets still has the files - Komodo
+# tracks them - but with no sops metadata in them, and compose runs as is.
 set -eu
 
-if grep -q '^sops_' secrets.sops.env 2>/dev/null; then
-  exec /opt/urbex/bin/sops exec-file --no-fifo secrets.sops.env "URBEX_SECRETS_FILE={} $*"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+umask 077
+
+for pair in secrets.sops.env:URBEX_SECRETS_FILE urbex.sops.env:URBEX_GENERATED_SECRETS_FILE; do
+  file=${pair%%:*}
+  var=${pair##*:}
+  if grep -q '^sops_' "$file" 2>/dev/null; then
+    /opt/urbex/bin/sops decrypt --input-type dotenv --output-type dotenv "$file" >"$tmp/$file"
+    export "$var=$tmp/$file"
+  fi
+done
+
+# preflight <compose command>: for an `up` of a Stack with a wait (an
+# application that uses others, ADR-0028), runs the wait alone first. If
+# what the application uses isn't ready, the deploy stops here and the
+# running version stays up: compose would otherwise replace it at once
+# and leave the new one waiting, an outage the change didn't call for
+# (urbforge/urbex-cli#43). The reconciler deploys it once they are ready.
+preflight() {
+  grep -q '^  wait:$' compose.yaml 2>/dev/null || return 0
+  # $@ becomes the command up to `up` (docker compose -p ... -f ...). The
+  # list was expanded before the loop: rebuilding $@ in it is safe.
+  first=true found=false
+  for arg do
+    if $first; then set --; first=false; fi
+    if [ "$arg" = up ]; then found=true; break; fi
+    set -- "$@" "$arg"
+  done
+  $found || return 0
+  "$@" run --rm --no-deps -T wait
+}
+if ! preflight "$@"; then
+  echo "urbex: what this application uses is not ready - not deployed, the running version stays" >&2
+  exit 1
 fi
-exec "$@"
+"$@"

@@ -46,6 +46,9 @@ variable "services" {
     cores      = number
     memory_mb  = number
     disk_gb    = number
+    # When it starts as the node boots (see the lxc module).
+    startup_order    = number
+    startup_up_delay = number
   }))
 }
 

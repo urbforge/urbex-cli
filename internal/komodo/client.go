@@ -221,6 +221,9 @@ type StackConfig struct {
 	// FilePaths are the compose files in RunDirectory; empty, compose's
 	// default names.
 	FilePaths []string `json:"file_paths,omitempty"`
+	// IgnoreServices are services Komodo leaves out of the Stack's state:
+	// a one-shot that has exited counts as unhealthy otherwise.
+	IgnoreServices []string `json:"ignore_services,omitempty"`
 }
 
 // EnvFile is a compose --env-file, tracked for changes.

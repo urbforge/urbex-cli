@@ -261,8 +261,6 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 	}}
 	got := m.Unsupported()
 	want := []string{
-		"services db: provides and uses are not supported yet (urbforge/urbex-cli#43)",
-		"services api: provides and uses are not supported yet (urbforge/urbex-cli#43)",
 		"services ui: public needs a port",
 		"services ui: healthcheck needs a port",
 		"services media: share media is declared twice",

@@ -32,7 +32,7 @@ prometheus.relabel "lxc" {
 {{- end }}
 }
 
-// --- resources: each container's CPU and memory -------------------------
+// --- resources: each container's CPU, memory and health -------------------
 
 prometheus.exporter.cadvisor "containers" {
   docker_host                  = "unix:///var/run/docker.sock"
@@ -51,9 +51,12 @@ prometheus.scrape "containers" {
 prometheus.relabel "containers" {
   forward_to = [prometheus.remote_write.platform.receiver]
 
+  // health_state is the result of the container's healthcheck (1 healthy,
+  // 0 starting or unhealthy, -1 none), for dashboards and alerts. It lags
+  // Docker by a scrape or more, so nothing waits on it (urbex-cli#43).
   rule {
     source_labels = ["__name__"]
-    regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes)"
+    regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes|health_state)"
     action        = "keep"
   }
   // Only the containers: cAdvisor also reports the LXC's own cgroup,

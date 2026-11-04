@@ -132,6 +132,9 @@ type Target struct {
 	// Logs: the telemetry agents ship the services' logs
 	// (the manifest's observability.logs).
 	Logs bool
+	// Links, by service name, are the generated files and the wait of the
+	// services that provide or use something (ADR-0028).
+	Links map[string]*envrepo.Links
 }
 
 // lxcs are the target's services that run on an LXC of their own - all
@@ -290,7 +293,7 @@ func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
 func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 	for _, svc := range t.Services {
 		follow := FollowsMainByDefault(t.Env) && !svc.FromImage()
-		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc), follow); err != nil {
+		if err := repo.WriteService(t.Env, t.Project, svc, r.Image(t.Project, svc), follow, t.Links[svc.Name]); err != nil {
 			return fmt.Errorf("writing %s: %w", envrepo.ServiceDir(t.Env, t.Project, svc.Name), err)
 		}
 	}
@@ -731,7 +734,23 @@ func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komod
 	if svc.IsWeb() {
 		return r.webStackConfig(t, svc)
 	}
+	configFiles := []komodo.ConfigFile{
+		{Path: envrepo.ConfigFile, Requires: "Redeploy"},
+		{Path: envrepo.SecretsFile, Requires: "Redeploy"},
+	}
+	var ignore []string
+	if links := t.Links[svc.Name]; links != nil {
+		configFiles = append(configFiles,
+			komodo.ConfigFile{Path: envrepo.GeneratedFile, Requires: "Redeploy"},
+			komodo.ConfigFile{Path: envrepo.GeneratedSecretsFile, Requires: "Redeploy"})
+		if len(links.Waits) > 0 {
+			// The wait exits once what the application uses answers: left
+			// out, Komodo would show the Stack as unhealthy.
+			ignore = []string{"wait"}
+		}
+	}
 	return komodo.StackConfig{
+		IgnoreServices:     ignore,
 		ServerID:           name, // the LXC's Periphery registers under its hostname
 		GitProvider:        r.Internal.Registry,
 		GitHTTPS:           false,
@@ -740,13 +759,10 @@ func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komod
 		Branch:             bootstrap.TrunkBranch,
 		RunDirectory:       envrepo.ServiceDir(t.Env, t.Project, svc.Name),
 		AdditionalEnvFiles: []komodo.EnvFile{{Path: envrepo.VersionFile, Track: true}},
-		ConfigFiles: []komodo.ConfigFile{
-			{Path: envrepo.ConfigFile, Requires: "Redeploy"},
-			{Path: envrepo.SecretsFile, Requires: "Redeploy"},
-		},
-		RegistryProvider:  r.Internal.Registry,
-		RegistryAccount:   bootstrap.GiteaAdminUser,
-		ComposeCmdWrapper: ComposeWrapper,
+		ConfigFiles:        configFiles,
+		RegistryProvider:   r.Internal.Registry,
+		RegistryAccount:    bootstrap.GiteaAdminUser,
+		ComposeCmdWrapper:  ComposeWrapper,
 	}
 }
 

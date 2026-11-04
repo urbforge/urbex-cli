@@ -21,7 +21,7 @@ const (
 	GiteaAdminUser   = "urbex-admin"
 	KomodoAdminUser  = "urbex-admin"
 	KomodoServerName = "urbex-komodo" // Periphery server + builder on the Komodo LXC
-	KomodoVersion    = "2.2.0"        // Core and Periphery must match exactly
+	KomodoVersion    = "2.3.4"        // Core and Periphery must match exactly
 	GitOpsRepoName   = "gitops"
 
 	// TrunkBranch is the one long-lived branch of every repo urbex

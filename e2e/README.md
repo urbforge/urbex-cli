@@ -2,7 +2,7 @@
 
 `e2e/run.sh` runs the real `urbex` binary through a whole project
 lifecycle and checks the result at every step. It needs only `podman`
-(rootless is fine) and takes about seven minutes.
+(rootless is fine) and takes about an hour.
 
 ```sh
 e2e/run.sh          # run, then remove everything
@@ -83,6 +83,17 @@ runner and fails the test on the first assertion that doesn't hold:
     replaced; a bigger `size` grows it, a smaller one is
     refused; `destroy` refuses without `--delete-data`, naming the
     volume, and removes everything with it.
+16. A third stack, `shop`, of applications linked together (`e2e/linked`):
+    a PostgreSQL, an api that uses it and a web that uses both, as in
+    the dependency PoC (`e2e/poc-deps`). Each consumer's wait sees what
+    it uses ready (`pg_isready`, the api's healthcheck) and exits 0, the
+    application starts only then and never restarts, Komodo shows every
+    Stack running, and the consumers get their connection variables
+    and `${api.url}` resolved, with no password in plaintext in the
+    GitOps repo. The waits are the `ready_within` along the chain, plus
+    the 20 s each provider must answer without a failure; an
+    api without a healthcheck is refused, and the healthchecks reach
+    Prometheus (`container_health_state`).
 
 ## When a step fails
 

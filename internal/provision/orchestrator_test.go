@@ -112,7 +112,7 @@ func (f *fakeRollout) WriteEnv(t rollout.Target, repo envrepo.Repo) error {
 		if svc.FromImage() {
 			image, follow = svc.Image, false
 		}
-		if err := repo.WriteService(t.Env, t.Project, svc, image, follow); err != nil {
+		if err := repo.WriteService(t.Env, t.Project, svc, image, follow, t.Links[svc.Name]); err != nil {
 			return err
 		}
 	}
@@ -730,7 +730,7 @@ func TestApply_SetsUpProjectAndAnEmptyProdEnvironment(t *testing.T) {
 	for _, want := range []string{
 		"gitea_registry: git.urbex.example.com:3000",
 		"komodo_core_address: http://komodo.urbex.example.com:9120",
-		"komodo_version: 2.2.0",
+		"komodo_version: 2.3.4",
 		"ansible_host: 192.168.1.210",
 	} {
 		if !strings.Contains(string(inventory), want) {
