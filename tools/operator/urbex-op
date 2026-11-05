@@ -19,6 +19,7 @@ IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 ENGINE=$(command -v podman || command -v docker || { echo "urbex-op: podman or docker is needed" >&2; exit 1; })
 # Files the container writes stay owned by you: podman maps your user in.
+# macOS bash 3.2 calls an empty "${a[@]}" unbound under set -u: expand arrays as ${a[@]+"${a[@]}"}.
 USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
 
 case "${1:-}" in
@@ -38,7 +39,7 @@ case "${1:-}" in
     [ -n "$VALUE" ] || { echo "urbex-op: empty value, nothing stored" >&2; exit 1; }
     # Written with the image's Python (Ansible's, which has PyYAML), so the file stays valid YAML and
     # keeps every other credential; mode 0600.
-    printf '%s' "$VALUE" | "$ENGINE" run --rm -i "${USERNS[@]}" --user "$(id -u):$(id -g)" \
+    printf '%s' "$VALUE" | "$ENGINE" run --rm -i ${USERNS[@]+"${USERNS[@]}"} --user "$(id -u):$(id -g)" \
       -v "$WS/home/.urbex:/c:z" "$IMAGE" urbex-python -c '
 import os, sys, yaml
 path = "/c/credentials.yaml"
@@ -77,7 +78,7 @@ CMD=$1
 [ "$CMD" = shell ] && CMD="exec bash"
 TTY=(); [ -t 0 ] && [ -t 1 ] && TTY=(-it)
 
-exec "$ENGINE" run --rm "${TTY[@]}" --network host "${USERNS[@]}" --user "$(id -u):$(id -g)" \
+exec "$ENGINE" run --rm ${TTY[@]+"${TTY[@]}"} --network host ${USERNS[@]+"${USERNS[@]}"} --user "$(id -u):$(id -g)" \
   -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops \
   -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN -e URBEX_AGE_KEY \
   -v "$WS:/work:z" -w /work "$IMAGE" bash -c '
