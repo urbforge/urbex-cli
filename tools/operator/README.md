@@ -17,8 +17,6 @@ script expands its arrays the way macOS's bash 3.2 accepts. What it needs:
   in the container (OpenSSH refuses a uid without one) and keeps SSH's
   control sockets inside the container, which the shared folder can't
   hold.
-- On Apple silicon, an amd64 image: the tools the image pins are for
-  amd64, so the VM has to run it (emulated).
 
 ## Quick start
 

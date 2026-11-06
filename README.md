@@ -67,7 +67,9 @@ Commands:
   instead of `runtime` is an application from a published image: it is
   pulled, not built, and runs the digest its tag resolved to. Named
   volumes are mount points of the LXC; `apply` refuses a change that would
-  replace or delete an LXC that has them unless `--delete-data` is given.
+  replace or delete an LXC that has them. `--delete-data` allows deleting
+  one (an application removed from `urbex.yaml`); a replacement stays
+  refused.
   With `provides` and `uses`, applications are linked: a provider (a
   PostgreSQL) gets a generated user, password and database, a consumer
   its connection and `${app.key}` references resolved, and a Stack starts
@@ -96,7 +98,8 @@ Commands:
   Komodo reports running, its LAN and public addresses and its
   internal DNS name, read from Technitium (flagged if missing or
   pointing elsewhere). `--progress` follows `bootstrap` and `apply` live,
-  phase by phase; with linked applications it also shows the reconciler.
+  phase by phase. With linked applications, `urbex status <env>` also
+  shows the reconciler.
 - `urbex users <env>` — in staging, the test users per role of the
   environment's Keycloak realm.
 - `urbex destroy <env>` — takes the environment's Stacks down, removes
@@ -121,7 +124,7 @@ in the docs repo:
 - Not implemented: the services' own metrics and alerting beyond the
   reconciler's (logs and LXC resource metrics of every service do reach
   Loki and Prometheus - ADR-0023), backups beyond Proxmox's, roles and
-  schemas of a linked PostgreSQL (urbex-cli#9),
+  schemas of a linked PostgreSQL (urbex-cli#56),
   mobile frontend deploys, several frontends per project, per-project
   Proxmox isolation, promotion by pull request, image pruning.
 - One Proxmox node; static IPs are neither checked nor reserved; LXCs
