@@ -78,7 +78,22 @@ CMD=$1
 [ "$CMD" = shell ] && CMD="exec bash"
 TTY=(); [ -t 0 ] && [ -t 1 ] && TTY=(-it)
 
-exec "$ENGINE" run --rm ${TTY[@]+"${TTY[@]}"} --network host ${USERNS[@]+"${USERNS[@]}"} --user "$(id -u):$(id -g)" \
+# OpenSSH (Ansible's transport) refuses to run for a uid with no passwd entry. Podman's keep-id adds
+# one; with docker, mount the image's /etc/passwd plus a line for your uid (502 on a Mac, say).
+# Regenerated when the image changes.
+PASSWD=()
+if [[ "$ENGINE" != *podman ]]; then
+  P="$WS/home/.urbex-op"; ID=$("$ENGINE" image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)
+  if [ ! -s "$P/passwd" ] || [ "$(cat "$P/image" 2>/dev/null)" != "$ID:$(id -u)" ]; then
+    mkdir -p "$P"
+    { "$ENGINE" run --rm "$IMAGE" cat /etc/passwd | grep -v "^[^:]*:[^:]*:$(id -u):"
+      echo "urbex:x:$(id -u):$(id -g):urbex:/work/home:/bin/bash"; } > "$P/passwd.new"
+    mv "$P/passwd.new" "$P/passwd"; echo "$ID:$(id -u)" > "$P/image"
+  fi
+  PASSWD=(-v "$P/passwd:/etc/passwd:ro")
+fi
+
+exec "$ENGINE" run --rm ${TTY[@]+"${TTY[@]}"} --network host ${USERNS[@]+"${USERNS[@]}"} ${PASSWD[@]+"${PASSWD[@]}"} --user "$(id -u):$(id -g)" \
   -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops \
   -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN -e URBEX_AGE_KEY \
   -v "$WS:/work:z" -w /work "$IMAGE" bash -c '
