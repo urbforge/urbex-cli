@@ -80,4 +80,4 @@ Without mise activated in the shell, run a single command with
   workspace with the credentials - the way to test on a real Proxmox
   node. Every LXC, VM and resource urbex creates on Proxmox must be in
   the platform's pool.
-- The layout of the code is in the README.
+- The layout of the code is in [`docs/layout.md`](docs/layout.md).

@@ -7,6 +7,17 @@ against a **workspace**: one directory holding everything a platform
 needs on your side. Nothing gets installed on your machine but podman
 (or docker).
 
+## On macOS
+
+It runs with docker (with colima, say) or with podman machine; the
+script expands its arrays the way macOS's bash 3.2 accepts. What it needs:
+
+- The workspace on a folder the VM shares with the Mac (your home folder
+  is, by default). With docker, `urbex-op` gives your uid a passwd entry
+  in the container (OpenSSH refuses a uid without one) and keeps SSH's
+  control sockets inside the container, which the shared folder can't
+  hold.
+
 ## Quick start
 
 ```sh

@@ -2,7 +2,8 @@
 
 The `urbex` CLI — implementation repo. For architecture, ADRs, and the
 manifest/platform spec, see [urbforge/urbex](https://github.com/urbforge/urbex):
-[getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md),
+[getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md)
+(with one guide for the CLI, one for any AI agent and one for Claude Code),
 the [cookbook](https://github.com/urbforge/urbex/blob/main/docs/cookbook.md),
 and the [reference](https://github.com/urbforge/urbex/blob/main/docs/reference/)
 (every command and flag in
@@ -20,8 +21,12 @@ configuration, SOPS-encrypted secrets - is a folder of the GitOps repo,
 which Komodo deploys whenever it changes. Every LXC sends its logs and
 resource metrics to the platform's Loki and Prometheus, labelled
 platform or app (ADR-0023). Every project environment also gets an
-internal DNS record in Technitium (ADR-0026), independently of
-Cloudflare. With Cloudflare configured
+internal DNS record in Technitium (ADR-0026, ADR-0027), independently of
+Cloudflare. Without a Cloudflare account, `cloudflare.quickTunnel: true`
+exposes every service marked `public: true` on its own
+`*.trycloudflare.com` hostname, for trying Urbex
+([ADR-0025](https://github.com/urbforge/urbex/blob/main/docs/decisions/0025-cloudflare-quick-tunnel.md)).
+With Cloudflare configured
 ([ADR-0022](https://github.com/urbforge/urbex/blob/main/docs/decisions/0022-cloudflare-tunnel-access-workers.md)),
 the platform and the services marked `public: true` are published
 through a Cloudflare Tunnel - Gitea and Komodo behind Cloudflare Access -
@@ -58,7 +63,19 @@ Commands:
   (`environments/<env>/<project>/<service>/`) with the Komodo Stack that
   deploys it. Also registers every service's internal DNS name in
   Technitium. A new staging follows `main` and runs its head; a new prod
-  runs nothing until promoted.
+  runs nothing until promoted. A service with `image` and `version`
+  instead of `runtime` is an application from a published image: it is
+  pulled, not built, and runs the digest its tag resolved to. Named
+  volumes are mount points of the LXC; `apply` refuses a change that would
+  replace or delete an LXC that has them. `--delete-data` allows deleting
+  one (an application removed from `urbex.yaml`); a replacement stays
+  refused.
+  With `provides` and `uses`, applications are linked: a provider (a
+  PostgreSQL) gets a generated user, password and database, a consumer
+  its connection and `${app.key}` references resolved, and a Stack starts
+  once what it uses answers its probe. The reconciler, the Komodo Action
+  `urbex-reconcile` run every minute, deploys again what is down and holds
+  back what uses a provider that restarted.
 - `urbex release` — tags the next release (`vX.Y.Z`, or `--version`) on
   the commit staging runs (or `main`, or `--ref`) and waits for Komodo to
   publish its images - the ones `main` built, retagged. Pushing such a
@@ -80,13 +97,18 @@ Commands:
   whether its LXC exists, the version the GitOps repo asks for, what
   Komodo reports running, its LAN and public addresses and its
   internal DNS name, read from Technitium (flagged if missing or
-  pointing elsewhere).
+  pointing elsewhere). `--progress` follows `bootstrap` and `apply` live,
+  phase by phase. With linked applications, `urbex status <env>` also
+  shows the reconciler.
+- `urbex users <env>` — in staging, the test users per role of the
+  environment's Keycloak realm.
 - `urbex destroy <env>` — takes the environment's Stacks down, removes
   its routes and DNS records from Cloudflare and its web Worker, removes
   each service's internal DNS record from Technitium, runs `terraform
   destroy`, then removes its folder, Terraform files and ledger entries
   from the GitOps repo. The project's Builds go with its last
-  environment. Resumable after a failure.
+  environment. Resumable after a failure. Volumes are deleted only with
+  `--delete-data`.
 - `urbex teardown [--yes]` — destroys the platform bootstrap created:
   the base-service LXCs (with everything on Gitea), the platform's
   Cloudflare tunnel, records and Access objects, and the generated
@@ -99,9 +121,10 @@ The main ones - the full list, with workarounds, is
 [`docs/known-limitations.md`](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md)
 in the docs repo:
 
-- Not implemented: Keycloak realms and clients, the services' own
-  metrics and alerting (logs and LXC resource metrics of every service
-  do reach Loki and Prometheus - ADR-0023),
+- Not implemented: the services' own metrics and alerting beyond the
+  reconciler's (logs and LXC resource metrics of every service do reach
+  Loki and Prometheus - ADR-0023), backups beyond Proxmox's, roles and
+  schemas of a linked PostgreSQL (urbex-cli#56),
   mobile frontend deploys, several frontends per project, per-project
   Proxmox isolation, promotion by pull request, image pruning.
 - One Proxmox node; static IPs are neither checked nor reserved; LXCs
@@ -137,7 +160,8 @@ by the e2e.
 `tools/operator/urbex-op` runs `urbex` - and terraform, ansible, sops,
 git, ssh - in a container, against a workspace folder holding the
 credentials, the keys, the GitOps repo and your projects. Only podman or
-docker is needed. See [`tools/operator/README.md`](tools/operator/README.md).
+docker is needed, on Linux or on macOS (docker with colima, or podman
+machine). See [`tools/operator/README.md`](tools/operator/README.md).
 
 ```sh
 tools/operator/urbex-op build && tools/operator/urbex-op -w ~/urbex-work init
@@ -204,43 +228,6 @@ go run ./cmd/urbex deploy prod --version 0.1.0 # roll back
 go run ./cmd/urbex deploy staging --version 0.1.0  # pin staging; --follow-main resumes
 go run ./cmd/urbex destroy staging            # tears down staging (LXCs, Stacks, Cloudflare routes)
 go run ./cmd/urbex teardown --yes             # then the whole platform, once no environment is left
-```
-
-## Layout
-
-```
-cmd/urbex/                 main package, CLI entry point
-internal/cli/               cobra command tree (one file per command)
-internal/manifest/           urbex.yaml loading, validation, scaffolding
-internal/manifest/schema/      vendored copy of the manifest JSON Schema
-                                (source of truth: urbforge/urbex/schemas/urbex.schema.json)
-internal/platform/           urbex.platform.yaml loading, validation, scaffolding
-internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.yaml
-internal/netalloc/           static IP block allocation (base-service LXCs)
-internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
-internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
-internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs; the LXC template; mount points: the applications' volumes)
-internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
-internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
-internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox
-internal/gitea/              minimal Gitea API client (tokens, org, repos, webhooks, tags, registry lookups)
-internal/komodo/             minimal Komodo v2 API client (keys, accounts, servers, builds, stacks, actions, procedures)
-internal/gitsync/            git commit/push helpers (GitOps repo, a project's main branch)
-internal/rollout/            a project's Builds and an environment's Stacks on Komodo; releases; waiting for deploys
-internal/envrepo/            the environments/ tree of the GitOps repo: compose files, versions, configuration
-internal/secrets/            SOPS-encrypted secrets files (age recipient, sops invocation)
-internal/semver/             release versions (vX.Y.Z): parse, latest, next
-internal/materialize/        writes embedded terraform/ansible assets into a GitOps repo
-internal/runner/             CommandRunner abstraction (terraform/ansible-playbook execution)
-internal/bootstrap/          urbex bootstrap orchestration (base services + Gitea/Komodo setup)
-internal/provision/          urbex plan/apply/deploy/destroy orchestration (project services)
-internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
-platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
-platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
-platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends
-platform/komodo/             the Komodo Actions urbex-release, which builds main, moves staging and publishes release tags, and urbex-reconcile, which brings linked applications back
-e2e/                         end-to-end test of the real binary (podman)
-tools/operator/              urbex-op: urbex and its tools in a container, run against a workspace
 ```
 
 ## Note on the vendored schema
