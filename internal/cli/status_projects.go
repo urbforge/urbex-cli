@@ -54,8 +54,10 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 		fmt.Fprintf(out, "  %s (%s)\n", d.Project, d.Env)
 		services := make([]manifest.Service, 0, len(d.Services))
 		for _, name := range d.Services {
+			// What the GitOps repo records, not the name, tells a web
+			// frontend from a container called web.
 			svc := manifest.Service{Name: name}
-			if name == manifest.WebService {
+			if repo.WebFrontend(d.Env, d.Project, name) {
 				svc.Runtime = manifest.WebRuntime
 			}
 			services = append(services, svc)
@@ -135,13 +137,17 @@ func publicRoutes(ctx context.Context, cfg *platform.Config, creds *credentials.
 	return routes
 }
 
+// quickTunnelURL asks a service's LXC for its Quick Tunnel URL; tests
+// replace it.
+var quickTunnelURL = provision.QuickTunnelURL
+
 // quickTunnelRoute is a service's Cloudflare Quick Tunnel URL (ADR-0025),
 // or "" within a short timeout - most services have no sidecar to ask,
 // and status must not hang on each of them in turn.
 func quickTunnelRoute(ctx context.Context, ip string) string {
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	url, err := provision.QuickTunnelURL(qctx, ip)
+	url, err := quickTunnelURL(qctx, ip)
 	if err != nil {
 		return ""
 	}

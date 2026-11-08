@@ -479,6 +479,17 @@ func (r Repo) Port(env, project, service string) int {
 
 var publishedPort = regexp.MustCompile(`(?m)^\s+- "(\d+):\d+"`)
 
+// WebFrontend reports whether a service's compose file is a web
+// frontend's, which deploys to a Cloudflare Worker (renderWebCompose),
+// rather than a container's. The name alone can't tell: a container may
+// be called web too (urbforge/urbex-cli#66).
+func (r Repo) WebFrontend(env, project, service string) bool {
+	data, err := os.ReadFile(r.file(env, project, service, ComposeFile))
+	return err == nil && webFrontendCompose.Match(data)
+}
+
+var webFrontendCompose = regexp.MustCompile(`(?m)^\s+WORKER_NAME: \$\{WORKER_NAME\}$`)
+
 // Links is what an application that provides or uses something gets in
 // its folder besides the user's files (ADR-0028): the variables urbex
 // generates for it, and what its Stack waits for before the application
