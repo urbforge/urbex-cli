@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -104,6 +105,28 @@ func DefaultPath() (string, error) {
 		return "", fmt.Errorf("determining home directory: %w", err)
 	}
 	return filepath.Join(home, ".urbex", "credentials.yaml"), nil
+}
+
+// HostWorkspaceEnv names the host folder urbex-op mounts on
+// containerWorkspace (tools/operator/urbex-op sets it).
+const (
+	HostWorkspaceEnv   = "URBEX_HOST_WORKSPACE"
+	containerWorkspace = "/work"
+)
+
+// HostPath is path as the user finds it on their machine: under urbex-op
+// a path in the container's workspace becomes the host folder's, so that
+// the paths urbex prints can be opened. Elsewhere it is path unchanged.
+func HostPath(path string) string {
+	host := os.Getenv(HostWorkspaceEnv)
+	if host == "" {
+		return path
+	}
+	rel, err := filepath.Rel(containerWorkspace, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return path
+	}
+	return filepath.Join(host, rel)
 }
 
 func loadFile(path string) (*Credentials, error) {

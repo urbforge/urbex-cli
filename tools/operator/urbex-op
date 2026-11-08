@@ -96,7 +96,7 @@ fi
 # SSH can't create its control sockets on a folder shared from macOS (virtiofs, colima or podman machine):
 # ANSIBLE_SSH_CONTROL_PATH_DIR keeps them in the container, as e2e/inside.sh does.
 exec "$ENGINE" run --rm ${TTY[@]+"${TTY[@]}"} --network host ${USERNS[@]+"${USERNS[@]}"} ${PASSWD[@]+"${PASSWD[@]}"} --user "$(id -u):$(id -g)" \
-  -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops \
+  -e HOME=/work/home -e URBEX_GITOPS_REPO=/work/gitops -e URBEX_HOST_WORKSPACE="$WS" \
   -e ANSIBLE_SSH_CONTROL_PATH_DIR=/tmp/ansible-cp \
   -e URBEX_PROXMOX_TOKEN -e URBEX_CLOUDFLARE_TOKEN -e URBEX_AGE_KEY \
   -v "$WS:/work:z" -w /work "$IMAGE" bash -c '

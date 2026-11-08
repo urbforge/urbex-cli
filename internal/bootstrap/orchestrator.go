@@ -227,7 +227,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	path, _ := credentials.DefaultPath()
-	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, path)
+	fmt.Fprintf(o.Out, "Platform ready. Gitea/Komodo admin user: %s; generated passwords and tokens are in %s.\n", GiteaAdminUser, credentials.HostPath(path))
 	return nil
 }
 
