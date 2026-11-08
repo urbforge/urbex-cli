@@ -141,9 +141,16 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 		fmt.Fprintln(out)
 	}
 	path, _ := credentials.DefaultPath()
-	fmt.Fprintf(out, "\nLogins: Gitea and Komodo urbex-admin, Grafana admin, Keycloak admin; passwords in %s\n", path)
-	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword).")
+	printLogins(out, credentials.HostPath(path))
 	return nil
+}
+
+// printLogins lists the platform's admin users and the names of their
+// passwords in the credentials file at path.
+func printLogins(out io.Writer, path string) {
+	fmt.Fprintf(out, "\nLogins: Gitea and Komodo %s, Grafana admin, Keycloak admin, Technitium %s; passwords in %s\n",
+		bootstrap.GiteaAdminUser, bootstrap.TechnitiumAdminUser, path)
+	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword, technitiumAdminPassword).")
 }
 
 func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) error {
