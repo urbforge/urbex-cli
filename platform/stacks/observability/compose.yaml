@@ -26,6 +26,13 @@ services:
       urbex.kind: "platform"
       urbex.service: "loki"
     restart: unless-stopped
+    # The image's configuration, with no wait before /ready says ready: a
+    # single Loki has no other ingester to give time to, and the wait only
+    # starts at the first /ready, so a one-off check always got 503
+    # (urbforge/urbex-cli#69). The image has no shell for a healthcheck.
+    command:
+      - -config.file=/etc/loki/local-config.yaml
+      - -ingester.min-ready-duration=0s
     volumes:
       - loki-data:/loki
     ports:
