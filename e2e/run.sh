@@ -168,7 +168,14 @@ step "bootstrap: base services and platform setup" '
   expect_status http://$NET.203:8080/ 302
   expect_status http://$NET.204:3000/api/health 200
   expect_status http://$NET.204:9090/-/ready 200
-  expect_status http://$NET.204:3100/ready 200 180
+  # Loki answers ready as soon as its ring is: one look is enough, with
+  # no wait that only starts at the first look (urbforge/urbex-cli#69).
+  _deadline=$(( $(date +%s) + 180 ))
+  until [ "$(curl -s -m 5 -o /tmp/loki-ready -w %{http_code} http://$NET.204:3100/ready)" = 200 ]; do
+    grep -q "after being ready" /tmp/loki-ready && fail "Loki waits after its first /ready: $(cat /tmp/loki-ready)"
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "Loki /ready never answered 200: $(cat /tmp/loki-ready)"
+    sleep 2
+  done
   [ "$(stat -c %a /work/home/.urbex/credentials.yaml)" = 600 ] || fail "credentials file is not mode 600"
   [ -n "$(cred komodoOnboardingKey)" ] || fail "no onboarding key was generated"
   [ -n "$(cred technitiumToken)" ] || fail "no technitium api token was generated"
