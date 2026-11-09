@@ -242,4 +242,3 @@ in the docs repo for the reasoning and the plan to automate this.
 
 urbex-cli is licensed under the [Apache License 2.0](LICENSE), and so is
 the [Urbex docs and Claude Code plugin](https://github.com/urbforge/urbex).
-The license doesn't grant use of the name "Urbex".
