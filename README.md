@@ -237,3 +237,9 @@ maintained in [urbforge/urbex](https://github.com/urbforge/urbex). It
 must be kept in sync manually for now; see
 [ADR-0016](https://github.com/urbforge/urbex/blob/main/docs/decisions/0016-cli-repo-split.md)
 in the docs repo for the reasoning and the plan to automate this.
+
+## License
+
+urbex-cli is licensed under the [Apache License 2.0](LICENSE), and so is
+the [Urbex docs and Claude Code plugin](https://github.com/urbforge/urbex).
+The license doesn't grant use of the name "Urbex".
