@@ -114,15 +114,15 @@ type ProxmoxConfig struct {
 	// Pool is the Proxmox resource pool every LXC is created in. Required
 	// when the API token's permissions are scoped to a pool; empty for none.
 	Pool string `yaml:"pool,omitempty"`
-	// Keyctl enables the LXC keyctl feature Docker needs on most hosts.
-	// Proxmox only lets root@pam set it, so a pool-scoped token needs
-	// keyctl: false. Nil means true.
+	// Keyctl enables the LXC keyctl feature, which Docker needs on some
+	// hosts. Proxmox only lets root@pam set it, so it is off unless set to
+	// true: the default works with a non-root, pool-scoped token.
 	Keyctl *bool `yaml:"keyctl,omitempty"`
 }
 
-// KeyctlEnabled reports whether LXCs get the keyctl feature (default true).
+// KeyctlEnabled reports whether LXCs get the keyctl feature (default false).
 func (p ProxmoxConfig) KeyctlEnabled() bool {
-	return p.Keyctl == nil || *p.Keyctl
+	return p.Keyctl != nil && *p.Keyctl
 }
 
 // NetworkConfig describes the network base-service LXCs are attached to.

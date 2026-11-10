@@ -96,10 +96,11 @@ resource "proxmox_virtual_environment_container" "this" {
   }
 
   # nesting is required for Docker (and docker compose) to run inside the
-  # LXC; keyctl too on most hosts, or overlayfs mounts fail with
+  # LXC; keyctl too on some hosts, or overlayfs mounts fail with
   # "permission denied". Proxmox only lets root@pam change feature flags
-  # other than nesting, so a non-root API token must set keyctl = false
-  # (platform config proxmox.keyctl) and have it enabled another way.
+  # other than nesting, so keyctl is off unless the platform config sets
+  # proxmox.keyctl: true, with a root@pam token. A change is made in
+  # place, and takes effect when the LXC next restarts.
   features {
     nesting = true
     keyctl  = var.keyctl

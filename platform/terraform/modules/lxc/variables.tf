@@ -70,8 +70,8 @@ variable "pool_id" {
 
 variable "keyctl" {
   type        = bool
-  default     = true
-  description = "Enable the keyctl feature (needed by Docker on most hosts; root@pam only)."
+  default     = false
+  description = "Enable the keyctl feature (needed by Docker on some hosts; root@pam only)."
 }
 
 variable "dns_servers" {
