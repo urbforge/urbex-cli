@@ -30,7 +30,7 @@ proxmox:
   sshPublicKey: "ssh-ed25519 AAAA... you@example.com"
   vmIdBase: 9000
   # pool: urbex   # required if your API token is scoped to a resource pool
-  # keyctl: false # set if the token isn't root@pam (see docs/reference/credentials.md)
+  # keyctl: true  # only with a root@pam token, if Docker needs it (see docs/reference/credentials.md)
   network:
     cidr: 192.168.1.0/24
     gateway: 192.168.1.1

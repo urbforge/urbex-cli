@@ -147,7 +147,6 @@ proxmox:
   sshPublicKey: "$(cat "$WORK/id_e2e.pub")"
   vmIdBase: 9000
   pool: urbex
-  keyctl: false
   network:
     cidr: $NET.0/24
     gateway: $NET.1

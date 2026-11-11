@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,5 +204,47 @@ func TestStorageSharesValidation(t *testing.T) {
 func TestReservedLabel(t *testing.T) {
 	if !ReservedLabel("git") || !ReservedLabel("auth") || ReservedLabel("hello") {
 		t.Error("ReservedLabel should match the platform labels only")
+	}
+}
+
+// keyctl is off unless set to true: Proxmox lets only root@pam set it,
+// and the default must work with a non-root token (urbforge/urbex-cli#40).
+func TestKeyctlEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       bool
+	}{
+		{"unset", "", false},
+		{"true", "  keyctl: true\n", true},
+		{"false", "  keyctl: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "urbex.platform.yaml")
+			if err := os.WriteFile(path, []byte("proxmox:\n  node: pve\n"+tc.line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFile(path)
+			if err != nil {
+				t.Fatalf("LoadFile: %v", err)
+			}
+			if got := cfg.Proxmox.KeyctlEnabled(); got != tc.want {
+				t.Errorf("KeyctlEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The template a new platform starts from leaves keyctl off.
+func TestTemplate_KeyctlOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "urbex.platform.yaml")
+	if err := WriteTemplate(path); err != nil {
+		t.Fatalf("WriteTemplate: %v", err)
+	}
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if cfg.Proxmox.KeyctlEnabled() {
+		t.Error("the template turns keyctl on")
 	}
 }

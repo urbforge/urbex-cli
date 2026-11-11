@@ -56,7 +56,7 @@ variable "pool_id" {
 
 variable "keyctl" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "network_bridge" {
