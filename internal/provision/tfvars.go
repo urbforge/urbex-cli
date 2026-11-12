@@ -58,17 +58,21 @@ type tfVars struct {
 	Gateway         string                 `json:"gateway"`
 	IPPrefixLength  int                    `json:"ip_prefix_length"`
 	Services        map[string]serviceVars `json:"services"`
+	VMs             map[string]serviceVars `json:"vms"`
 	PoolID          string                 `json:"pool_id"`
 	Keyctl          bool                   `json:"keyctl"`
 	NetworkBridge   string                 `json:"network_bridge"`
 	DNSServers      []string               `json:"dns_servers"`
 	CloneVMID       int                    `json:"clone_vm_id"`
+	VMCloneVMID     int                    `json:"vm_clone_vm_id"`
 }
 
 // writeTFVars renders the project's terraform.auto.tfvars.json;
-// nameservers are its LXCs' (Technitium, then its forwarders).
-func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int, nameservers []string, cloneVMID int) error {
+// nameservers are its LXCs' (Technitium, then its forwarders). The
+// applications with machine: vm go in vms, cloned from vmCloneVMID.
+func writeTFVars(tfDir string, cfg *platform.Config, project, env string, services []manifest.Service, allocations map[string]allocation.Entry, prefixLen int, nameservers []string, cloneVMID, vmCloneVMID int) error {
 	svcVars := make(map[string]serviceVars, len(services))
+	vmVars := map[string]serviceVars{}
 	graph := &manifest.Manifest{Services: services}
 	for _, svc := range services {
 		hostname := Hostname(project, svc.Name, env)
@@ -85,7 +89,11 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 		}
 
 		order, upDelay := startupOrder(graph, svc)
-		svcVars[hostname] = serviceVars{
+		target := svcVars
+		if svc.IsVM() {
+			target = vmVars
+		}
+		target[hostname] = serviceVars{
 			VMID:           entry.VMID,
 			IPAddress:      entry.IP,
 			Cores:          resources.CPU,
@@ -110,7 +118,9 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 		NetworkBridge:   cfg.Proxmox.Network.Bridge,
 		DNSServers:      nameservers,
 		Services:        svcVars,
+		VMs:             vmVars,
 		CloneVMID:       cloneVMID,
+		VMCloneVMID:     vmCloneVMID,
 	}
 
 	data, err := json.MarshalIndent(vars, "", "  ")

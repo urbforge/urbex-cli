@@ -31,6 +31,8 @@ proxmox:
   vmIdBase: 9000
   # pool: urbex   # required if your API token is scoped to a resource pool
   # keyctl: true  # only with a root@pam token, if Docker needs it (see docs/reference/credentials.md)
+  # Debian 13 cloud image for applications with machine: vm (see docs/reference/platform-config.md)
+  # vmImage: local:import/debian-13-genericcloud-amd64.qcow2
   network:
     cidr: 192.168.1.0/24
     gateway: 192.168.1.1

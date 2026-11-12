@@ -366,6 +366,29 @@ func TestDeletedContainers(t *testing.T) {
 	}
 }
 
+// An application switched between machine: lxc and vm is deleted under
+// one module and created under the other: a replacement, which apply
+// refuses for a machine with named volumes even with --delete-data
+// (ADR-0033).
+func TestDeletedContainers_MachineSwitch(t *testing.T) {
+	got, err := deletedContainers([]byte(`{"resource_changes":[
+		{"module_address":"module.service[\"a-db-prod\"]","type":"proxmox_virtual_environment_container","change":{"actions":["delete"],"before":{"vm_id":9101}}},
+		{"module_address":"module.vm[\"a-db-prod\"]","type":"proxmox_virtual_environment_vm","change":{"actions":["create"]}},
+		{"module_address":"module.vm[\"a-old-prod\"]","type":"proxmox_virtual_environment_vm","change":{"actions":["delete"],"before":{"vm_id":9102}}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("deletedContainers = %+v", got)
+	}
+	if d := got[0]; d.hostname != "a-db-prod" || !d.replaced || d.because != "machine" || d.module != "module.service[" {
+		t.Errorf("switch = %+v, want a replacement because of the machine", d)
+	}
+	if d := got[1]; d.hostname != "a-old-prod" || d.replaced || d.module != "module.vm[" || d.vmid != 9102 {
+		t.Errorf("VM deleted = %+v", d)
+	}
+}
+
 // repoHas reports whether the service has a folder in prod.
 func (o *Orchestrator) repoHas(dir, service string) bool {
 	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(envrepo.ServiceDir("prod", o.Manifest.Project, service))))

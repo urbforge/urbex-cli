@@ -10,3 +10,15 @@
     - common
     - sops-tools
     - template
+
+# urbex's VM template (ADR-0033), built by apply the first time an
+# application asks for a VM: the same, plus what a VM cloned from it
+# needs. The roles that remove what must be unique to each clone go last.
+- name: Prepare urbex's VM template
+  hosts: urbex_vm_template
+  become: true
+  roles:
+    - common
+    - sops-tools
+    - vm-template
+    - template

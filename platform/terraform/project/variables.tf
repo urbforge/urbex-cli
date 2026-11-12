@@ -39,7 +39,7 @@ variable "ip_prefix_length" {
 }
 
 variable "services" {
-  description = "Hostname (e.g. my-app-api-staging) => sizing/network for that service's LXC, computed by urbex plan/apply from urbex.yaml and the allocation ledger."
+  description = "Hostname (e.g. my-app-api-staging) => sizing/network for that service's LXC, computed by urbex plan/apply from urbex.yaml and the allocation ledger. The applications with machine: vm are in vms instead."
   type = map(object({
     vm_id      = number
     ip_address = string
@@ -78,4 +78,25 @@ variable "clone_vm_id" {
   type        = number
   default     = 0
   description = "VMID of urbex's prepared LXC template; 0 creates containers from template_file_id."
+}
+
+variable "vms" {
+  description = "Like services, for the applications that run in a VM (machine: vm, ADR-0033); their startup fields are not used: a VM has no boot order."
+  type = map(object({
+    vm_id            = number
+    ip_address       = string
+    cores            = number
+    memory_mb        = number
+    disk_gb          = number
+    startup_order    = number
+    startup_up_delay = number
+  }))
+  default  = {}
+  nullable = false
+}
+
+variable "vm_clone_vm_id" {
+  type        = number
+  default     = 0
+  description = "VMID of urbex's VM template, which every VM is a linked clone of; 0 when no application runs in a VM."
 }

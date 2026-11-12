@@ -96,10 +96,16 @@ func stackImages(dir string) []string {
 // Debian template it starts from, the Komodo and agent versions, and the
 // files that build it.
 func TemplateVersion(cfg *platform.Config) string {
+	return templateHash(cfg.Proxmox.LXCTemplate, templateFiles)
+}
+
+// templateHash identifies a template built from source (the Debian
+// template or cloud image) with the embedded files under roots.
+func templateHash(source string, roots []string) string {
 	h := sha256.New()
-	fmt.Fprintln(h, cfg.Proxmox.LXCTemplate, KomodoVersion, alloyImage())
+	fmt.Fprintln(h, source, KomodoVersion, alloyImage())
 	var files []string
-	for _, root := range templateFiles {
+	for _, root := range roots {
 		fs.WalkDir(assets.Ansible, root, func(p string, d fs.DirEntry, err error) error {
 			if err == nil && !d.IsDir() {
 				files = append(files, p)
@@ -283,6 +289,12 @@ func (o *Orchestrator) newTemplate(ctx context.Context, p TemplateProxmox, gitop
 const templateInventory = "template-inventory.yml"
 
 func writeTemplateInventory(ansibleDir, repoPath, ip string) error {
+	return writeTemplateInventoryFor(ansibleDir, repoPath, "urbex_template", TemplateHostname, ip)
+}
+
+// writeTemplateInventoryFor writes the inventory of one template being
+// built: host in group, at ip.
+func writeTemplateInventoryFor(ansibleDir, repoPath, group, host, ip string) error {
 	sshArgs, err := knownhosts.SSHArgs(repoPath)
 	if err != nil {
 		return err
@@ -293,8 +305,8 @@ func writeTemplateInventory(ansibleDir, repoPath, ip string) error {
 			"ansible_timeout": knownhosts.ConnectTimeout, "ansible_ssh_retries": knownhosts.ConnectRetries,
 			"komodo_version": KomodoVersion, "alloy_image": alloyImage(),
 		},
-		"children": map[string]any{"urbex_template": map[string]any{
-			"hosts": map[string]any{TemplateHostname: map[string]any{"ansible_host": ip}},
+		"children": map[string]any{group: map[string]any{
+			"hosts": map[string]any{host: map[string]any{"ansible_host": ip}},
 		}},
 	}}
 	data, err := yaml.Marshal(inv)
