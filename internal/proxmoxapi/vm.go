@@ -2,9 +2,13 @@ package proxmoxapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -109,4 +113,76 @@ func (c *Client) SetVMDescription(ctx context.Context, node string, vmid int, de
 // DeleteVM destroys a VM (or VM template) and its disks, and waits.
 func (c *Client) DeleteVM(ctx context.Context, node string, vmid int) error {
 	return c.task(ctx, node, http.MethodDelete, fmt.Sprintf("/nodes/%s/qemu/%d?destroy-unreferenced-disks=1&purge=1", node, vmid), nil)
+}
+
+// --- the applications' named volumes in a VM (ADR-0033) --------------------
+
+// VMDisk is one of a VM's SCSI disks: scsi0 is its root, the others the
+// application's named volumes, told apart by their serial.
+type VMDisk struct {
+	Key    string // "scsi1"
+	Volume string // "local-zfs:vm-9123-disk-1"
+	Serial string // "web-data"
+	SizeGB int
+}
+
+var vmDiskKey = regexp.MustCompile(`^scsi[0-9]+$`)
+
+// Index is the number of the disk's key: 1 for scsi1.
+func (d VMDisk) Index() int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(d.Key, "scsi"))
+	return n
+}
+
+// VMDisks returns a VM's SCSI disks, in the order of their keys; CD
+// drives (the cloud-init one) are left out.
+func (c *Client) VMDisks(ctx context.Context, node string, vmid int) ([]VMDisk, error) {
+	data, err := c.call(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/qemu/%d/config", node, vmid), nil)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	var out []VMDisk
+	for key, v := range cfg {
+		s, ok := v.(string)
+		if !ok || !vmDiskKey.MatchString(key) || strings.Contains(s, "media=cdrom") {
+			continue
+		}
+		out = append(out, ParseVMDisk(key, s))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index() < out[j].Index() })
+	return out, nil
+}
+
+// ParseVMDisk reads a disk's value as Proxmox writes it, e.g.
+// "local-zfs:vm-9123-disk-1,discard=on,iothread=1,serial=web-data,size=10G".
+func ParseVMDisk(key, value string) VMDisk {
+	d := VMDisk{Key: key}
+	for _, p := range strings.Split(value, ",") {
+		k, v, found := strings.Cut(p, "=")
+		switch {
+		case !found && d.Volume == "":
+			d.Volume = p
+		case k == "file":
+			d.Volume = v
+		case k == "serial":
+			d.Serial = v
+		case k == "size":
+			d.SizeGB = sizeGB(v)
+		}
+	}
+	return d
+}
+
+// AddVMDisk gives a running VM a new disk key of sizeGB on storage, with
+// serial, included in its backups. Proxmox plugs it in at once (disk
+// hotplug is on by default), and the VM finds it by its serial (lsblk's
+// SERIAL).
+func (c *Client) AddVMDisk(ctx context.Context, node string, vmid int, key, storage string, sizeGB int, serial string) error {
+	form := url.Values{key: {fmt.Sprintf("%s:%d,serial=%s,discard=on,iothread=1,backup=1", storage, sizeGB, serial)}}
+	_, err := c.call(ctx, http.MethodPut, fmt.Sprintf("/nodes/%s/qemu/%d/config", node, vmid), form)
+	return err
 }

@@ -1,6 +1,8 @@
 package manifest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/urbforge/urbex-cli/internal/sizeparse"
@@ -167,6 +169,23 @@ func (s Service) LXCPath(v Volume) string {
 		return SharesRoot + "/" + v.Share
 	}
 	return VolumesRoot + "/" + s.Name + "/" + v.Name
+}
+
+// MaxDiskSerial is the longest serial a Proxmox disk can have.
+const MaxDiskSerial = 20
+
+// DiskSerial is the serial of the disk a named volume is in a VM:
+// <application>-<name>, which the VM finds it by whatever its order
+// (ADR-0033). One longer than a serial may be keeps its first 11
+// characters and a hash of the whole: still the same for the same
+// volume, and unlike any other's.
+func (s Service) DiskSerial(v Volume) string {
+	serial := s.Name + "-" + v.Name
+	if len(serial) <= MaxDiskSerial {
+		return serial
+	}
+	sum := sha256.Sum256([]byte(serial))
+	return serial[:11] + "-" + hex.EncodeToString(sum[:4])
 }
 
 // SizeOrDefault is a named volume's size.
@@ -374,10 +393,6 @@ func (s Service) vmErrors() []string {
 		if minGB, _ := sizeparse.GB(MinVMDisk); err == nil && gb < minGB {
 			out = append(out, fmt.Sprintf("services %s: a VM needs a disk of at least %s, not %s", s.Name, MinVMDisk, s.Resources.Disk))
 		}
-	}
-	if len(s.NamedVolumes()) > 0 {
-		// Disks of the VM, next (ADR-0033).
-		out = append(out, fmt.Sprintf("services %s: named volumes are not available in a VM yet: use machine: lxc", s.Name))
 	}
 	if len(s.Shares()) > 0 {
 		// The VM mounts a share itself, over NFS or SMB: urbforge/urbex-cli#83.

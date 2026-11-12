@@ -146,8 +146,8 @@ type Options struct {
 	Update     bool
 	AllowMajor bool
 	// DeleteData lets Destroy delete the environment's named volumes,
-	// with their LXCs, and Apply delete those of an application removed
-	// from urbex.yaml, with its LXC.
+	// with their machines, and Apply delete those of an application removed
+	// from urbex.yaml, with its machine.
 	DeleteData bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).

@@ -84,3 +84,40 @@ func TestVMTemplatesAndVM(t *testing.T) {
 		t.Errorf("VM of a missing VMID = %+v, %v; want nil", info, err)
 	}
 }
+
+// A VM's disks, as Proxmox writes them: the root, the volumes with their
+// serials; the cloud-init drive is a CD and left out.
+func TestVMDisks(t *testing.T) {
+	var put url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /nodes/pve/qemu/9123/config":
+			w.Write([]byte(`{"data":{"scsi0":"local-zfs:base-9080-disk-0/vm-9123-disk-0,discard=on,iothread=1,size=8G","scsi1":"local-zfs:vm-9123-disk-1,backup=1,discard=on,iothread=1,serial=web-data,size=10G","ide2":"local-zfs:vm-9123-cloudinit,media=cdrom","scsi2":"local:iso/x.iso,media=cdrom"}}`))
+		case "PUT /nodes/pve/qemu/9123/config":
+			body, _ := io.ReadAll(r.Body)
+			put, _ = url.ParseQuery(string(body))
+			w.Write([]byte(`{"data":null}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, ctx := New(server.URL, "t", false), context.Background()
+	disks, err := c.VMDisks(ctx, "pve", 9123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []VMDisk{
+		{Key: "scsi0", Volume: "local-zfs:base-9080-disk-0/vm-9123-disk-0", SizeGB: 8},
+		{Key: "scsi1", Volume: "local-zfs:vm-9123-disk-1", Serial: "web-data", SizeGB: 10},
+	}
+	if !reflect.DeepEqual(disks, want) {
+		t.Errorf("VMDisks = %+v", disks)
+	}
+	if err := c.AddVMDisk(ctx, "pve", 9123, "scsi2", "local-zfs", 5, "web-cache"); err != nil {
+		t.Fatal(err)
+	}
+	if got := put.Get("scsi2"); got != "local-zfs:5,serial=web-cache,discard=on,iothread=1,backup=1" {
+		t.Errorf("scsi2 = %q", got)
+	}
+}

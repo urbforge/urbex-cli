@@ -306,7 +306,6 @@ func TestMachine_VM(t *testing.T) {
 	want := []string{
 		"services small: a VM needs at least 1Gi of memory, not 512Mi",
 		"services small: a VM needs a disk of at least 5Gi, not 4Gi",
-		"services kept: named volumes are not available in a VM yet: use machine: lxc",
 		"services kept: shares are not available in a VM yet (urbforge/urbex-cli#83): use machine: lxc",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -326,5 +325,22 @@ func TestValidateFile_Machine(t *testing.T) {
 		if (len(res.Errors) == 0) != valid {
 			t.Errorf("machine: %s valid = %v, want %v (%v)", machine, len(res.Errors) == 0, valid, res.Errors)
 		}
+	}
+}
+
+// A named volume's disk serial is <application>-<name>, cut to Proxmox's
+// 20 characters with a hash when it is longer.
+func TestDiskSerial(t *testing.T) {
+	svc := Service{Name: "web"}
+	if got := svc.DiskSerial(Volume{Name: "data"}); got != "web-data" {
+		t.Errorf("serial = %s", got)
+	}
+	long := Service{Name: "photoprism"}
+	a, b := long.DiskSerial(Volume{Name: "originals-2026"}), long.DiskSerial(Volume{Name: "originals-2027"})
+	if len(a) != MaxDiskSerial || !strings.HasPrefix(a, "photoprism-") || a == b {
+		t.Errorf("long serials = %s, %s", a, b)
+	}
+	if a != long.DiskSerial(Volume{Name: "originals-2026"}) {
+		t.Error("the same volume must keep its serial")
 	}
 }
