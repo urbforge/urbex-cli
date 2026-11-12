@@ -16,6 +16,7 @@ import (
 func newBootstrapCmd() *cobra.Command {
 	var gitopsRepoPath string
 	var dryRun bool
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
@@ -46,9 +47,16 @@ See docs/reference/cli.md in urbforge/urbex.`,
 			if err != nil {
 				return err
 			}
-			return runBootstrap(cmd, repoPath, dryRun)
+			ev, err := events.begin(cmd, "bootstrap")
+			if err != nil {
+				return err
+			}
+			err = runBootstrap(cmd, repoPath, dryRun, ev)
+			ev.close(err)
+			return err
 		},
 	}
+	events.Register(cmd)
 
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "materialize assets and report the plan without running terraform/ansible-playbook")
@@ -56,7 +64,7 @@ See docs/reference/cli.md in urbforge/urbex.`,
 	return cmd
 }
 
-func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool) error {
+func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool, ev *eventsMode) error {
 	out := cmd.OutOrStdout()
 
 	if err := os.MkdirAll(gitopsRepoPath, 0o755); err != nil {
@@ -104,7 +112,7 @@ func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool) error 
 
 	var tracker *progress.Tracker
 	if !dryRun {
-		tracker = startProgress(cmd, "bootstrap", "urbex bootstrap", bootstrap.Phases(cfg))
+		tracker = startProgress(cmd, "bootstrap", "urbex bootstrap", bootstrap.Phases(cfg), ev)
 	}
 	orchestrator := &bootstrap.Orchestrator{
 		Config:      cfg,

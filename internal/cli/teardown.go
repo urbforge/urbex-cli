@@ -8,12 +8,14 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/progress"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 )
 
 func newTeardownCmd() *cobra.Command {
 	var gitopsRepoPath string
 	var yes bool
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "teardown",
@@ -35,11 +37,16 @@ committed locally: it is the only copy left, and 'urbex bootstrap'
 creates a new platform from it and pushes it to the new Gitea.
 
 See docs/reference/cli.md in urbforge/urbex.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
 				return err
 			}
+			ev, err := events.begin(cmd, "teardown")
+			if err != nil {
+				return err
+			}
+			defer func() { ev.close(err) }()
 			cfg, err := platform.LoadFile(repoPath + "/urbex.platform.yaml")
 			if err != nil {
 				return fmt.Errorf("loading platform config: %w", err)
@@ -48,18 +55,27 @@ See docs/reference/cli.md in urbforge/urbex.`,
 			if err != nil {
 				return fmt.Errorf("loading credentials: %w", err)
 			}
+			// Only a confirmed teardown is a run worth recording.
+			var tracker *progress.Tracker
+			if yes {
+				tracker = startProgress(cmd, "teardown", "urbex teardown", bootstrap.TeardownPhases(), ev)
+			}
 			o := &bootstrap.Orchestrator{
 				Config:      cfg,
 				Credentials: creds,
 				Proxmox:     proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure),
-				Runner:      bootstrap.ExecRunner{Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()},
+				Runner:      bootstrap.ExecRunner{Stdout: tracker.Watch(cmd.OutOrStdout()), Stderr: cmd.ErrOrStderr()},
 				Out:         cmd.OutOrStdout(),
+				Progress:    tracker,
 			}
-			return o.Teardown(cmd.Context(), bootstrap.TeardownOptions{GitOpsRepoPath: repoPath, Yes: yes})
+			err = o.Teardown(cmd.Context(), bootstrap.TeardownOptions{GitOpsRepoPath: repoPath, Yes: yes})
+			tracker.Finish(err)
+			return err
 		},
 	}
 
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm: destroy the platform and everything on it")
+	events.Register(cmd)
 	return cmd
 }

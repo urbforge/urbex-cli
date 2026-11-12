@@ -38,3 +38,26 @@ func Phases() []progress.PhaseSpec {
 		{ID: PhaseDeploy, Title: "Deploy and wait for the services", Estimate: 30 * time.Second},
 	}
 }
+
+// The phases of urbex destroy.
+const (
+	PhaseDestroyCheck    = "check"
+	PhaseDestroyStacks   = "stacks"
+	PhaseDestroyUnlink   = "unlink"
+	PhaseDestroyMachines = "machines"
+	PhaseDestroyServers  = "servers"
+	PhaseDestroyGitOps   = "gitops"
+)
+
+// DestroyPhases are destroy's phases in order, for 'urbex status
+// --progress' and --events json (ADR-0032).
+func DestroyPhases() []progress.PhaseSpec {
+	return []progress.PhaseSpec{
+		{ID: PhaseDestroyCheck, Title: "Check what the environment has", Estimate: 2 * time.Second},
+		{ID: PhaseDestroyStacks, Title: "Take the Stacks down (Komodo)", Estimate: 15 * time.Second},
+		{ID: PhaseDestroyUnlink, Title: "Unpublish: tunnel, Access, internal DNS, Keycloak realm", Estimate: 5 * time.Second},
+		{ID: PhaseDestroyMachines, Title: "Destroy the LXCs and VMs (Terraform)", Estimate: 15 * time.Second},
+		{ID: PhaseDestroyServers, Title: "Remove the Komodo Servers and Builds", Estimate: 3 * time.Second},
+		{ID: PhaseDestroyGitOps, Title: "Update the GitOps repo", Estimate: 3 * time.Second},
+	}
+}

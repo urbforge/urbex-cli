@@ -71,6 +71,9 @@ type Run struct {
 	Result  string     `json:"result"` // running, ok, failed
 	Error   string     `json:"error,omitempty"`
 	Phases  []Phase    `json:"phases"`
+	// Log is the file the command's output goes to with --events json;
+	// "" when it went to the terminal.
+	Log string `json:"log,omitempty"`
 }
 
 // Results of a run.
@@ -113,6 +116,9 @@ type Tracker struct {
 	plays map[string]string // play name -> phase ID
 	now   func() time.Time
 	stop  chan struct{}
+	// live gets the events as they happen (--events json), besides the
+	// run's events file; nil for none.
+	live io.Writer
 }
 
 // history keeps this many runs of each kind: the newest give the
@@ -123,17 +129,31 @@ const history = 10
 // The phases' estimates come from the same phases of the last successful
 // runs of that kind in dir, or from their specs.
 func Start(dir, kind, command string, specs []PhaseSpec) (*Tracker, error) {
-	return start(dir, kind, command, specs, time.Now, true)
+	return start(dir, kind, command, specs, time.Now, true, Options{})
 }
 
-func start(dir, kind, command string, specs []PhaseSpec, now func() time.Time, heartbeat bool) (*Tracker, error) {
+// Options are what a run records besides its phases.
+type Options struct {
+	// Log is where the command's output goes (Run.Log).
+	Log string
+	// Live gets the run's events as they happen, as JSON lines; write
+	// errors are ignored, so a reader that goes away doesn't stop the run.
+	Live io.Writer
+}
+
+// StartWith is Start with options.
+func StartWith(dir, kind, command string, specs []PhaseSpec, opts Options) (*Tracker, error) {
+	return start(dir, kind, command, specs, time.Now, true, opts)
+}
+
+func start(dir, kind, command string, specs []PhaseSpec, now func() time.Time, heartbeat bool, opts Options) (*Tracker, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	past := estimates(dir, kind)
-	t := &Tracker{plays: map[string]string{}, now: now}
+	t := &Tracker{plays: map[string]string{}, now: now, live: opts.Live}
 	started := now()
-	t.run = Run{Kind: kind, Command: command, Started: started, Updated: started, Result: ResultRunning}
+	t.run = Run{Kind: kind, Command: command, Started: started, Updated: started, Result: ResultRunning, Log: opts.Log}
 	for _, s := range specs {
 		est := s.Estimate
 		if d, ok := past[s.ID]; ok {
@@ -148,6 +168,7 @@ func start(dir, kind, command string, specs []PhaseSpec, now func() time.Time, h
 	if err := t.save(); err != nil {
 		return nil, err
 	}
+	t.emit(Event{Type: EventRunStart, Log: opts.Log})
 	prune(dir, kind)
 	if heartbeat {
 		t.stop = make(chan struct{})
@@ -184,8 +205,11 @@ func (t *Tracker) Begin(id string) {
 		switch {
 		case p.State == Running && p.ID != id:
 			p.State, p.Ended = Done, &now
+			t.emit(Event{Type: EventPhaseEnd, Phase: p.ID, Title: p.Title, Seconds: secondsOf(p.Took())})
 		case p.ID == id && p.State != Running:
 			p.State, p.Started, p.Ended = Running, &now, nil
+			est := p.Estimate
+			t.emit(Event{Type: EventPhaseStart, Phase: p.ID, Title: p.Title, Estimate: &est})
 		}
 	}
 	t.save()
@@ -201,6 +225,7 @@ func (t *Tracker) Skip(id, why string) {
 	for i := range t.run.Phases {
 		if p := &t.run.Phases[i]; p.ID == id {
 			p.State, p.Note = Skipped, why
+			t.emit(Event{Type: EventPhaseSkip, Phase: p.ID, Title: p.Title, Note: why})
 		}
 	}
 	t.save()
@@ -228,13 +253,16 @@ func (t *Tracker) Finish(err error) {
 		switch {
 		case p.State == Running && err != nil:
 			p.State, p.Ended = Failed, &now
+			t.emit(Event{Type: EventPhaseFail, Phase: p.ID, Title: p.Title, Seconds: secondsOf(p.Took()), Error: t.run.Error})
 		case p.State == Running:
 			p.State, p.Ended = Done, &now
+			t.emit(Event{Type: EventPhaseEnd, Phase: p.ID, Title: p.Title, Seconds: secondsOf(p.Took())})
 		case p.State == Pending && err == nil:
 			p.State = Skipped
 		}
 	}
 	t.save()
+	t.emit(Event{Type: EventRunEnd, Result: t.run.Result, Error: t.run.Error, Seconds: secondsOf(now.Sub(t.run.Started))})
 }
 
 // save writes the record atomically: a reader never sees half of it.
@@ -255,10 +283,11 @@ func (t *Tracker) save() error {
 
 var playHeader = regexp.MustCompile(`PLAY \[(.+?)\]`)
 
-// Watch returns a writer that copies to w and begins the phase whose
-// Ansible play starts in what goes through it.
+// Watch returns a writer that copies to w, begins the phase whose
+// Ansible play starts in what goes through it, and records a step for
+// each Ansible task and each machine Terraform finishes with.
 func (t *Tracker) Watch(w io.Writer) io.Writer {
-	if t == nil || len(t.plays) == 0 {
+	if t == nil {
 		return w
 	}
 	pr, pw := io.Pipe()
@@ -266,10 +295,14 @@ func (t *Tracker) Watch(w io.Writer) io.Writer {
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
-			if m := playHeader.FindStringSubmatch(sc.Text()); m != nil {
+			line := sc.Text()
+			if m := playHeader.FindStringSubmatch(line); m != nil {
 				if id, ok := t.plays[m[1]]; ok {
 					t.Begin(id)
 				}
+			}
+			if step := stepOf(line); step != "" {
+				t.Step(step)
 			}
 		}
 		io.Copy(io.Discard, pr)
@@ -300,8 +333,13 @@ func stamp(path string) string {
 	return base
 }
 
+// prune keeps the newest runs of kind, with their events and logs.
 func prune(dir, kind string) {
 	for _, f := range files(dir, kind)[min(history, len(files(dir, kind))):] {
+		if r, err := load(f); err == nil && r.Log != "" && filepath.Dir(r.Log) == dir {
+			os.Remove(r.Log)
+		}
+		os.Remove(eventsPath(f))
 		os.Remove(f)
 	}
 }

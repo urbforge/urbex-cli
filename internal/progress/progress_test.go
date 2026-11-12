@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,15 +17,27 @@ var specs = []PhaseSpec{
 	{ID: "stacks", Title: "Deploy the Stacks", Estimate: 90 * time.Second},
 }
 
-// clock is a fake time that only moves when told.
-type clock struct{ t time.Time }
+// clock is a fake time that only moves when told; Watch reads it from
+// its own goroutine.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *clock) now() time.Time      { return c.t }
-func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
-func newClock() *clock               { return &clock{t: time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)} }
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+func (c *clock) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+func newClock() *clock { return &clock{t: time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)} }
 func startAt(t *testing.T, dir string, c *clock) *Tracker {
 	t.Helper()
-	tr, err := start(dir, "bootstrap", "urbex bootstrap", specs, c.now, false)
+	tr, err := start(dir, "bootstrap", "urbex bootstrap", specs, c.now, false, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +194,7 @@ func TestLatest_AcrossKinds(t *testing.T) {
 	dir, c := t.TempDir(), newClock()
 	startAt(t, dir, c).Finish(nil)
 	c.add(time.Minute)
-	tr, _ := start(dir, "apply", "urbex apply staging", specs, c.now, false)
+	tr, _ := start(dir, "apply", "urbex apply staging", specs, c.now, false, Options{})
 	tr.Finish(nil)
 	if r, _ := Latest(dir); r.Command != "urbex apply staging" {
 		t.Errorf("Latest = %s, want the apply that came after", r.Command)
