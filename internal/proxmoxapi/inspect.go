@@ -193,3 +193,49 @@ func (c *Client) Bridges(ctx context.Context, node string) ([]Bridge, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// VMIDFree reports whether no machine on the cluster has vmid: Proxmox's
+// nextid answers 400 for one that is taken.
+func (c *Client) VMIDFree(ctx context.Context, vmid int) (bool, error) {
+	_, err := c.call(ctx, http.MethodGet, fmt.Sprintf("/cluster/nextid?vmid=%d", vmid), nil)
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(err.Error(), "400") {
+		return false, nil
+	}
+	return false, err
+}
+
+// Member is a machine in a pool.
+type Member struct {
+	VMID int    `json:"vmid"`
+	Name string `json:"name"`
+	Type string `json:"type"` // lxc or qemu
+}
+
+// PoolMembers returns the LXCs and VMs of a pool.
+func (c *Client) PoolMembers(ctx context.Context, pool string) ([]Member, error) {
+	data, err := c.call(ctx, http.MethodGet, "/pools/"+url.PathEscape(pool), nil)
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Members []struct {
+			VMID vmid   `json:"vmid"`
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, err
+	}
+	var out []Member
+	for _, m := range p.Members {
+		if m.Type == "lxc" || m.Type == "qemu" {
+			out = append(out, Member{VMID: int(m.VMID), Name: m.Name, Type: m.Type})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].VMID < out[j].VMID })
+	return out, nil
+}

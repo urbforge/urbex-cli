@@ -42,3 +42,24 @@ func TestZones(t *testing.T) {
 		t.Errorf("Zones = %+v, %v", zones, err)
 	}
 }
+
+// discover knows the account only from the zones: it verifies against
+// the zone's account.
+func TestVerifyAccountToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/accounts/z-acc/tokens/verify" {
+			w.Write([]byte(`{"success":true,"result":{"status":"active"}}`))
+			return
+		}
+		w.WriteHeader(401)
+		w.Write([]byte(`{"success":false,"errors":[{"code":1000,"message":"Invalid API Token"}]}`))
+	}))
+	defer server.Close()
+	c := New(server.URL, "t", "", "")
+	if status, err := c.VerifyAccountToken(context.Background(), "z-acc"); err != nil || status != "active" {
+		t.Errorf("= %q, %v", status, err)
+	}
+	if _, err := c.VerifyToken(context.Background()); err == nil {
+		t.Error("without an account, an account token isn't verified as a user token")
+	}
+}
