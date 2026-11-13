@@ -1,0 +1,103 @@
+# Managed by urbex bootstrap (Stack urbex-observability, ADR-0027).
+#
+# A machine running out of disk or memory (urbforge/urbex-cli#91): every
+# LXC, the platform's and the applications', from what its telemetry agent
+# sends (platform/stacks/telemetry). Each alert carries the machine's kind,
+# service, host and, for an application, project and env, plus severity.
+# A machine that stops reporting raises nothing: its series go, and so do
+# its alerts.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: urbex-resources
+    folder: urbex
+    interval: 1m
+    rules:
+      # Every real filesystem: the root disk and the named volumes
+      # (/srv/volumes/...), not tmpfs.
+      - uid: urbex-disk-filling
+        title: A disk is filling up
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: &disk_used '100 * (1 - max by (kind, project, service, env, host, mountpoint) (node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs|fuse.lxcfs"}) / max by (kind, project, service, env, host, mountpoint) (node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs|fuse.lxcfs"}))'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [85] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.mountpoint }} on {{ $labels.host }} is {{ printf "%.0f" $values.B.Value }}% full.'
+          description: Above 85% for ten minutes. Free some space, or give the machine a bigger disk (for an application, resources.disk or the volume's size in urbex.yaml) before it is full and its services fail.
+      - uid: urbex-disk-full
+        title: A disk is almost full
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: *disk_used
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [95] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: '{{ $labels.mountpoint }} on {{ $labels.host }} is {{ printf "%.0f" $values.B.Value }}% full.'
+          description: Above 95% for five minutes. Its services are about to fail on writes. Free some space or give the machine a bigger disk now.
+      # What the LXC uses - its cgroup's memory less the page cache, as
+      # free and Proxmox show it - against its limit.
+      - uid: urbex-memory-low
+        title: A machine is running out of memory
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: '100 * (1 - sum by (kind, project, service, env, host) (urbex_lxc_memory_usage_bytes - urbex_lxc_memory_cache) / max by (kind, project, service, env, host) (node_memory_MemTotal_bytes))'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [10] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.host }} has {{ printf "%.0f" $values.B.Value }}% of its memory available.'
+          description: Below 10% for ten minutes. Its services may be killed when it runs out. Give the machine more memory (for an application, resources.memory in urbex.yaml), or find what grows in the Urbex resources dashboard.

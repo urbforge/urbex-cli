@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +36,10 @@ type TelemetryAgent struct {
 	LokiPushURL        string
 	PrometheusWriteURL string
 	LXCLabels          []Label
+	// ConfigHash is config.alloy's: a label of the container, so that a
+	// changed configuration recreates it (a bind-mounted file stays as
+	// the container first saw it).
+	ConfigHash string
 }
 
 // Label is one name and value.
@@ -60,12 +66,17 @@ func WriteTelemetryAgent(repoPath string, a TelemetryAgent, ep Endpoints) error 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for file, tmpl := range map[string]string{"config.alloy": "config.alloy.tmpl", "compose.yaml": "compose.yaml.tmpl"} {
+	// config.alloy first: compose.yaml carries its hash.
+	for _, f := range []struct{ file, tmpl string }{{"config.alloy", "config.alloy.tmpl"}, {"compose.yaml", "compose.yaml.tmpl"}} {
 		var b bytes.Buffer
-		if err := telemetryTemplates.ExecuteTemplate(&b, tmpl, a); err != nil {
-			return fmt.Errorf("rendering %s's %s: %w", a.Host, file, err)
+		if err := telemetryTemplates.ExecuteTemplate(&b, f.tmpl, a); err != nil {
+			return fmt.Errorf("rendering %s's %s: %w", a.Host, f.file, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, file), b.Bytes(), 0o644); err != nil {
+		if f.file == "config.alloy" {
+			sum := sha256.Sum256(b.Bytes())
+			a.ConfigHash = hex.EncodeToString(sum[:])[:16]
+		}
+		if err := os.WriteFile(filepath.Join(dir, f.file), b.Bytes(), 0o644); err != nil {
 			return err
 		}
 	}
