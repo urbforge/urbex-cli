@@ -53,7 +53,12 @@ func (f *fakeProxmox) PoolMembers(context.Context, string) ([]proxmoxapi.Member,
 
 type fakeCloudflare struct{ zones []cloudflare.Zone }
 
-func (f *fakeCloudflare) VerifyToken(context.Context) (string, error)      { return "active", nil }
+func (f *fakeCloudflare) VerifyAccountToken(_ context.Context, account string) (string, error) {
+	if account != "acc" {
+		return "", errors.New("not this account's token")
+	}
+	return "active", nil
+}
 func (f *fakeCloudflare) Zones(context.Context) ([]cloudflare.Zone, error) { return f.zones, nil }
 
 func zone(id, name, account string) cloudflare.Zone {
