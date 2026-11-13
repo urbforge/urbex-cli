@@ -49,3 +49,24 @@ func Phases(cfg *platform.Config) []progress.PhaseSpec {
 		{ID: PhaseKeycloak, Title: "Wait for Keycloak to start", Estimate: 25 * time.Second},
 	}
 }
+
+// The phases of urbex teardown.
+const (
+	PhaseTeardownCheck      = "check"
+	PhaseTeardownCloudflare = "cloudflare"
+	PhaseTeardownLXCs       = "lxcs"
+	PhaseTeardownTemplates  = "templates"
+	PhaseTeardownForget     = "forget"
+)
+
+// TeardownPhases are teardown's phases in order, for 'urbex status
+// --progress' and --events json (ADR-0032).
+func TeardownPhases() []progress.PhaseSpec {
+	return []progress.PhaseSpec{
+		{ID: PhaseTeardownCheck, Title: "Check no project environment is left", Estimate: 3 * time.Second},
+		{ID: PhaseTeardownCloudflare, Title: "Remove the platform from Cloudflare", Estimate: 10 * time.Second},
+		{ID: PhaseTeardownLXCs, Title: "Destroy the base-service LXCs (Terraform)", Estimate: 30 * time.Second},
+		{ID: PhaseTeardownTemplates, Title: "Remove urbex's templates", Estimate: 5 * time.Second},
+		{ID: PhaseTeardownForget, Title: "Forget the generated credentials, commit the GitOps repo", Estimate: 2 * time.Second},
+	}
+}

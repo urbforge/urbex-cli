@@ -31,6 +31,8 @@ func newStatusCmd() *cobra.Command {
 	var manifestPath string
 	var gitopsRepoPath string
 	var showProgressFlag, watch bool
+	var output outputFlag
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "status [env]",
@@ -54,17 +56,31 @@ read from the server: "(missing)" when it has no record, or where it
 points when that is not the allocated IP. TLS certificates are not
 tracked yet.
 
+--output json prints the same as one JSON document, for a program to
+read (a web UI, an MCP server, the Claude Code plugin); what couldn't be
+checked is in its "warnings". It holds no password: the logins name the
+keys of the credentials file.
+
 With --progress, shows how the latest 'urbex bootstrap' or 'urbex apply'
 run on this machine is getting on - from another terminal while it runs,
 or afterwards: each phase with the time it took, the one running, those
 left with an estimate (from the earlier runs, or the usual times), and
-the time left. --watch refreshes it until the run ends. See
+the time left. --watch refreshes it until the run ends. With --events
+json it prints the run's events as JSON lines instead, from the first,
+and with --watch follows it until it ends: how a program follows a run
+again after a disconnect. See
 docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if showProgressFlag || watch {
 				if len(args) > 0 {
 					return fmt.Errorf("--progress shows the latest bootstrap or apply: it takes no environment")
+				}
+				if events.value == "json" {
+					return followEvents(cmd, cmd.OutOrStdout(), watch, time.Second)
+				}
+				if output.JSON() {
+					return fmt.Errorf("--output json doesn't apply to --progress")
 				}
 				return showProgress(cmd, cmd.OutOrStdout(), watch, 2*time.Second)
 			}
@@ -94,10 +110,26 @@ docs/reference/cli.md in urbforge/urbex.`,
 			client := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 
 			if len(args) == 0 {
+				if output.JSON() {
+					st, err := platformStatus(cmd.Context(), client, cfg, creds, repoPath)
+					if err != nil {
+						return err
+					}
+					return writeJSON(out, st)
+				}
 				if err := runBaseStatus(cmd, out, client, cfg, creds); err != nil {
 					return err
 				}
 				return printProjects(cmd.Context(), out, cfg, creds, repoPath)
+			}
+			if output.JSON() {
+				var warnings []string
+				st, err := projectStatus(cmd.Context(), func(w string) { warnings = append(warnings, w) }, client, cfg, creds, repoPath, manifestPath, args[0])
+				if err != nil {
+					return err
+				}
+				st.Warnings = warnings
+				return writeJSON(out, st)
 			}
 			return runProjectStatus(cmd, out, client, cfg, creds, repoPath, manifestPath, args[0])
 		},
@@ -107,40 +139,125 @@ docs/reference/cli.md in urbforge/urbex.`,
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().BoolVar(&showProgressFlag, "progress", false, "show how the latest bootstrap or apply is getting on: phases, times, what is left")
 	cmd.Flags().BoolVar(&watch, "watch", false, "with --progress: refresh every 2 seconds until the run ends")
+	output.Register(cmd)
+	cmd.Flags().Var(&events, "events", "with --progress: json prints the latest run's events as JSON lines (--watch follows them)")
 
 	return cmd
 }
 
-func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials) error {
-	statuses, err := status.Base(cmd.Context(), client, cfg.Proxmox.Node, bootstrap.BaseServicesFor(cfg))
+// --- the platform ------------------------------------------------------------
+
+// platformView is `urbex status --output json`: the platform, then its
+// project environments.
+type platformView struct {
+	BaseServices []baseServiceView `json:"baseServices"`
+	Endpoints    []endpointView    `json:"endpoints"`
+	Logins       loginsView        `json:"logins"`
+	Projects     []projectView     `json:"projects"`
+	Warnings     []string          `json:"warnings,omitempty"`
+}
+
+type baseServiceView struct {
+	Service  string `json:"service"`
+	Hostname string `json:"hostname"`
+	Present  bool   `json:"present"`
+}
+
+type endpointView struct {
+	Service  string     `json:"service"`
+	Name     string     `json:"name"`
+	Internal string     `json:"internal"`
+	LAN      string     `json:"lan"`
+	Public   string     `json:"public,omitempty"`
+	Note     string     `json:"note,omitempty"`
+	DNS      *dnsRecord `json:"dns,omitempty"`
+}
+
+// loginsView names the platform's admin users and the keys of their
+// passwords in the credentials file - never the passwords.
+type loginsView struct {
+	CredentialsFile string      `json:"credentialsFile"`
+	Users           []loginView `json:"users"`
+}
+
+type loginView struct {
+	Service     string `json:"service"`
+	User        string `json:"user"`
+	PasswordKey string `json:"passwordKey"`
+}
+
+func logins(path string) loginsView {
+	return loginsView{CredentialsFile: path, Users: []loginView{
+		{"gitea", bootstrap.GiteaAdminUser, "giteaAdminPassword"},
+		{"komodo", bootstrap.GiteaAdminUser, "komodoAdminPassword"},
+		{"grafana", "admin", "grafanaAdminPassword"},
+		{"keycloak", "admin", "keycloakAdminPassword"},
+		{"technitium", bootstrap.TechnitiumAdminUser, "technitiumAdminPassword"},
+	}}
+}
+
+// baseStatus reads the base services' LXCs and the platform's endpoints,
+// with their internal DNS records.
+func baseStatus(ctx context.Context, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials) ([]baseServiceView, []endpointView, error) {
+	statuses, err := status.Base(ctx, client, cfg.Proxmox.Node, bootstrap.BaseServicesFor(cfg))
 	if err != nil {
-		return fmt.Errorf("checking Proxmox: %w", err)
+		return nil, nil, fmt.Errorf("checking Proxmox: %w", err)
 	}
-
-	fmt.Fprintln(out, "Base services:")
+	services := make([]baseServiceView, 0, len(statuses))
 	for _, s := range statuses {
-		fmt.Fprintf(out, "  %-24s %s\n", s.Hostname, presence(s.Present))
+		services = append(services, baseServiceView{Service: s.Service, Hostname: s.Hostname, Present: s.Present})
 	}
-
 	endpoints, err := bootstrap.PlatformEndpoints(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	dns := newDNSChecker(cfg, creds)
+	views := make([]endpointView, 0, len(endpoints))
+	for _, e := range endpoints {
+		internal, _ := url.Parse(e.Internal)
+		lan, _ := url.Parse(e.LAN)
+		views = append(views, endpointView{
+			Service: e.Service, Name: e.Name, Internal: e.Internal, LAN: e.LAN, Public: e.Public, Note: e.Note,
+			DNS: dns.Lookup(ctx, internal.Hostname(), lan.Hostname()),
+		})
+	}
+	return services, views, nil
+}
+
+// platformStatus is everything `urbex status` shows, as data.
+func platformStatus(ctx context.Context, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath string) (*platformView, error) {
+	st := &platformView{}
+	var err error
+	if st.BaseServices, st.Endpoints, err = baseStatus(ctx, client, cfg, creds); err != nil {
+		return nil, err
+	}
+	path, _ := credentials.DefaultPath()
+	st.Logins = logins(credentials.HostPath(path))
+	if st.Projects, err = projectsStatus(ctx, func(w string) { st.Warnings = append(st.Warnings, w) }, cfg, creds, repoPath); err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials) error {
+	services, endpoints, err := baseStatus(cmd.Context(), client, cfg, creds)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintln(out, "Base services:")
+	for _, s := range services {
+		fmt.Fprintf(out, "  %-24s %s\n", s.Hostname, presence(s.Present))
+	}
 	// Each endpoint by internal name, LAN address and public URL; a
 	// name whose record is missing or points elsewhere says so.
-	dns := newDNSChecker(cfg, creds)
 	fmt.Fprintln(out, "\nEndpoints:")
 	for _, e := range endpoints {
 		fmt.Fprintf(out, "  %-28s %-44s %-38s %s", e.Name, e.Internal, e.LAN, e.Public)
 		if e.Note != "" {
 			fmt.Fprintf(out, "  (%s)", e.Note)
 		}
-		if dns != nil {
-			internal, _ := url.Parse(e.Internal)
-			lan, _ := url.Parse(e.LAN)
-			if record := dns.Check(cmd.Context(), internal.Hostname(), lan.Hostname()); strings.Contains(record, " (") {
-				fmt.Fprintf(out, "  %s", record)
-			}
+		if e.DNS != nil && e.DNS.State != dnsOK {
+			fmt.Fprintf(out, "  %s", e.DNS)
 		}
 		fmt.Fprintln(out)
 	}
@@ -157,136 +274,246 @@ func printLogins(out io.Writer, path string) {
 	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword, technitiumAdminPassword).")
 }
 
-func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) error {
-	if !provision.ValidEnvs[env] {
-		return fmt.Errorf("invalid environment %q: must be one of staging, prod", env)
+// --- a project environment ---------------------------------------------------
+
+// envView is `urbex status <env> --output json`.
+type envView struct {
+	Project    string            `json:"project"`
+	Env        string            `json:"env"`
+	Services   []envServiceView  `json:"services"`
+	Reconciler *reconcilerView   `json:"reconciler,omitempty"`
+	Endpoints  []envEndpointView `json:"endpoints"`
+	Databases  []databaseView    `json:"databases,omitempty"`
+	Invalid    []string          `json:"invalid,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
+	deployed   map[string]bool   // services Komodo reported on
+	reconciler rollout.ReconcilerStatus
+}
+
+// envServiceView is one service of an environment. Hostname is its LXC,
+// or a web frontend's Worker; Version, FollowsMain, Stack and Image are
+// what the GitOps repo asks for and Komodo runs, when Komodo answered.
+type envServiceView struct {
+	Service     string `json:"service"`
+	Hostname    string `json:"hostname"`
+	Web         bool   `json:"web,omitempty"`
+	Allocated   bool   `json:"allocated"`
+	Provisioned bool   `json:"provisioned"`
+	Version     string `json:"version,omitempty"`
+	FollowsMain bool   `json:"followsMain,omitempty"`
+	Stack       string `json:"stack,omitempty"`
+	Image       string `json:"image,omitempty"`
+}
+
+type envEndpointView struct {
+	Service string     `json:"service"`
+	LAN     string     `json:"lan,omitempty"`
+	Public  string     `json:"public,omitempty"`
+	DNS     *dnsRecord `json:"dns,omitempty"`
+}
+
+// databaseView is a postgres provider of the environment and the roles
+// and schemas it has (ADR-0030). State is listed, not-running (its
+// schemas can't be listed) or error (with Error). Never a password.
+type databaseView struct {
+	Service  string             `json:"service"`
+	Database string             `json:"database"`
+	State    string             `json:"state"`
+	Error    string             `json:"error,omitempty"`
+	Roles    []databaseRoleView `json:"roles,omitempty"`
+}
+
+// databaseRoleView is a role on a postgres provider and its schema of
+// the same name ("" for none). Use is used (by UsedBy), unused ('urbex
+// apply --delete-data' drops it), missing (the next apply makes it for
+// UsedBy) or foreign (not made by urbex).
+type databaseRoleView struct {
+	Role   string `json:"role"`
+	Schema string `json:"schema,omitempty"`
+	Use    string `json:"use"`
+	UsedBy string `json:"usedBy,omitempty"`
+}
+
+// reconcilerView is what the reconciler did lately, for an environment
+// whose applications use each other. State is running, stale or
+// never-run.
+type reconcilerView struct {
+	State    string     `json:"state"`
+	LastRun  *time.Time `json:"lastRun,omitempty"`
+	Open     []string   `json:"open,omitempty"`
+	Looping  []string   `json:"looping,omitempty"`
+	Unstable []string   `json:"unstable,omitempty"`
+}
+
+func newReconcilerView(st rollout.ReconcilerStatus, now time.Time) *reconcilerView {
+	if !st.Linked {
+		return nil
 	}
-	refreshForStatus(cmd.Context(), out, cfg, creds, repoPath)
+	v := &reconcilerView{State: "running", Open: st.Open, Looping: st.Looping, Unstable: st.Unstable}
+	switch {
+	case st.LastRun.IsZero():
+		v.State = "never-run"
+	case st.Stale(now):
+		v.State = "stale"
+	}
+	if !st.LastRun.IsZero() {
+		last := st.LastRun
+		v.LastRun = &last
+	}
+	return v
+}
+
+// projectStatus reads an environment of the project in urbex.yaml; warn
+// gets what couldn't be checked. A manifest that fails validation comes
+// back with its errors in Invalid, and an error.
+func projectStatus(ctx context.Context, warn func(string), client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) (*envView, error) {
+	if !provision.ValidEnvs[env] {
+		return nil, fmt.Errorf("invalid environment %q: must be one of staging, prod", env)
+	}
+	refreshForStatus(ctx, warn, cfg, creds, repoPath)
 
 	m, result, err := manifest.LoadTyped(manifestPath)
 	if err != nil {
-		return fmt.Errorf("loading %s: %w", manifestPath, err)
+		return nil, fmt.Errorf("loading %s: %w", manifestPath, err)
 	}
 	if m == nil {
-		fmt.Fprintf(out, "%s failed validation (%d error(s)):\n", manifestPath, len(result.Errors))
-		for _, e := range result.Errors {
-			fmt.Fprintf(out, "  - %s\n", e)
-		}
-		return fmt.Errorf("%s failed validation", manifestPath)
+		return &envView{Invalid: result.Errors}, fmt.Errorf("%s failed validation", manifestPath)
 	}
 
 	ledgerPath := filepath.Join(repoPath, "state", "allocations.json")
 	ledger, err := allocation.Load(ledgerPath, cfg.Proxmox.VMIDBase+100, cfg.Proxmox.Network.BaseHostOffset+10)
 	if err != nil {
-		return fmt.Errorf("loading allocation ledger: %w", err)
+		return nil, fmt.Errorf("loading allocation ledger: %w", err)
 	}
-
-	statuses, err := status.Project(cmd.Context(), client, cfg.Proxmox.Node, ledger, m.Project, env, m.Services)
+	statuses, err := status.Project(ctx, client, cfg.Proxmox.Node, ledger, m.Project, env, m.Services)
 	if err != nil {
-		return fmt.Errorf("checking Proxmox: %w", err)
+		return nil, fmt.Errorf("checking Proxmox: %w", err)
 	}
 
 	// What the GitOps repo asks for and what Komodo runs, when this
 	// machine has been bootstrapped; and what the reconciler says of the
 	// environment, if its applications use each other.
 	deployed := map[string]rollout.Deployed{}
-	var reconciler rollout.ReconcilerStatus
+	st := &envView{Project: m.Project, Env: env, deployed: map[string]bool{}}
 	var r *rollout.Rollout
 	if len(creds.MissingForPlatform()) == 0 {
 		ep, err := bootstrap.EndpointsFor(cfg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
-		r = newRollout(cfg, creds, ep, "", out)
-		list, err := r.Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
+		r = newRollout(cfg, creds, ep, "", io.Discard)
+		list, err := r.Status(ctx, target, envrepo.Repo{Path: repoPath})
 		if err != nil {
-			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
+			warn(fmt.Sprintf("could not query Komodo: %v", err))
 		}
 		for _, d := range list {
 			deployed[d.Service] = d
 		}
-		if reconciler, err = r.ReconcilerStatus(cmd.Context(), m.Project, env); err != nil {
-			fmt.Fprintf(out, "(could not read the reconciler's state: %v)\n", err)
+		if st.reconciler, err = r.ReconcilerStatus(ctx, m.Project, env); err != nil {
+			warn(fmt.Sprintf("could not read the reconciler's state: %v", err))
 		}
 	}
-
-	fmt.Fprintf(out, "%s (%s):\n", m.Project, env)
-	for _, s := range statuses {
-		fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%-3s",
-			s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
-		if d, ok := deployed[s.Service]; ok {
-			want := d.Want
-			if want == "" {
-				want = "none"
-			}
-			if d.Track {
-				want += "(follows-main)"
-			}
-			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
-			if d.Image != "" {
-				fmt.Fprintf(out, " image=%s", d.Image)
-			}
+	withDeployed := func(v envServiceView) envServiceView {
+		if d, ok := deployed[v.Service]; ok {
+			st.deployed[v.Service] = true
+			v.Version, v.FollowsMain, v.Stack, v.Image = d.Want, d.Track, d.State, d.Image
 		}
-		fmt.Fprintln(out)
+		return v
+	}
+	for _, s := range statuses {
+		st.Services = append(st.Services, withDeployed(envServiceView{Service: s.Service, Hostname: s.Hostname, Allocated: s.Allocated, Provisioned: s.Provisioned}))
 	}
 	for _, svc := range m.Deployables() {
-		if !svc.IsWeb() {
-			continue
+		if svc.IsWeb() {
+			// No LXC: its Stack runs on the builder and deploys to a Worker.
+			v := withDeployed(envServiceView{Service: svc.Name, Hostname: rollout.WorkerName(m.Project, env), Web: true})
+			v.Image = ""
+			st.Services = append(st.Services, v)
 		}
-		// No LXC: its Stack runs on the builder and deploys to a Worker.
-		fmt.Fprintf(out, "  %-16s %-32s", svc.Name, rollout.WorkerName(m.Project, env))
-		if d, ok := deployed[svc.Name]; ok {
-			want := d.Want
-			if want == "" {
-				want = "none"
-			}
-			if d.Track {
-				want += "(follows-main)"
-			}
-			fmt.Fprintf(out, " version=%s stack=%s", want, d.State)
-		}
-		fmt.Fprintln(out)
 	}
-	printReconciler(out, reconciler, time.Now())
+	st.Reconciler = newReconcilerView(st.reconciler, time.Now())
+	if r != nil {
+		st.Databases = databases(ctx, r, m, env, deployed)
+	}
+
 	// Where each service is reached: its LXC on the LAN and, if it is
 	// public or a web frontend, its HTTPS address.
 	o := &provision.Orchestrator{Manifest: m, Config: cfg}
 	dns := newDNSChecker(cfg, creds)
-	fmt.Fprintln(out, "\nEndpoints:")
 	for _, svc := range m.Deployables() {
-		lan, record := "-", ""
+		e := envEndpointView{Service: svc.Name}
 		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
-			lan = provision.LANAddress(entry.IP, svc.Port)
+			e.LAN = provision.LANAddress(entry.IP, svc.Port)
 			if svc.Provides == manifest.InterfacePostgres {
 				// tcp, internal (ADR-0030)
-				lan = fmt.Sprintf("postgres://%s:%d", entry.IP, links.PostgresPort)
+				e.LAN = fmt.Sprintf("postgres://%s:%d", entry.IP, links.PostgresPort)
 			}
-			record = dns.Check(cmd.Context(), o.InternalHostname(env, svc), entry.IP)
+			e.DNS = dns.Lookup(ctx, o.InternalHostname(env, svc), entry.IP)
 		}
-		public := ""
 		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
-			public = "https://" + host
+			e.Public = "https://" + host
 		}
-		fmt.Fprintf(out, "  %-16s %-28s %-48s %s\n", svc.Name, lan, public, record)
+		st.Endpoints = append(st.Endpoints, e)
 	}
-	if r != nil {
-		printDatabases(cmd.Context(), out, r, m, env, deployed)
+	return st, nil
+}
+
+func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLister, cfg *platform.Config, creds *credentials.Credentials, repoPath, manifestPath, env string) error {
+	warn := func(w string) { fmt.Fprintf(out, "(%s)\n", w) }
+	st, err := projectStatus(cmd.Context(), warn, client, cfg, creds, repoPath, manifestPath, env)
+	if st != nil && len(st.Invalid) > 0 {
+		fmt.Fprintf(out, "%s failed validation (%d error(s)):\n", manifestPath, len(st.Invalid))
+		for _, e := range st.Invalid {
+			fmt.Fprintf(out, "  - %s\n", e)
+		}
 	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%s (%s):\n", st.Project, st.Env)
+	for _, s := range st.Services {
+		if s.Web {
+			fmt.Fprintf(out, "  %-16s %-32s", s.Service, s.Hostname)
+		} else {
+			fmt.Fprintf(out, "  %-16s %-32s allocated=%-3s provisioned=%-3s",
+				s.Service, s.Hostname, yesno(s.Allocated), yesno(s.Provisioned))
+		}
+		if st.deployed[s.Service] {
+			fmt.Fprintf(out, " version=%s stack=%s", versionLabel(s.Version, s.FollowsMain), s.Stack)
+			if s.Image != "" {
+				fmt.Fprintf(out, " image=%s", s.Image)
+			}
+		}
+		fmt.Fprintln(out)
+	}
+	printReconciler(out, st.reconciler, time.Now())
+	fmt.Fprintln(out, "\nEndpoints:")
+	for _, e := range st.Endpoints {
+		lan := e.LAN
+		if lan == "" {
+			lan = "-"
+		}
+		fmt.Fprintf(out, "  %-16s %-28s %-48s %s\n", e.Service, lan, e.Public, e.DNS)
+	}
+	printDatabases(out, st.Env, st.Databases)
 	return nil
 }
 
-// printDatabases lists, for each postgres provider, the schemas and roles
-// it has and which application uses each - the unused ones too, which
-// 'urbex apply --delete-data' drops (ADR-0030). Never a password.
-func printDatabases(ctx context.Context, out io.Writer, r *rollout.Rollout, m *manifest.Manifest, env string, deployed map[string]rollout.Deployed) {
+// databases lists, for each postgres provider, the schemas and roles it
+// has and which application uses each - the unused ones too, which
+// 'urbex apply --delete-data' drops (ADR-0030).
+func databases(ctx context.Context, r *rollout.Rollout, m *manifest.Manifest, env string, deployed map[string]rollout.Deployed) []databaseView {
+	var out []databaseView
 	for _, svc := range m.Deployables() {
 		if svc.Provides != manifest.InterfacePostgres {
 			continue
 		}
-		fmt.Fprintf(out, "\nDatabase %s (postgres, database %s):\n", svc.Name, links.DatabaseName(m.Project))
+		v := databaseView{Service: svc.Name, Database: links.DatabaseName(m.Project), State: "listed"}
 		if d, ok := deployed[svc.Name]; !ok || d.State != "running" {
-			fmt.Fprintln(out, "  (not running: its schemas can't be listed)")
+			v.State = "not-running"
+			out = append(out, v)
 			continue
 		}
 		users := map[string]string{}
@@ -301,23 +528,20 @@ func printDatabases(ctx context.Context, out io.Writer, r *rollout.Rollout, m *m
 		spaces, err := pgadmin.Server{Shell: shell}.Spaces(ctx)
 		_ = shell.Close(context.WithoutCancel(ctx))
 		if err != nil {
-			fmt.Fprintf(out, "  (could not list its schemas: %v)\n", err)
+			v.State, v.Error = "error", err.Error()
+			out = append(out, v)
 			continue
 		}
 		seen := map[string]bool{}
 		for _, s := range spaces {
 			seen[s.Role] = true
-			schema := s.Schema
-			if schema == "" {
-				schema = "-"
-			}
-			use := "unused: 'urbex apply " + env + " --delete-data' drops it"
+			role := databaseRoleView{Role: s.Role, Schema: s.Schema, Use: "unused"}
 			if app, ok := users[s.Role]; ok {
-				use = "used by " + app
+				role.Use, role.UsedBy = "used", app
 			} else if s.Schema != s.Role {
-				use = "not made by urbex"
+				role.Use = "foreign"
 			}
-			fmt.Fprintf(out, "  role %-16s schema %-16s %s\n", s.Role, schema, use)
+			v.Roles = append(v.Roles, role)
 		}
 		var missing []string
 		for role := range users {
@@ -327,9 +551,56 @@ func printDatabases(ctx context.Context, out io.Writer, r *rollout.Rollout, m *m
 		}
 		sort.Strings(missing)
 		for _, role := range missing {
-			fmt.Fprintf(out, "  role %-16s schema %-16s missing: 'urbex apply %s' makes it for %s\n", role, "-", env, users[role])
+			v.Roles = append(v.Roles, databaseRoleView{Role: role, Use: "missing", UsedBy: users[role]})
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// printDatabases prints databases' views. Never a password.
+func printDatabases(out io.Writer, env string, dbs []databaseView) {
+	for _, db := range dbs {
+		fmt.Fprintf(out, "\nDatabase %s (postgres, database %s):\n", db.Service, db.Database)
+		switch db.State {
+		case "not-running":
+			fmt.Fprintln(out, "  (not running: its schemas can't be listed)")
+			continue
+		case "error":
+			fmt.Fprintf(out, "  (could not list its schemas: %s)\n", db.Error)
+			continue
+		}
+		for _, r := range db.Roles {
+			schema := r.Schema
+			if schema == "" {
+				schema = "-"
+			}
+			var use string
+			switch r.Use {
+			case "used":
+				use = "used by " + r.UsedBy
+			case "unused":
+				use = "unused: 'urbex apply " + env + " --delete-data' drops it"
+			case "missing":
+				use = "missing: 'urbex apply " + env + "' makes it for " + r.UsedBy
+			default:
+				use = "not made by urbex"
+			}
+			fmt.Fprintf(out, "  role %-16s schema %-16s %s\n", r.Role, schema, use)
 		}
 	}
+}
+
+// versionLabel is a version as status prints it: "none" when the
+// environment has none, "(follows-main)" after one that follows main.
+func versionLabel(version string, track bool) string {
+	if version == "" {
+		version = "none"
+	}
+	if track {
+		version += "(follows-main)"
+	}
+	return version
 }
 
 func presence(present bool) string {

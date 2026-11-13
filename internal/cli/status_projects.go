@@ -19,26 +19,47 @@ import (
 	"github.com/urbforge/urbex-cli/internal/rollout"
 )
 
-// printProjects lists every project environment in the GitOps repo: per
-// service, the version it is set to, what Komodo runs, and where it is
-// reached - its LXC on the LAN and, if published, its public address
-// (from the tunnel's routes, or a web frontend's Worker).
-func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, creds *credentials.Credentials, repoPath string) error {
-	refreshForStatus(ctx, out, cfg, creds, repoPath)
+// projectView is one project environment of the GitOps repo, in
+// `urbex status --output json`.
+type projectView struct {
+	Project  string               `json:"project"`
+	Env      string               `json:"env"`
+	Services []projectServiceView `json:"services"`
+}
+
+// projectServiceView is a service of a project environment: its
+// version, what Komodo runs (Stack, when Komodo answered), and where it
+// is reached - its LXC on the LAN and, if published, its public address
+// (from the tunnel's routes, a Quick Tunnel, or a web frontend's
+// Worker).
+type projectServiceView struct {
+	Service     string     `json:"service"`
+	Web         bool       `json:"web,omitempty"`
+	LAN         string     `json:"lan,omitempty"`
+	Public      string     `json:"public,omitempty"`
+	Version     string     `json:"version,omitempty"`
+	FollowsMain bool       `json:"followsMain,omitempty"`
+	Stack       string     `json:"stack,omitempty"`
+	DNS         *dnsRecord `json:"dns,omitempty"`
+}
+
+// projectsStatus reads every project environment in the GitOps repo;
+// warn gets what couldn't be checked.
+func projectsStatus(ctx context.Context, warn func(string), cfg *platform.Config, creds *credentials.Credentials, repoPath string) ([]projectView, error) {
+	refreshForStatus(ctx, warn, cfg, creds, repoPath)
 	repo := envrepo.Repo{Path: repoPath}
 	deployments, err := repo.Deployments()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	fmt.Fprintln(out, "\nProjects:")
+	views := []projectView{}
 	if len(deployments) == 0 {
-		fmt.Fprintln(out, "  none - 'urbex apply <env>' in a project creates one")
-		return nil
+		return views, nil
 	}
 
 	ledger, err := allocation.Load(repoPath+"/state/allocations.json", 0, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	public := publicRoutes(ctx, cfg, creds)
 	dns := newDNSChecker(cfg, creds)
@@ -51,7 +72,7 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 	}
 
 	for _, d := range deployments {
-		fmt.Fprintf(out, "  %s (%s)\n", d.Project, d.Env)
+		view := projectView{Project: d.Project, Env: d.Env, Services: []projectServiceView{}}
 		services := make([]manifest.Service, 0, len(d.Services))
 		for _, name := range d.Services {
 			// What the GitOps repo records, not the name, tells a web
@@ -74,38 +95,61 @@ func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, cre
 		o := &provision.Orchestrator{Manifest: &manifest.Manifest{Project: d.Project}, Config: cfg}
 		for _, svc := range services {
 			st, _ := repo.Version(d.Env, d.Project, svc.Name)
-			version := st.Version
-			if version == "" {
-				version = "none"
-			}
-			if st.Track {
-				version += "(follows-main)"
-			}
-			lan, pub, record := "-", "", ""
+			v := projectServiceView{Service: svc.Name, Web: svc.IsWeb(), Version: st.Version, FollowsMain: st.Track}
 			if svc.IsWeb() {
 				if host := o.PublicHostname(d.Env, svc); host != "" {
-					pub = "https://" + host
+					v.Public = "https://" + host
 				}
 			} else if entry, ok := ledger.Lookup(provision.Hostname(d.Project, svc.Name, d.Env)); ok {
-				lan = provision.LANAddress(entry.IP, repo.Port(d.Env, d.Project, svc.Name))
-				record = dns.Check(ctx, o.InternalHostname(d.Env, svc), entry.IP)
+				v.LAN = provision.LANAddress(entry.IP, repo.Port(d.Env, d.Project, svc.Name))
+				v.DNS = dns.Lookup(ctx, o.InternalHostname(d.Env, svc), entry.IP)
 				// Routes go to the service's internal name (ADR-0027);
 				// ones set up before that, to its address.
-				pub = public[o.InternalHostname(d.Env, svc)+":"+strconv.Itoa(repo.Port(d.Env, d.Project, svc.Name))]
-				if pub == "" {
-					pub = public[strings.TrimPrefix(lan, "http://")]
+				v.Public = public[o.InternalHostname(d.Env, svc)+":"+strconv.Itoa(repo.Port(d.Env, d.Project, svc.Name))]
+				if v.Public == "" {
+					v.Public = public[strings.TrimPrefix(v.LAN, "http://")]
 				}
-				if pub == "" && cfg.Cloudflare.QuickTunnel {
-					pub = quickTunnelRoute(ctx, entry.IP)
+				if v.Public == "" && cfg.Cloudflare.QuickTunnel {
+					v.Public = quickTunnelRoute(ctx, entry.IP)
 				}
+			}
+			if s, ok := state[svc.Name]; ok {
+				v.Stack = s.State
+			}
+			view.Services = append(view.Services, v)
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+// printProjects lists every project environment in the GitOps repo: per
+// service, the version it is set to, what Komodo runs, and where it is
+// reached.
+func printProjects(ctx context.Context, out io.Writer, cfg *platform.Config, creds *credentials.Credentials, repoPath string) error {
+	views, err := projectsStatus(ctx, func(w string) { fmt.Fprintf(out, "(%s)\n", w) }, cfg, creds, repoPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "\nProjects:")
+	if len(views) == 0 {
+		fmt.Fprintln(out, "  none - 'urbex apply <env>' in a project creates one")
+		return nil
+	}
+	for _, p := range views {
+		fmt.Fprintf(out, "  %s (%s)\n", p.Project, p.Env)
+		for _, v := range p.Services {
+			lan := v.LAN
+			if lan == "" {
+				lan = "-"
 			}
 			stack := ""
-			if s, ok := state[svc.Name]; ok {
-				stack = " stack=" + s.State
+			if v.Stack != "" {
+				stack = " stack=" + v.Stack
 			}
-			fmt.Fprintf(out, "    %-14s %-28s %-48s version=%s%s", svc.Name, lan, pub, version, stack)
-			if record != "" {
-				fmt.Fprintf(out, " %s", record)
+			fmt.Fprintf(out, "    %-14s %-28s %-48s version=%s%s", v.Service, lan, v.Public, versionLabel(v.Version, v.FollowsMain), stack)
+			if v.DNS != nil {
+				fmt.Fprintf(out, " %s", v.DNS)
 			}
 			fmt.Fprintln(out)
 		}
@@ -156,8 +200,8 @@ func quickTunnelRoute(ctx context.Context, ip string) string {
 
 // refreshForStatus updates the GitOps repo from Gitea, where the release
 // Action commits too, so what status reads is current; on failure it
-// says so and goes on with the local copy.
-func refreshForStatus(ctx context.Context, out io.Writer, cfg *platform.Config, creds *credentials.Credentials, repoPath string) {
+// warns and goes on with the local copy.
+func refreshForStatus(ctx context.Context, warn func(string), cfg *platform.Config, creds *credentials.Credentials, repoPath string) {
 	if creds.GiteaToken == "" {
 		return
 	}
@@ -166,6 +210,6 @@ func refreshForStatus(ctx context.Context, out io.Writer, cfg *platform.Config, 
 		err = bootstrap.PullRepo(ctx, repoPath, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken)
 	}
 	if err != nil {
-		fmt.Fprintf(out, "(could not update the GitOps repo from Gitea: %v - showing the local copy)\n", err)
+		warn(fmt.Sprintf("could not update the GitOps repo from Gitea: %v - showing the local copy", err))
 	}
 }

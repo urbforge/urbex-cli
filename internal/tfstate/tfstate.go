@@ -14,7 +14,7 @@ import (
 )
 
 // ContainerLister is the subset of proxmoxapi.Client used to tell which
-// LXCs still exist.
+// LXCs and VMs still exist.
 type ContainerLister interface {
 	ListContainerIDs(ctx context.Context, node string) ([]int, error)
 }
@@ -55,7 +55,7 @@ func ForgetVanished(ctx context.Context, lister ContainerLister, node string, ru
 		if exists[c.VMID] {
 			continue
 		}
-		fmt.Fprintf(out, "LXC %d is gone from Proxmox: forgetting %s.\n", c.VMID, c.Address)
+		fmt.Fprintf(out, "Machine %d is gone from Proxmox: forgetting %s.\n", c.VMID, c.Address)
 		if err := run.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"state", "rm", c.Address}, Env: env}); err != nil {
 			return fmt.Errorf("terraform state rm %s: %w", c.Address, err)
 		}
@@ -63,14 +63,14 @@ func ForgetVanished(ctx context.Context, lister ContainerLister, node string, ru
 	return nil
 }
 
-// Container is a Proxmox LXC in a Terraform state: its resource address
-// and VMID.
+// Container is a Proxmox LXC or VM in a Terraform state: its resource
+// address and VMID.
 type Container struct {
 	Address string
 	VMID    int
 }
 
-// Containers lists the Proxmox containers in a Terraform state file
+// Containers lists the Proxmox LXCs and VMs in a Terraform state file
 // (format version 4).
 func Containers(state []byte) ([]Container, error) {
 	var s struct {
@@ -92,7 +92,7 @@ func Containers(state []byte) ([]Container, error) {
 	}
 	var out []Container
 	for _, r := range s.Resources {
-		if r.Mode != "managed" || r.Type != "proxmox_virtual_environment_container" {
+		if r.Mode != "managed" || (r.Type != "proxmox_virtual_environment_container" && r.Type != "proxmox_virtual_environment_vm") {
 			continue
 		}
 		for _, inst := range r.Instances {

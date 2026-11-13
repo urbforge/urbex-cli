@@ -172,13 +172,19 @@
           "default": false,
           "description": "Publish the service on the internet, at its environment's hostname, through the platform's Cloudflare Tunnel. Needs Cloudflare configured in urbex.platform.yaml."
         },
+        "machine": {
+          "type": "string",
+          "enum": ["lxc", "vm"],
+          "default": "lxc",
+          "description": "What the application runs on: an unprivileged LXC (the default), or a VM in the platform's pool, for what an LXC can't do without root - keyctl, mounting NFS or SMB itself, FUSE. A VM costs about 300-400 MB more and boots slower. Switching replaces the machine, which apply refuses for one with named volumes. See ADR-0033."
+        },
         "resources": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "cpu": { "type": "integer", "minimum": 1, "default": 1 },
             "memory": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "1Gi" },
-            "disk": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "5Gi" }
+            "disk": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$", "default": "5Gi", "description": "Root disk. Default 5Gi for an LXC, 8Gi for a VM." }
           }
         },
         "env": {

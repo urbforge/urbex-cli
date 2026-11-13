@@ -37,6 +37,62 @@ type VolumeAPI interface {
 // maxMountPoints is how many mount points an LXC can have: mp0 to mp255.
 const maxMountPoints = 256
 
+// VMVolumeAPI is the subset of proxmoxapi.Client that gives the
+// applications' VMs their named volumes, as disks (ADR-0033). Like an
+// LXC's mount points, urbex adds and grows them through the API, and
+// Terraform leaves them alone.
+type VMVolumeAPI interface {
+	VM(ctx context.Context, node string, vmid int) (*proxmoxapi.ContainerInfo, error)
+	VMDisks(ctx context.Context, node string, vmid int) ([]proxmoxapi.VMDisk, error)
+	AddVMDisk(ctx context.Context, node string, vmid int, key, storage string, sizeGB int, serial string) error
+	ResizeVMDisk(ctx context.Context, node string, vmid int, disk string, sizeGB int) error
+}
+
+// maxSCSIDisks is how many SCSI disks a VM can have: scsi0 (its root) to
+// scsi30.
+const maxSCSIDisks = 31
+
+// vmVolumes is o.Volumes as a VMVolumeAPI, if it is one.
+func (o *Orchestrator) vmVolumes() (VMVolumeAPI, bool) {
+	v, ok := o.Volumes.(VMVolumeAPI)
+	return v, ok
+}
+
+// vmVolumeNames returns the named volumes a VM's disks hold, by their
+// serials: those of svc's declared volumes by name, any other by its
+// serial without the application's prefix. nil when vmid isn't a VM -
+// an application just switched from an LXC still has one.
+func (o *Orchestrator) vmVolumeNames(ctx context.Context, svc manifest.Service, vmid int) ([]string, error) {
+	vv, ok := o.vmVolumes()
+	if !ok {
+		return nil, nil
+	}
+	node := o.Config.Proxmox.Node
+	if info, err := vv.VM(ctx, node, vmid); err != nil || info == nil {
+		return nil, err
+	}
+	disks, err := vv.VMDisks(ctx, node, vmid)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]string{}
+	for _, v := range svc.NamedVolumes() {
+		declared[svc.DiskSerial(v)] = v.Name
+	}
+	var names []string
+	for _, d := range disks {
+		if d.Key == "scsi0" || d.Serial == "" {
+			continue
+		}
+		name, ok := declared[d.Serial]
+		if !ok {
+			name = strings.TrimPrefix(d.Serial, svc.Name+"-")
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // checkVolumes refuses a share the platform doesn't declare.
 func (o *Orchestrator) checkVolumes() error {
 	var errs []string
@@ -64,7 +120,18 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 			names[v.Name] = true
 		}
 		hostname := Hostname(o.Manifest.Project, svc.Name, env)
-		if vmid := allocations[hostname].VMID; o.Volumes != nil && existing[vmid] {
+		vmid := allocations[hostname].VMID
+		if svc.IsVM() && o.Volumes != nil && existing[vmid] {
+			// A VM's volumes are disks; an application that has just
+			// switched still has an LXC, which the plan reads.
+			vmNames, err := o.vmVolumeNames(ctx, svc, vmid)
+			if err != nil {
+				return nil, fmt.Errorf("reading the disks of %s: %w", hostname, err)
+			}
+			for _, n := range vmNames {
+				names[n] = true
+			}
+		} else if o.Volumes != nil && existing[vmid] {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
 			if err != nil {
 				return nil, fmt.Errorf("reading the mount points of %s: %w", hostname, err)
@@ -116,7 +183,13 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 	var replaced, removed []string
 	for _, d := range deleted {
 		names := volumes[d.hostname]
-		if len(names) == 0 && d.vmid > 0 {
+		if len(names) == 0 && d.vmid > 0 && d.module == "module.vm[" {
+			svc := manifest.Service{Name: strings.TrimSuffix(strings.TrimPrefix(d.hostname, o.Manifest.Project+"-"), "-"+env)}
+			if names, err = o.vmVolumeNames(ctx, svc, d.vmid); err != nil {
+				return fmt.Errorf("reading the disks of %s: %w", d.hostname, err)
+			}
+		}
+		if len(names) == 0 && d.vmid > 0 && d.module == "module.service[" {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, d.vmid)
 			if err != nil {
 				return fmt.Errorf("reading the mount points of %s: %w", d.hostname, err)
@@ -143,7 +216,7 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 		if !deleteData {
 			return fmt.Errorf("the change would delete %s, and Proxmox deletes an LXC's volumes with it: put the application back in urbex.yaml, or run 'urbex apply %s --delete-data' to delete it with its volumes", strings.Join(removed, "; "), env)
 		}
-		fmt.Fprintf(o.Out, "Deleting %s with their LXCs.\n", strings.Join(removed, "; "))
+		fmt.Fprintf(o.Out, "Deleting %s with their machines.\n", strings.Join(removed, "; "))
 	}
 	return nil
 }
@@ -151,16 +224,19 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 // deletion is an LXC a plan deletes: replaced when it creates it again.
 type deletion struct {
 	hostname string
-	vmid     int // from the plan's before; 0 if it has none
+	module   string // module.service[ or module.vm[
+	vmid     int    // from the plan's before; 0 if it has none
 	replaced bool
 	because  string // the attributes that replace it
 }
 
 // deletedContainers reads, in terraform show -json of a plan, the LXCs
-// the plan would delete, by hostname, replaced or not, with the
+// and VMs the plan would delete, by hostname, replaced or not, with the
 // attributes that make it replace them. The hostname is the key of the
-// module instance (module.service["<hostname>"]): the container itself
-// has no key.
+// module instance (module.service["<hostname>"] for an LXC,
+// module.vm["<hostname>"] for a VM): the machine itself has no key. A
+// machine the plan creates again under the other module - an
+// application switched between machine: lxc and vm - is replaced too.
 func deletedContainers(plan []byte) ([]deletion, error) {
 	if len(bytes.TrimSpace(plan)) == 0 {
 		return nil, nil
@@ -181,15 +257,27 @@ func deletedContainers(plan []byte) ([]deletion, error) {
 	if err := json.Unmarshal(plan, &p); err != nil {
 		return nil, fmt.Errorf("reading terraform plan: %w", err)
 	}
+	machines := map[string]string{
+		"proxmox_virtual_environment_container": "module.service[",
+		"proxmox_virtual_environment_vm":        "module.vm[",
+	}
 	var out []deletion
+	created := map[string]string{} // hostname => the module that creates it
 	for _, rc := range p.ResourceChanges {
-		key, ok := strings.CutPrefix(rc.ModuleAddress, "module.service[")
-		if rc.Type != "proxmox_virtual_environment_container" || !ok {
+		prefix, ok := machines[rc.Type]
+		if !ok {
+			continue
+		}
+		key, ok := strings.CutPrefix(rc.ModuleAddress, prefix)
+		if !ok {
 			continue
 		}
 		host, err := strconv.Unquote(strings.TrimSuffix(key, "]"))
 		if err != nil {
 			continue
+		}
+		if slices.Contains(rc.Change.Actions, "create") {
+			created[host] = prefix
 		}
 		if !slices.Contains(rc.Change.Actions, "delete") {
 			continue
@@ -208,7 +296,12 @@ func deletedContainers(plan []byte) ([]deletion, error) {
 		if because == "" {
 			because = "see terraform plan"
 		}
-		out = append(out, deletion{hostname: host, vmid: rc.Change.Before.VMID, replaced: slices.Contains(rc.Change.Actions, "create"), because: because})
+		out = append(out, deletion{hostname: host, module: prefix, vmid: rc.Change.Before.VMID, replaced: slices.Contains(rc.Change.Actions, "create"), because: because})
+	}
+	for i, d := range out {
+		if module, ok := created[d.hostname]; ok && module != d.module {
+			out[i].replaced, out[i].because = true, "machine"
+		}
 	}
 	return out, nil
 }
@@ -238,6 +331,12 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		}
 		hostname := Hostname(o.Manifest.Project, svc.Name, env)
 		vmid := allocations[hostname].VMID
+		if svc.IsVM() {
+			if err := o.attachVMDisks(ctx, svc, hostname, vmid); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		mps, err := o.Volumes.MountPoints(ctx, node, vmid)
 		if err != nil {
 			return nil, fmt.Errorf("reading the mount points of %s: %w", hostname, err)
@@ -344,6 +443,64 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 	return missing, nil
 }
 
+// attachVMDisks gives an application's VM a disk per named volume, with
+// the volume's serial: a new one is plugged in at once, a smaller one
+// grows (ADR-0033). Ansible then formats a new disk, mounts it where an
+// LXC mounts the volume, and grows its filesystem.
+func (o *Orchestrator) attachVMDisks(ctx context.Context, svc manifest.Service, hostname string, vmid int) error {
+	if len(svc.NamedVolumes()) == 0 {
+		return nil
+	}
+	vv, ok := o.vmVolumes()
+	if !ok {
+		return fmt.Errorf("%s: named volumes in a VM need the Proxmox API", svc.Name)
+	}
+	node := o.Config.Proxmox.Node
+	disks, err := vv.VMDisks(ctx, node, vmid)
+	if err != nil {
+		return fmt.Errorf("reading the disks of %s: %w", hostname, err)
+	}
+	bySerial := map[string]proxmoxapi.VMDisk{}
+	taken := map[int]bool{0: true}
+	for _, d := range disks {
+		bySerial[d.Serial] = d
+		taken[d.Index()] = true
+	}
+	for _, v := range svc.NamedVolumes() {
+		want, err := sizeparse.GB(v.SizeOrDefault())
+		if err != nil {
+			return fmt.Errorf("services %s: volume %s: %w", svc.Name, v.Name, err)
+		}
+		serial := svc.DiskSerial(v)
+		d, ok := bySerial[serial]
+		switch {
+		case !ok:
+			key := ""
+			for i := 1; i < maxSCSIDisks; i++ {
+				if !taken[i] {
+					taken[i], key = true, fmt.Sprintf("scsi%d", i)
+					break
+				}
+			}
+			if key == "" {
+				return fmt.Errorf("%s has no free SCSI disk left", hostname)
+			}
+			if err := vv.AddVMDisk(ctx, node, vmid, key, o.Config.Proxmox.StoragePool, want, serial); err != nil {
+				return fmt.Errorf("adding volume %s to %s: %w", v.Name, hostname, err)
+			}
+			fmt.Fprintf(o.Out, "%s: volume %s, %d GB, a disk of its VM (%s, serial %s), mounted at %s.\n", svc.Name, v.Name, want, key, serial, v.Path)
+		case d.SizeGB < want:
+			if err := vv.ResizeVMDisk(ctx, node, vmid, d.Key, want); err != nil {
+				return fmt.Errorf("growing volume %s of %s: %w", v.Name, hostname, err)
+			}
+			fmt.Fprintf(o.Out, "%s: volume %s grown from %d to %d GB.\n", svc.Name, v.Name, d.SizeGB, want)
+		case d.SizeGB > want:
+			return fmt.Errorf("services %s: volume %s is %d GB and urbex.yaml asks for %d: Proxmox can't shrink a volume, set its size to %dGi or more", svc.Name, v.Name, d.SizeGB, want, d.SizeGB)
+		}
+	}
+	return nil
+}
+
 // reportNotReady names the applications apply skipped, with the
 // operator's commands for their shares, and fails: the environment isn't
 // complete. An application never starts without what it keeps.
@@ -393,8 +550,8 @@ func (o *Orchestrator) checkDeleteData(ctx context.Context, opts Options, servic
 		return nil
 	}
 	if !opts.DeleteData {
-		return fmt.Errorf("%s (%s) has named volumes: %s. Destroying it deletes them with their LXCs: run 'urbex destroy %s --delete-data' to do so", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "), opts.Env)
+		return fmt.Errorf("%s (%s) has named volumes: %s. Destroying it deletes them with their machines: run 'urbex destroy %s --delete-data' to do so", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "), opts.Env)
 	}
-	fmt.Fprintf(o.Out, "Deleting the named volumes of %s (%s) with their LXCs: %s.\n", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "))
+	fmt.Fprintf(o.Out, "Deleting the named volumes of %s (%s) with their machines: %s.\n", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "))
 	return nil
 }

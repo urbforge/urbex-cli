@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
 func newApplyCmd() *cobra.Command {
@@ -12,6 +14,7 @@ func newApplyCmd() *cobra.Command {
 	var gitopsRepoPath string
 	var deleteData bool
 	var repoDir string
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "apply <env>",
@@ -51,19 +54,26 @@ pct commands, deploys the rest, and fails.
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
 				return err
 			}
+			ev, err := events.begin(cmd, "apply")
+			if err != nil {
+				return err
+			}
+			defer func() { ev.close(err) }()
 
 			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, repoDir, true)
 			if err != nil {
 				return err
 			}
 
-			tracker := startProgress(cmd, "apply", fmt.Sprintf("urbex apply %s (%s)", args[0], o.Manifest.Project), provision.Phases())
+			tracker := startProgress(cmd, "apply", fmt.Sprintf("urbex apply %s (%s)", args[0], o.Manifest.Project), provision.Phases(), ev)
 			o.Progress = tracker
+			// Terraform's and Ansible's output records the steps.
+			o.Runner = runner.ExecRunner{Stdout: tracker.Watch(cmd.OutOrStdout()), Stderr: cmd.ErrOrStderr()}
 			err = o.Apply(cmd.Context(), provision.Options{
 				Env:            args[0],
 				GitOpsRepoPath: repoPath,
@@ -79,6 +89,7 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the project's main branch on Gitea if it is missing")
 
 	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the LXC and the named volumes of an application removed from urbex.yaml")
+	events.Register(cmd)
 
 	return cmd
 }

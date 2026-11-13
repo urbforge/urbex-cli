@@ -67,9 +67,10 @@ type listContainersResponse struct {
 }
 
 // ListContainerHostnames returns the hostnames ("name" field) of every
-// LXC container on the given Proxmox node that the token can see.
+// machine on the given Proxmox node that the token can see: its LXCs and
+// its VMs (ADR-0033).
 func (c *Client) ListContainerHostnames(ctx context.Context, node string) ([]string, error) {
-	cts, err := c.listContainers(ctx, node)
+	cts, err := c.listMachines(ctx, node)
 	if err != nil {
 		return nil, err
 	}
@@ -80,10 +81,10 @@ func (c *Client) ListContainerHostnames(ctx context.Context, node string) ([]str
 	return hostnames, nil
 }
 
-// ListContainerIDs returns the VMIDs of every LXC container on the given
-// Proxmox node that the token can see.
+// ListContainerIDs returns the VMIDs of every machine on the given
+// Proxmox node that the token can see: its LXCs and its VMs.
 func (c *Client) ListContainerIDs(ctx context.Context, node string) ([]int, error) {
-	cts, err := c.listContainers(ctx, node)
+	cts, err := c.listMachines(ctx, node)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +95,30 @@ func (c *Client) ListContainerIDs(ctx context.Context, node string) ([]int, erro
 	return ids, nil
 }
 
+// listMachines lists the node's LXCs, then its VMs.
+func (c *Client) listMachines(ctx context.Context, node string) ([]container, error) {
+	cts, err := c.listContainers(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	vms, err := c.listVMs(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	return append(cts, vms...), nil
+}
+
 func (c *Client) listContainers(ctx context.Context, node string) ([]container, error) {
-	url := fmt.Sprintf("%s/nodes/%s/lxc", c.baseURL, node)
+	return c.list(ctx, node, "lxc")
+}
+
+func (c *Client) listVMs(ctx context.Context, node string) ([]container, error) {
+	return c.list(ctx, node, "qemu")
+}
+
+// list lists the node's machines of a kind: lxc or qemu.
+func (c *Client) list(ctx context.Context, node, kind string) ([]container, error) {
+	url := fmt.Sprintf("%s/nodes/%s/%s", c.baseURL, node, kind)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -199,18 +222,24 @@ func (c *Client) SetDescription(ctx context.Context, node string, vmid int, desc
 // Container returns an LXC's configuration, or nil when there is no LXC
 // vmid on node.
 func (c *Client) Container(ctx context.Context, node string, vmid int) (*ContainerInfo, error) {
-	ids, err := c.ListContainerIDs(ctx, node)
+	return c.machine(ctx, node, "lxc", vmid)
+}
+
+// machine returns the configuration of the node's machine of a kind (lxc
+// or qemu), or nil when there is none at vmid.
+func (c *Client) machine(ctx context.Context, node, kind string, vmid int) (*ContainerInfo, error) {
+	machines, err := c.list(ctx, node, kind)
 	if err != nil {
 		return nil, err
 	}
 	found := false
-	for _, id := range ids {
-		found = found || id == vmid
+	for _, m := range machines {
+		found = found || int(m.VMID) == vmid
 	}
 	if !found {
 		return nil, nil
 	}
-	data, err := c.call(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/lxc/%d/config", node, vmid), nil)
+	data, err := c.call(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/%s/%d/config", node, kind, vmid), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +332,11 @@ func (c *Client) task(ctx context.Context, node, method, path string, form url.V
 
 // Templates returns the VMIDs of the node's LXC templates in [from, to].
 func (c *Client) Templates(ctx context.Context, node string, from, to int) ([]int, error) {
-	cts, err := c.listContainers(ctx, node)
+	return c.templates(ctx, node, "lxc", from, to)
+}
+
+func (c *Client) templates(ctx context.Context, node, kind string, from, to int) ([]int, error) {
+	cts, err := c.list(ctx, node, kind)
 	if err != nil {
 		return nil, err
 	}

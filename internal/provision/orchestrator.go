@@ -116,8 +116,14 @@ type Orchestrator struct {
 	RefreshGitOps func(ctx context.Context, gitopsRepoPath string) error
 
 	// cloneVMID is the template the environment's new LXCs are cloned
-	// from, or 0 (see templateVMID).
-	cloneVMID int
+	// from, or 0 (see templateVMID); vmCloneVMID the one its VMs are, or
+	// 0 when no application runs in a VM (see vmTemplateVMID).
+	cloneVMID   int
+	vmCloneVMID int
+	// buildVMTemplate lets prepare build the VM template when an
+	// application needs it and it is missing or outdated: apply does,
+	// plan doesn't.
+	buildVMTemplate bool
 	// skipped are the applications apply leaves out of Komodo because
 	// what they keep isn't mounted yet.
 	skipped map[string]bool
@@ -149,8 +155,8 @@ type Options struct {
 	Update     bool
 	AllowMajor bool
 	// DeleteData lets Destroy delete the environment's named volumes,
-	// with their LXCs, and Apply delete those of an application removed
-	// from urbex.yaml, with its LXC.
+	// with their machines, and Apply delete those of an application removed
+	// from urbex.yaml, with its machine.
 	DeleteData bool
 	// GitOpsRepoPath is the local working directory of the GitOps repo,
 	// already bootstrapped (see internal/bootstrap).
@@ -165,7 +171,7 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 	if err := o.refresh(ctx, opts); err != nil {
 		return err
 	}
-	tfDir, err := o.prepare(opts)
+	tfDir, err := o.prepare(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -191,7 +197,8 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 // empty until `urbex deploy` gives it one.
 func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	o.Progress.Begin(PhasePrepare)
-	tfDir, err := o.prepare(opts)
+	o.buildVMTemplate = true
+	tfDir, err := o.prepare(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -1061,6 +1068,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		fmt.Fprintf(o.Out, "Nothing to destroy: no services of %s (%s) have been applied.\n", o.Manifest.Project, opts.Env)
 		return nil
 	}
+	o.Progress.Begin(PhaseDestroyCheck)
 	if err := o.checkDeleteData(ctx, opts, toDestroy, allocations); err != nil {
 		return err
 	}
@@ -1077,11 +1085,13 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		}
 	}
 	repo := envrepo.Repo{Path: opts.GitOpsRepoPath}
+	o.Progress.Begin(PhaseDestroyStacks)
 	if o.Rollout != nil {
 		if err := o.Rollout.RemoveEnv(ctx, stacks); err != nil {
 			return fmt.Errorf("removing komodo stacks: %w", err)
 		}
 	}
+	o.Progress.Begin(PhaseDestroyUnlink)
 	if err := o.unpublish(ctx, opts.Env, toDestroy); err != nil {
 		return fmt.Errorf("removing from cloudflare: %w", err)
 	}
@@ -1095,6 +1105,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("removing the keycloak realm: %w", err)
 	}
 
+	o.Progress.Begin(PhaseDestroyMachines)
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base assets: %w", err)
 	}
@@ -1112,7 +1123,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen, nameservers, 0); err != nil {
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, toDestroy, allocations, prefixLen, nameservers, 0, 0); err != nil {
 		return fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -1126,6 +1137,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "destroy", env); err != nil {
 		return err
 	}
+	o.Progress.Begin(PhaseDestroyServers)
 	if o.Rollout != nil {
 		if err := o.Rollout.RemoveServers(ctx, target); err != nil {
 			return fmt.Errorf("removing komodo servers: %w", err)
@@ -1149,6 +1161,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		}
 	}
 
+	o.Progress.Begin(PhaseDestroyGitOps)
 	// The environment's folder goes last, right before the commit: the
 	// release Action can still update it (a push to main) until then, and
 	// a change to a file we delete would conflict when pulling. Its Stacks
@@ -1215,7 +1228,7 @@ func (o *Orchestrator) runAnsible(ctx context.Context, opts Options) error {
 // prepare validates inputs, allocates VMIDs/IPs, and materializes
 // Terraform/Ansible assets - the steps shared by Plan and Apply. It
 // returns the Terraform working directory for the project+env.
-func (o *Orchestrator) prepare(opts Options) (string, error) {
+func (o *Orchestrator) prepare(ctx context.Context, opts Options) (string, error) {
 	if !ValidEnvs[opts.Env] {
 		return "", fmt.Errorf("invalid environment %q: must be one of staging, prod", opts.Env)
 	}
@@ -1275,7 +1288,10 @@ func (o *Orchestrator) prepare(opts Options) (string, error) {
 		return "", err
 	}
 	o.cloneVMID = o.templateVMID()
-	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers, o.cloneVMID); err != nil {
+	if o.vmCloneVMID, err = o.vmTemplateVMID(ctx, opts); err != nil {
+		return "", err
+	}
+	if err := writeTFVars(tfDir, o.Config, o.Manifest.Project, opts.Env, o.Manifest.Services, allocations, prefixLen, nameservers, o.cloneVMID, o.vmCloneVMID); err != nil {
 		return "", fmt.Errorf("writing terraform vars: %w", err)
 	}
 
@@ -1343,6 +1359,31 @@ func (o *Orchestrator) templateVMID() int {
 		return 0
 	}
 	return vmid
+}
+
+// vmTemplateVMID is urbex's VM template the environment's VMs are cloned
+// from, or 0 when no application runs in a VM. Apply builds it when it
+// is missing or outdated (ADR-0033); plan only looks for the current one.
+func (o *Orchestrator) vmTemplateVMID(ctx context.Context, opts Options) (int, error) {
+	var vms []string
+	for _, svc := range o.Manifest.Services {
+		if svc.IsVM() {
+			vms = append(vms, svc.Name)
+		}
+	}
+	if len(vms) == 0 {
+		return 0, nil
+	}
+	fmt.Fprintf(o.Out, "Running in a VM (machine: vm): %s.\n", strings.Join(vms, ", "))
+	p, ok := o.Proxmox.(bootstrap.VMTemplateProxmox)
+	if !ok {
+		return 0, nil
+	}
+	if !o.buildVMTemplate {
+		return bootstrap.CurrentVMTemplate(ctx, p, o.Config)
+	}
+	b := &bootstrap.VMTemplateBuilder{Proxmox: p, Config: o.Config, Runner: o.Runner, Out: o.Out}
+	return b.Ensure(ctx, opts.GitOpsRepoPath)
 }
 
 // LANAddress is where a service is reached on the LAN: its LXC's address

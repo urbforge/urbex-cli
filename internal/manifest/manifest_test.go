@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -273,5 +274,73 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("Unsupported[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// An application in a VM gets at least 1Gi and an 8Gi disk by default,
+// and none of what a VM doesn't have yet (ADR-0033).
+func TestMachine_VM(t *testing.T) {
+	lxc := Service{Name: "api"}
+	vm := Service{Name: "backup", Machine: MachineVM}
+	if lxc.IsVM() || !vm.IsVM() || (Service{Machine: MachineLXC}).IsVM() {
+		t.Error("only machine: vm runs in a VM")
+	}
+	if got := lxc.ResourcesOrDefault().Disk; got != "5Gi" {
+		t.Errorf("LXC disk = %s, want 5Gi", got)
+	}
+	if got := vm.ResourcesOrDefault(); got.Disk != "8Gi" || got.Memory != "1Gi" {
+		t.Errorf("VM resources = %+v, want 8Gi disk, 1Gi memory", got)
+	}
+	vm.Resources = &Resources{Disk: "20Gi"}
+	if got := vm.ResourcesOrDefault().Disk; got != "20Gi" {
+		t.Errorf("VM disk = %s, want the declared 20Gi", got)
+	}
+
+	m := &Manifest{Services: []Service{
+		{Name: "small", Machine: MachineVM, Resources: &Resources{Memory: "512Mi", Disk: "4Gi"}},
+		{Name: "big", Machine: MachineVM, Resources: &Resources{Memory: "2Gi"}},
+		{Name: "lxc", Resources: &Resources{Memory: "512Mi"}, Volumes: []Volume{{Name: "data", Path: "/data"}, {Share: "media", Path: "/media"}}},
+		{Name: "kept", Machine: MachineVM, Volumes: []Volume{{Name: "data", Path: "/data"}, {Share: "media", Path: "/media"}}},
+	}}
+	got := m.Unsupported()
+	want := []string{
+		"services small: a VM needs at least 1Gi of memory, not 512Mi",
+		"services small: a VM needs a disk of at least 5Gi, not 4Gi",
+		"services kept: shares are not available in a VM yet (urbforge/urbex-cli#83): use machine: lxc",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Unsupported =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The schema takes machine: lxc or vm, and nothing else.
+func TestValidateFile_Machine(t *testing.T) {
+	for machine, valid := range map[string]bool{"lxc": true, "vm": true, "container": false} {
+		path := filepath.Join(t.TempDir(), "urbex.yaml")
+		os.WriteFile(path, []byte("apiVersion: urbex/v1\nproject: hello\nservices:\n  - name: backup\n    image: rclone/rclone\n    version: \"1.71\"\n    machine: "+machine+"\n"), 0o644)
+		res, err := ValidateFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (len(res.Errors) == 0) != valid {
+			t.Errorf("machine: %s valid = %v, want %v (%v)", machine, len(res.Errors) == 0, valid, res.Errors)
+		}
+	}
+}
+
+// A named volume's disk serial is <application>-<name>, cut to Proxmox's
+// 20 characters with a hash when it is longer.
+func TestDiskSerial(t *testing.T) {
+	svc := Service{Name: "web"}
+	if got := svc.DiskSerial(Volume{Name: "data"}); got != "web-data" {
+		t.Errorf("serial = %s", got)
+	}
+	long := Service{Name: "photoprism"}
+	a, b := long.DiskSerial(Volume{Name: "originals-2026"}), long.DiskSerial(Volume{Name: "originals-2027"})
+	if len(a) != MaxDiskSerial || !strings.HasPrefix(a, "photoprism-") || a == b {
+		t.Errorf("long serials = %s, %s", a, b)
+	}
+	if a != long.DiskSerial(Volume{Name: "originals-2026"}) {
+		t.Error("the same volume must keep its serial")
 	}
 }

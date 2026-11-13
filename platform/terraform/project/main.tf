@@ -29,3 +29,27 @@ module "service" {
   startup_order    = each.value.startup_order
   startup_up_delay = each.value.startup_up_delay
 }
+
+# The applications that run in a VM (machine: vm, ADR-0033): linked
+# clones of urbex's VM template, with the same addresses, sizing and
+# boot order as an LXC.
+module "vm" {
+  source   = "../../../modules/vm"
+  for_each = var.vms
+
+  node_name        = var.node_name
+  hostname         = each.key
+  vm_id            = each.value.vm_id
+  clone_vm_id      = var.vm_clone_vm_id
+  storage_pool     = var.storage_pool
+  ssh_public_key   = var.ssh_public_key
+  cores            = each.value.cores
+  memory_mb        = each.value.memory_mb
+  disk_gb          = each.value.disk_gb
+  ip_address       = each.value.ip_address
+  ip_prefix_length = var.ip_prefix_length
+  gateway          = var.gateway
+  pool_id          = var.pool_id
+  network_bridge   = var.network_bridge
+  dns_servers      = var.dns_servers
+}

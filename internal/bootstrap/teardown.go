@@ -60,6 +60,7 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 		clients.PullRepo = PullRepo
 	}
 
+	o.Progress.Begin(PhaseTeardownCheck)
 	// Gitea has the latest GitOps repo - for the last time.
 	repoURL := ep.RepoURL(o.Config.Git.Org, GitOpsRepoName)
 	if o.Credentials.GiteaToken != "" {
@@ -97,10 +98,15 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	}
 
 	if o.Config.Cloudflare.Enabled() {
+		o.Progress.Begin(PhaseTeardownCloudflare)
 		if err := o.unpublishPlatform(ctx, clients); err != nil {
 			return fmt.Errorf("removing the platform from cloudflare: %w", err)
 		}
 	}
+	if !o.Config.Cloudflare.Enabled() {
+		o.Progress.Skip(PhaseTeardownCloudflare, "no Cloudflare in the platform config")
+	}
+	o.Progress.Begin(PhaseTeardownLXCs)
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base-service assets: %w", err)
 	}
@@ -123,10 +129,15 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "destroy", tfEnv); err != nil {
 		return err
 	}
+	o.Progress.Begin(PhaseTeardownTemplates)
 	if err := o.removeTemplate(ctx); err != nil {
 		return fmt.Errorf("removing the LXC template: %w", err)
 	}
+	if err := o.removeVMTemplate(ctx); err != nil {
+		return fmt.Errorf("removing the VM template: %w", err)
+	}
 
+	o.Progress.Begin(PhaseTeardownForget)
 	var addrs []string
 	for _, ip := range ips {
 		addrs = append(addrs, ip)

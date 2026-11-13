@@ -26,6 +26,14 @@ type hostVars struct {
 	// project playbook makes them ready for Docker's first copy of the
 	// image's files.
 	VolumePaths []string `yaml:"urbex_volume_paths,omitempty"`
+	// VMVolumes are a VM's named volumes: the disk, by its serial, the
+	// project playbook formats and mounts at each path (ADR-0033).
+	VMVolumes []vmVolume `yaml:"urbex_vm_volumes,omitempty"`
+}
+
+type vmVolume struct {
+	Serial string `yaml:"serial"`
+	Path   string `yaml:"path"`
 }
 
 type inventoryAll struct {
@@ -91,6 +99,9 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 		hv := hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: svc.Name, Env: env}
 		for _, v := range svc.NamedVolumes() {
 			hv.VolumePaths = append(hv.VolumePaths, svc.LXCPath(v))
+			if svc.IsVM() {
+				hv.VMVolumes = append(hv.VMVolumes, vmVolume{Serial: svc.DiskSerial(v), Path: svc.LXCPath(v)})
+			}
 		}
 		if quickTunnel && svc.Public {
 			hv.AppPort = strconv.Itoa(svc.Port)
