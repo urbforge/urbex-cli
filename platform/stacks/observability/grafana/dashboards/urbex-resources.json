@@ -169,7 +169,7 @@
             "type": "prometheus",
             "uid": "urbex-prometheus"
           },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"} / node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
+          "expr": "100 * sum by (kind, project, service, env, host) (urbex_lxc_memory_usage_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"} - urbex_lxc_memory_cache{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}) / max by (kind, project, service, env, host) (node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
           "instant": true,
           "format": "table"
         },
@@ -189,7 +189,7 @@
             "type": "prometheus",
             "uid": "urbex-prometheus"
           },
-          "expr": "node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}",
+          "expr": "max by (kind, project, service, env, host) (node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
           "instant": true,
           "format": "table"
         }
@@ -342,7 +342,7 @@
             "type": "prometheus",
             "uid": "urbex-prometheus"
           },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"} / node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
+          "expr": "100 * sum by (kind, project, service, env, host) (urbex_lxc_memory_usage_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"} - urbex_lxc_memory_cache{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"}) / max by (kind, project, service, env, host) (node_memory_MemTotal_bytes{kind=~\"$kind\", project=~\"$project\", env=~\"$env\", service=~\"$service\", host=~\"$host\"})",
           "legendFormat": "{{kind}} {{service}} {{project}} {{env}} ({{host}})"
         }
       ]

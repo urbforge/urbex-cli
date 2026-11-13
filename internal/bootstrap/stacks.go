@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -39,6 +41,10 @@ type PlatformStack struct {
 // sops-tools) that decrypts the Stack's secrets, if it has any, for the
 // duration of the command.
 const ComposeWrapper = "/opt/urbex/bin/urbex-compose [[COMPOSE_COMMAND]]"
+
+// StackFilesVar is the variable of a platform Stack's config.env that
+// holds the hash of the Stack's files.
+const StackFilesVar = "URBEX_STACK_FILES"
 
 // PlatformStacksDir is the GitOps repo's folder of the platform's Stacks.
 const PlatformStacksDir = "platform"
@@ -118,6 +124,7 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 	for _, st := range stacks {
 		dir := filepath.Join(gitopsRepoPath, PlatformStacksDir, st.Dir)
 		src := path.Join("stacks", st.Dir)
+		files := sha256.New()
 		err := fs.WalkDir(assets.Stacks, src, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
@@ -126,6 +133,8 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 			if err != nil {
 				return err
 			}
+			fmt.Fprintf(files, "%s %d\n", p, len(data))
+			files.Write(data)
 			dest := filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(p, src+"/")))
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 				return err
@@ -135,7 +144,15 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 		if err != nil {
 			return fmt.Errorf("writing the %s stack: %w", st.Dir, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte(renderEnv(st.Config)), 0o644); err != nil {
+		// The files' hash in config.env, which the containers that read
+		// the files also read: compose recreates them when a file
+		// changes. A container keeps a single bind-mounted file as it
+		// was, and Grafana reads its provisioning only when it starts.
+		config := map[string]string{StackFilesVar: hex.EncodeToString(files.Sum(nil))[:16]}
+		for k, v := range st.Config {
+			config[k] = v
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte(renderEnv(config)), 0o644); err != nil {
 			return err
 		}
 		if err := store.Write(ctx, filepath.Join(dir, "secrets.sops.env"), st.Secrets); err != nil {

@@ -9,6 +9,9 @@ services:
       urbex.kind: "platform"
       urbex.service: "prometheus"
     restart: unless-stopped
+    # Only for URBEX_STACK_FILES: a changed prometheus.yml recreates it.
+    env_file:
+      - config.env
     # The LXCs' telemetry agents push their metrics (remote write).
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -44,7 +47,8 @@ services:
       urbex.kind: "platform"
       urbex.service: "grafana"
     restart: unless-stopped
-    # GF_SECURITY_ADMIN_PASSWORD is a secret.
+    # GF_SECURITY_ADMIN_PASSWORD is a secret. URBEX_STACK_FILES, in
+    # config.env, recreates it when its provisioning changes.
     env_file:
       - config.env
       - path: ${URBEX_SECRETS_FILE:-secrets.env}

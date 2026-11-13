@@ -56,14 +56,31 @@ prometheus.relabel "containers" {
   // Docker by a scrape or more, so nothing waits on it (urbex-cli#43).
   rule {
     source_labels = ["__name__"]
-    regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes|health_state)"
+    regex         = "container_(cpu_usage_seconds_total|memory_working_set_bytes|health_state|memory_usage_bytes|memory_cache)"
     action        = "keep"
   }
-  // Only the containers: cAdvisor also reports the LXC's own cgroup,
-  // with no container name - the LXC's metrics already cover it.
+  // The LXC's own memory is its cgroup's, the root one cAdvisor reports
+  // (id "/", no container name): node_memory_MemAvailable_bytes can't be,
+  // because lxcfs answers /proc/meminfo with the cgroup of whoever reads
+  // it, here Alloy's own container. urbex_lxc_memory_usage_bytes minus
+  // urbex_lxc_memory_cache (the page cache) is what the LXC uses, as its
+  // free and Proxmox show it; node_memory_MemTotal_bytes is its limit.
   rule {
-    source_labels = ["name"]
-    regex         = ""
+    source_labels = ["__name__", "id"]
+    regex         = "container_memory_(usage_bytes|cache);/"
+    target_label  = "__name__"
+    replacement   = "urbex_lxc_memory_$1"
+  }
+  rule {
+    source_labels = ["__name__"]
+    regex         = "container_memory_(usage_bytes|cache)"
+    action        = "drop"
+  }
+  // Otherwise only the containers: the LXC's other metrics come from
+  // its node exporter.
+  rule {
+    source_labels = ["__name__", "name"]
+    regex         = "container_.*;"
     action        = "drop"
   }
   rule {

@@ -10,6 +10,8 @@ services:
     labels:
       urbex.kind: "agent"
       urbex.service: "alloy"
+      # config.alloy's hash: a new configuration recreates the container.
+      urbex.config: "{{ .ConfigHash }}"
 {{- if .Project }}
       urbex.project: "{{ .Project }}"
 {{- end }}
