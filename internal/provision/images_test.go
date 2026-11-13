@@ -273,7 +273,7 @@ func TestPromote_GivesProdTheDigestsStagingRuns(t *testing.T) {
 func TestCheckMajor_OnlyForApplicationsWithVolumes(t *testing.T) {
 	o := &Orchestrator{}
 	db := manifest.Service{Name: "db", Image: "postgres", Version: "17", Volumes: []manifest.Volume{{Name: "data", Path: "/data"}}}
-	if err := o.checkMajor(db, "17.6", "18", false); err == nil || !strings.Contains(err.Error(), "--allow-major") {
+	if err := o.checkMajor(context.Background(), "staging", db, "17.6", "18", false); err == nil || !strings.Contains(err.Error(), "--allow-major") {
 		t.Errorf("expected a new major refused without --allow-major, got %v", err)
 	}
 	for _, tc := range []struct {
@@ -286,7 +286,7 @@ func TestCheckMajor_OnlyForApplicationsWithVolumes(t *testing.T) {
 		{db, "", "18", false}, // nothing pinned yet: no data to keep
 		{manifest.Service{Name: "cache", Image: "valkey/valkey"}, "8", "9", false},
 	} {
-		if err := o.checkMajor(tc.svc, tc.from, tc.to, tc.allowMajor); err != nil {
+		if err := o.checkMajor(context.Background(), "staging", tc.svc, tc.from, tc.to, tc.allowMajor); err != nil {
 			t.Errorf("checkMajor(%s, %s -> %s, %v): %v", tc.svc.Name, tc.from, tc.to, tc.allowMajor, err)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/envrepo"
 	"github.com/urbforge/urbex-cli/internal/gitea"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
@@ -99,6 +100,11 @@ type fakeRollout struct {
 	releases    []gitea.Tag
 	repo        *envrepo.Repo
 	services    []manifest.Service
+	// pg are the postgres providers' fake servers, by service: one is
+	// made the first time it is asked for.
+	pg map[string]*fakePG
+	// deployOrder are the services of every Deploy, in order.
+	deployOrder []string
 }
 
 func (f *fakeRollout) SetupProject(ctx context.Context, project string, services []manifest.Service) error {
@@ -138,6 +144,7 @@ func (f *fakeRollout) Deploy(ctx context.Context, t rollout.Target) error {
 	f.deployed = nil
 	for _, svc := range t.Services {
 		f.deployed = append(f.deployed, svc.Name)
+		f.deployOrder = append(f.deployOrder, svc.Name)
 	}
 	return nil
 }
@@ -199,6 +206,16 @@ func (f *fakeRollout) RemoveEnv(ctx context.Context, t rollout.Target) error {
 func (f *fakeRollout) RemoveServers(ctx context.Context, t rollout.Target) error {
 	f.serversRemoved++
 	return nil
+}
+
+func (f *fakeRollout) Shell(project, env, service string) pgadmin.Shell {
+	if f.pg == nil {
+		f.pg = map[string]*fakePG{}
+	}
+	if f.pg[service] == nil {
+		f.pg[service] = newFakePG()
+	}
+	return f.pg[service]
 }
 
 func (f *fakeRollout) RemoveProject(ctx context.Context, project string, services []manifest.Service) error {

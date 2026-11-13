@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,7 +17,9 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/links"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
@@ -187,13 +191,14 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 	// environment, if its applications use each other.
 	deployed := map[string]rollout.Deployed{}
 	var reconciler rollout.ReconcilerStatus
+	var r *rollout.Rollout
 	if len(creds.MissingForPlatform()) == 0 {
 		ep, err := bootstrap.EndpointsFor(cfg)
 		if err != nil {
 			return err
 		}
 		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
-		r := newRollout(cfg, creds, ep, "", out)
+		r = newRollout(cfg, creds, ep, "", out)
 		list, err := r.Status(cmd.Context(), target, envrepo.Repo{Path: repoPath})
 		if err != nil {
 			fmt.Fprintf(out, "(could not query Komodo: %v)\n", err)
@@ -253,6 +258,10 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		lan, record := "-", ""
 		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
 			lan = provision.LANAddress(entry.IP, svc.Port)
+			if svc.Provides == manifest.InterfacePostgres {
+				// tcp, internal (ADR-0030)
+				lan = fmt.Sprintf("postgres://%s:%d", entry.IP, links.PostgresPort)
+			}
 			record = dns.Check(cmd.Context(), o.InternalHostname(env, svc), entry.IP)
 		}
 		public := ""
@@ -261,7 +270,66 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		}
 		fmt.Fprintf(out, "  %-16s %-28s %-48s %s\n", svc.Name, lan, public, record)
 	}
+	if r != nil {
+		printDatabases(cmd.Context(), out, r, m, env, deployed)
+	}
 	return nil
+}
+
+// printDatabases lists, for each postgres provider, the schemas and roles
+// it has and which application uses each - the unused ones too, which
+// 'urbex apply --delete-data' drops (ADR-0030). Never a password.
+func printDatabases(ctx context.Context, out io.Writer, r *rollout.Rollout, m *manifest.Manifest, env string, deployed map[string]rollout.Deployed) {
+	for _, svc := range m.Deployables() {
+		if svc.Provides != manifest.InterfacePostgres {
+			continue
+		}
+		fmt.Fprintf(out, "\nDatabase %s (postgres, database %s):\n", svc.Name, links.DatabaseName(m.Project))
+		if d, ok := deployed[svc.Name]; !ok || d.State != "running" {
+			fmt.Fprintln(out, "  (not running: its schemas can't be listed)")
+			continue
+		}
+		users := map[string]string{}
+		for _, app := range m.Services {
+			for _, name := range app.Uses {
+				if name == svc.Name {
+					users[links.RoleName(app.Name)] = app.Name
+				}
+			}
+		}
+		shell := r.Shell(m.Project, env, svc.Name)
+		spaces, err := pgadmin.Server{Shell: shell}.Spaces(ctx)
+		_ = shell.Close(context.WithoutCancel(ctx))
+		if err != nil {
+			fmt.Fprintf(out, "  (could not list its schemas: %v)\n", err)
+			continue
+		}
+		seen := map[string]bool{}
+		for _, s := range spaces {
+			seen[s.Role] = true
+			schema := s.Schema
+			if schema == "" {
+				schema = "-"
+			}
+			use := "unused: 'urbex apply " + env + " --delete-data' drops it"
+			if app, ok := users[s.Role]; ok {
+				use = "used by " + app
+			} else if s.Schema != s.Role {
+				use = "not made by urbex"
+			}
+			fmt.Fprintf(out, "  role %-16s schema %-16s %s\n", s.Role, schema, use)
+		}
+		var missing []string
+		for role := range users {
+			if !seen[role] {
+				missing = append(missing, role)
+			}
+		}
+		sort.Strings(missing)
+		for _, role := range missing {
+			fmt.Fprintf(out, "  role %-16s schema %-16s missing: 'urbex apply %s' makes it for %s\n", role, "-", env, users[role])
+		}
+	}
 }
 
 func presence(present bool) string {

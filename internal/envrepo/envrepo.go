@@ -517,6 +517,10 @@ type Wait struct {
 	Port      int
 	// Healthcheck is the provider's HTTP healthcheck path, "" for none.
 	Healthcheck string
+	// User and Database are, for a postgres provider, the application's
+	// role and the database: its wait logs in with them, and the
+	// password in the variable PasswordVar of its generated secrets.
+	User, Database, PasswordVar string
 }
 
 // writeEnvFiles lists the files compose loads, later ones winning: the
@@ -544,6 +548,13 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("  wait:\n")
 	b.WriteString("    image: " + WaitImage + "\n")
 	b.WriteString("    restart: \"no\"\n")
+	for _, w := range l.Waits {
+		if w.PasswordVar != "" {
+			// The password it logs in with.
+			writeEnvFiles(b, true)
+			break
+		}
+	}
 	b.WriteString("    command:\n")
 	b.WriteString("      - sh\n")
 	b.WriteString("      - -c\n")
@@ -580,6 +591,13 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("          echo \"wait: $$name is ready\"\n")
 	b.WriteString("        }\n")
 	for _, w := range l.Waits {
+		if w.Interface == manifest.InterfacePostgres && w.PasswordVar != "" {
+			// Ready once the application's own role logs in: the server
+			// takes connections, and apply has made its role.
+			fmt.Fprintf(b, "        name=%s host=%s; probe() { PGPASSWORD=\"$$%s\" PGCONNECT_TIMEOUT=2 psql -X -w -q -A -t -h \"$$1\" -p %d -U %s -d %s -c 'select 1' >/dev/null 2>&1; }; wait_for || exit 1\n",
+				w.Name, w.Host, w.PasswordVar, w.Port, w.User, w.Database)
+			continue
+		}
 		if w.Interface == manifest.InterfacePostgres {
 			fmt.Fprintf(b, "        name=%s host=%s; probe() { pg_isready -q -t 2 -h \"$$1\" -p %d; }; wait_for || exit 1\n", w.Name, w.Host, w.Port)
 			continue
