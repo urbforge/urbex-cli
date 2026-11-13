@@ -126,6 +126,9 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	if err := o.removeTemplate(ctx); err != nil {
 		return fmt.Errorf("removing the LXC template: %w", err)
 	}
+	if err := o.removeVMTemplate(ctx); err != nil {
+		return fmt.Errorf("removing the VM template: %w", err)
+	}
 
 	var addrs []string
 	for _, ip := range ips {

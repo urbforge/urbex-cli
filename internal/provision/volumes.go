@@ -64,7 +64,9 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 			names[v.Name] = true
 		}
 		hostname := Hostname(o.Manifest.Project, svc.Name, env)
-		if vmid := allocations[hostname].VMID; o.Volumes != nil && existing[vmid] {
+		// A VM keeps no volumes yet: its machine may be an LXC still, if
+		// the application has just switched, and the plan reads that one.
+		if vmid := allocations[hostname].VMID; o.Volumes != nil && existing[vmid] && !svc.IsVM() {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
 			if err != nil {
 				return nil, fmt.Errorf("reading the mount points of %s: %w", hostname, err)
@@ -116,7 +118,7 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 	var replaced, removed []string
 	for _, d := range deleted {
 		names := volumes[d.hostname]
-		if len(names) == 0 && d.vmid > 0 {
+		if len(names) == 0 && d.vmid > 0 && d.module == "module.service[" {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, d.vmid)
 			if err != nil {
 				return fmt.Errorf("reading the mount points of %s: %w", d.hostname, err)
@@ -151,16 +153,19 @@ func (o *Orchestrator) refuseReplacingVolumes(ctx context.Context, tfDir string,
 // deletion is an LXC a plan deletes: replaced when it creates it again.
 type deletion struct {
 	hostname string
-	vmid     int // from the plan's before; 0 if it has none
+	module   string // module.service[ or module.vm[
+	vmid     int    // from the plan's before; 0 if it has none
 	replaced bool
 	because  string // the attributes that replace it
 }
 
 // deletedContainers reads, in terraform show -json of a plan, the LXCs
-// the plan would delete, by hostname, replaced or not, with the
+// and VMs the plan would delete, by hostname, replaced or not, with the
 // attributes that make it replace them. The hostname is the key of the
-// module instance (module.service["<hostname>"]): the container itself
-// has no key.
+// module instance (module.service["<hostname>"] for an LXC,
+// module.vm["<hostname>"] for a VM): the machine itself has no key. A
+// machine the plan creates again under the other module - an
+// application switched between machine: lxc and vm - is replaced too.
 func deletedContainers(plan []byte) ([]deletion, error) {
 	if len(bytes.TrimSpace(plan)) == 0 {
 		return nil, nil
@@ -181,15 +186,27 @@ func deletedContainers(plan []byte) ([]deletion, error) {
 	if err := json.Unmarshal(plan, &p); err != nil {
 		return nil, fmt.Errorf("reading terraform plan: %w", err)
 	}
+	machines := map[string]string{
+		"proxmox_virtual_environment_container": "module.service[",
+		"proxmox_virtual_environment_vm":        "module.vm[",
+	}
 	var out []deletion
+	created := map[string]string{} // hostname => the module that creates it
 	for _, rc := range p.ResourceChanges {
-		key, ok := strings.CutPrefix(rc.ModuleAddress, "module.service[")
-		if rc.Type != "proxmox_virtual_environment_container" || !ok {
+		prefix, ok := machines[rc.Type]
+		if !ok {
+			continue
+		}
+		key, ok := strings.CutPrefix(rc.ModuleAddress, prefix)
+		if !ok {
 			continue
 		}
 		host, err := strconv.Unquote(strings.TrimSuffix(key, "]"))
 		if err != nil {
 			continue
+		}
+		if slices.Contains(rc.Change.Actions, "create") {
+			created[host] = prefix
 		}
 		if !slices.Contains(rc.Change.Actions, "delete") {
 			continue
@@ -208,7 +225,12 @@ func deletedContainers(plan []byte) ([]deletion, error) {
 		if because == "" {
 			because = "see terraform plan"
 		}
-		out = append(out, deletion{hostname: host, vmid: rc.Change.Before.VMID, replaced: slices.Contains(rc.Change.Actions, "create"), because: because})
+		out = append(out, deletion{hostname: host, module: prefix, vmid: rc.Change.Before.VMID, replaced: slices.Contains(rc.Change.Actions, "create"), because: because})
+	}
+	for i, d := range out {
+		if module, ok := created[d.hostname]; ok && module != d.module {
+			out[i].replaced, out[i].because = true, "machine"
+		}
 	}
 	return out, nil
 }

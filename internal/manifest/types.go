@@ -1,6 +1,10 @@
 package manifest
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/urbforge/urbex-cli/internal/sizeparse"
+)
 
 // Manifest is the typed form of a validated urbex.yaml. See
 // docs/reference/manifest.md in urbforge/urbex and
@@ -48,10 +52,14 @@ type Service struct {
 	ReadyWithin string `yaml:"ready_within,omitempty"`
 	// Public publishes the service on the internet, through the
 	// platform's Cloudflare Tunnel (ADR-0022).
-	Public    bool                         `yaml:"public,omitempty"`
-	Resources *Resources                   `yaml:"resources,omitempty"`
-	Env       map[string]map[string]string `yaml:"env,omitempty"`
-	Auth      *Auth                        `yaml:"auth,omitempty"`
+	Public    bool       `yaml:"public,omitempty"`
+	Resources *Resources `yaml:"resources,omitempty"`
+	// Machine is what the application runs on: MachineLXC (the default,
+	// "") or MachineVM, for what an unprivileged LXC can't do - keyctl,
+	// mount, fuse (ADR-0033).
+	Machine string                       `yaml:"machine,omitempty"`
+	Env     map[string]map[string]string `yaml:"env,omitempty"`
+	Auth    *Auth                        `yaml:"auth,omitempty"`
 	// Frontend is set on the service Deployables makes of a web
 	// frontend; never read from urbex.yaml.
 	Frontend *Frontend `yaml:"-"`
@@ -69,10 +77,39 @@ const (
 	DefaultDisk   = "5Gi"
 )
 
+// The machines an application runs on (ADR-0033).
+const (
+	MachineLXC = "lxc"
+	MachineVM  = "vm"
+	// DefaultVMDisk is a VM's disk when the application declares none:
+	// the cloud image's root plus Docker's images. MinVMMemory is the
+	// least memory a VM gets.
+	DefaultVMDisk = "8Gi"
+	MinVMMemory   = "1Gi"
+	// MinVMDisk is the VM template's disk: a linked clone can't be
+	// smaller.
+	MinVMDisk = "5Gi"
+)
+
+// IsVM reports whether the application runs in a VM rather than an LXC.
+func (s Service) IsVM() bool { return s.Machine == MachineVM }
+
+// MachineKind is "VM" or "LXC", for messages.
+func (s Service) MachineKind() string {
+	if s.IsVM() {
+		return "VM"
+	}
+	return "LXC"
+}
+
 // ResourcesOrDefault returns s.Resources with defaults filled in for any
-// zero-value field, without mutating s.
+// zero-value field, without mutating s. A VM's disk defaults to
+// DefaultVMDisk.
 func (s Service) ResourcesOrDefault() Resources {
 	r := Resources{CPU: DefaultCPU, Memory: DefaultMemory, Disk: DefaultDisk}
+	if s.IsVM() {
+		r.Disk = DefaultVMDisk
+	}
 	if s.Resources == nil {
 		return r
 	}
@@ -305,6 +342,9 @@ func (m *Manifest) Unsupported() []string {
 		if svc.Port == 0 && svc.Healthcheck != "" {
 			out = append(out, fmt.Sprintf("services %s: healthcheck needs a port", svc.Name))
 		}
+		if svc.IsVM() {
+			out = append(out, svc.vmErrors()...)
+		}
 	}
 	return append(out, m.linkErrors()...)
 }
@@ -315,6 +355,33 @@ func (m *Manifest) Deployables() []Service {
 	out := append([]Service{}, m.Services...)
 	if m.Frontend != nil && m.Frontend.Type == "web" {
 		out = append(out, Service{Name: WebService, Runtime: WebRuntime, Frontend: m.Frontend})
+	}
+	return out
+}
+
+// vmErrors is what an application in a VM declares that a VM can't
+// have, or doesn't have yet.
+func (s Service) vmErrors() []string {
+	var out []string
+	if s.Resources != nil && s.Resources.Memory != "" {
+		mb, err := sizeparse.MB(s.Resources.Memory)
+		if minMB, _ := sizeparse.MB(MinVMMemory); err == nil && mb < minMB {
+			out = append(out, fmt.Sprintf("services %s: a VM needs at least %s of memory, not %s", s.Name, MinVMMemory, s.Resources.Memory))
+		}
+	}
+	if s.Resources != nil && s.Resources.Disk != "" {
+		gb, err := sizeparse.GB(s.Resources.Disk)
+		if minGB, _ := sizeparse.GB(MinVMDisk); err == nil && gb < minGB {
+			out = append(out, fmt.Sprintf("services %s: a VM needs a disk of at least %s, not %s", s.Name, MinVMDisk, s.Resources.Disk))
+		}
+	}
+	if len(s.NamedVolumes()) > 0 {
+		// Disks of the VM, next (ADR-0033).
+		out = append(out, fmt.Sprintf("services %s: named volumes are not available in a VM yet: use machine: lxc", s.Name))
+	}
+	if len(s.Shares()) > 0 {
+		// The VM mounts a share itself, over NFS or SMB: urbforge/urbex-cli#83.
+		out = append(out, fmt.Sprintf("services %s: shares are not available in a VM yet (urbforge/urbex-cli#83): use machine: lxc", s.Name))
 	}
 	return out
 }

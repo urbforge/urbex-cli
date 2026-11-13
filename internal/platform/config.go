@@ -118,6 +118,10 @@ type ProxmoxConfig struct {
 	// hosts. Proxmox only lets root@pam set it, so it is off unless set to
 	// true: the default works with a non-root, pool-scoped token.
 	Keyctl *bool `yaml:"keyctl,omitempty"`
+	// VMImage is the Debian 13 cloud image, on a storage with the import
+	// content type, that urbex's VM template is built from; required
+	// only once an application asks for a VM (ADR-0033).
+	VMImage string `yaml:"vmImage,omitempty"`
 }
 
 // KeyctlEnabled reports whether LXCs get the keyctl feature (default false).
