@@ -1043,6 +1043,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		fmt.Fprintf(o.Out, "Nothing to destroy: no services of %s (%s) have been applied.\n", o.Manifest.Project, opts.Env)
 		return nil
 	}
+	o.Progress.Begin(PhaseDestroyCheck)
 	if err := o.checkDeleteData(ctx, opts, toDestroy, allocations); err != nil {
 		return err
 	}
@@ -1059,11 +1060,13 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		}
 	}
 	repo := envrepo.Repo{Path: opts.GitOpsRepoPath}
+	o.Progress.Begin(PhaseDestroyStacks)
 	if o.Rollout != nil {
 		if err := o.Rollout.RemoveEnv(ctx, stacks); err != nil {
 			return fmt.Errorf("removing komodo stacks: %w", err)
 		}
 	}
+	o.Progress.Begin(PhaseDestroyUnlink)
 	if err := o.unpublish(ctx, opts.Env, toDestroy); err != nil {
 		return fmt.Errorf("removing from cloudflare: %w", err)
 	}
@@ -1077,6 +1080,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("removing the keycloak realm: %w", err)
 	}
 
+	o.Progress.Begin(PhaseDestroyMachines)
 	if err := materialize.Assets(opts.GitOpsRepoPath); err != nil {
 		return fmt.Errorf("materializing base assets: %w", err)
 	}
@@ -1108,6 +1112,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "destroy", env); err != nil {
 		return err
 	}
+	o.Progress.Begin(PhaseDestroyServers)
 	if o.Rollout != nil {
 		if err := o.Rollout.RemoveServers(ctx, target); err != nil {
 			return fmt.Errorf("removing komodo servers: %w", err)
@@ -1131,6 +1136,7 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		}
 	}
 
+	o.Progress.Begin(PhaseDestroyGitOps)
 	// The environment's folder goes last, right before the commit: the
 	// release Action can still update it (a push to main) until then, and
 	// a change to a file we delete would conflict when pulling. Its Stacks

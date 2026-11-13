@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/urbforge/urbex-cli/internal/provision"
+	"github.com/urbforge/urbex-cli/internal/runner"
 )
 
 func newDestroyCmd() *cobra.Command {
 	var manifestPath string
 	var gitopsRepoPath string
 	var deleteData bool
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "destroy <env>",
@@ -33,28 +37,39 @@ Only destroys project-service infrastructure - base/platform services
 created by 'urbex bootstrap' are out of scope. See docs/reference/cli.md
 in urbforge/urbex.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			repoPath, err := resolveGitOpsRepoPath(gitopsRepoPath)
 			if err != nil {
 				return err
 			}
+			ev, err := events.begin(cmd, "destroy")
+			if err != nil {
+				return err
+			}
+			defer func() { ev.close(err) }()
 
 			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, "", true)
 			if err != nil {
 				return err
 			}
 
-			return o.Destroy(cmd.Context(), provision.Options{
+			tracker := startProgress(cmd, "destroy", fmt.Sprintf("urbex destroy %s (%s)", args[0], o.Manifest.Project), provision.DestroyPhases(), ev)
+			o.Progress = tracker
+			o.Runner = runner.ExecRunner{Stdout: tracker.Watch(cmd.OutOrStdout()), Stderr: cmd.ErrOrStderr()}
+			err = o.Destroy(cmd.Context(), provision.Options{
 				Env:            args[0],
 				GitOpsRepoPath: repoPath,
 				DeleteData:     deleteData,
 			})
+			tracker.Finish(err)
+			return err
 		},
 	}
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the named volumes of the environment's applications with their machines")
+	events.Register(cmd)
 
 	return cmd
 }

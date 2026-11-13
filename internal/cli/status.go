@@ -29,6 +29,7 @@ func newStatusCmd() *cobra.Command {
 	var gitopsRepoPath string
 	var showProgressFlag, watch bool
 	var output outputFlag
+	var events eventsFlag
 
 	cmd := &cobra.Command{
 		Use:   "status [env]",
@@ -61,13 +62,19 @@ With --progress, shows how the latest 'urbex bootstrap' or 'urbex apply'
 run on this machine is getting on - from another terminal while it runs,
 or afterwards: each phase with the time it took, the one running, those
 left with an estimate (from the earlier runs, or the usual times), and
-the time left. --watch refreshes it until the run ends. See
+the time left. --watch refreshes it until the run ends. With --events
+json it prints the run's events as JSON lines instead, from the first,
+and with --watch follows it until it ends: how a program follows a run
+again after a disconnect. See
 docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if showProgressFlag || watch {
 				if len(args) > 0 {
 					return fmt.Errorf("--progress shows the latest bootstrap or apply: it takes no environment")
+				}
+				if events.value == "json" {
+					return followEvents(cmd, cmd.OutOrStdout(), watch, time.Second)
 				}
 				if output.JSON() {
 					return fmt.Errorf("--output json doesn't apply to --progress")
@@ -130,6 +137,7 @@ docs/reference/cli.md in urbforge/urbex.`,
 	cmd.Flags().BoolVar(&showProgressFlag, "progress", false, "show how the latest bootstrap or apply is getting on: phases, times, what is left")
 	cmd.Flags().BoolVar(&watch, "watch", false, "with --progress: refresh every 2 seconds until the run ends")
 	output.Register(cmd)
+	cmd.Flags().Var(&events, "events", "with --progress: json prints the latest run's events as JSON lines (--watch follows them)")
 
 	return cmd
 }
