@@ -12,6 +12,97 @@
   roles:
     - common
 
+# In a VM a named volume is a disk with the volume's serial (ADR-0033),
+# found by that serial whatever its order - lsblk reads it; udev's
+# /dev/disk/by-id names a disk plugged in while the VM runs after its
+# drive, not its serial. It is formatted ext4 the first time, mounted by
+# a systemd unit by its filesystem's UUID where an LXC mounts it
+# (/srv/volumes/<application>/<name>), before Docker starts, and grown
+# when urbex grew the disk. Nothing is done on a host without
+# urbex_vm_volumes: an LXC, or a VM without volumes.
+- name: Mount the VMs' named volumes
+  hosts: all
+  become: true
+  tasks:
+    - name: Find each volume's disk, formatting a new one
+      ansible.builtin.shell: |
+        for i in $(seq 1 30); do
+          dev=$(lsblk -dnpo NAME,SERIAL | awk '$2 == "{{ item.serial }}" {print $1}')
+          [ -n "$dev" ] && break
+          sleep 2
+        done
+        [ -n "$dev" ] || { echo "no disk with serial {{ item.serial }}" >&2; exit 1; }
+        if [ -z "$(blkid -o value -s TYPE "$dev")" ]; then mkfs.ext4 -q "$dev" && echo formatted >&2; fi
+        blkid -o value -s UUID "$dev"
+      args:
+        executable: /bin/bash
+      loop: "{{ urbex_vm_volumes | default([]) }}"
+      register: urbex_vm_disks
+      changed_when: "'formatted' in urbex_vm_disks.stderr"
+
+    - name: Name each volume's mount unit
+      ansible.builtin.command: systemd-escape --path --suffix=mount {{ item.path }}
+      loop: "{{ urbex_vm_volumes | default([]) }}"
+      register: urbex_mount_units
+      changed_when: false
+
+    - name: Write the mount units
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.0.stdout }}"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=urbex named volume {{ item.0.item.path }} (disk {{ item.0.item.serial }})
+          Before=docker.service
+
+          [Mount]
+          What=/dev/disk/by-uuid/{{ item.1.stdout }}
+          Where={{ item.0.item.path }}
+          Type=ext4
+          Options=defaults,discard
+
+          [Install]
+          WantedBy=multi-user.target
+      loop: "{{ urbex_mount_units.results | zip(urbex_vm_disks.results) | list }}"
+
+    - name: Create Docker's drop-in folder
+      ansible.builtin.file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        mode: "0755"
+      when: urbex_vm_volumes | default([]) | length > 0
+
+    - name: Have Docker wait for the volumes at boot
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/docker.service.d/urbex-volumes.conf
+        mode: "0644"
+        content: |
+          [Unit]
+          RequiresMountsFor={{ urbex_vm_volumes | map(attribute='path') | join(' ') }}
+      when: urbex_vm_volumes | default([]) | length > 0
+
+    - name: Mount them
+      ansible.builtin.systemd:
+        name: "{{ item.stdout }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop: "{{ urbex_mount_units.results }}"
+
+    # The kernel sees a grown disk after a rescan; resize2fs grows the
+    # mounted filesystem online, and does nothing when it fills the disk.
+    - name: Grow each volume's filesystem to its disk
+      ansible.builtin.shell: |
+        dev=$(readlink -f /dev/disk/by-uuid/{{ item.stdout }})
+        disk=$(lsblk -dnpo PKNAME "$dev"); [ -n "$disk" ] || disk=$dev
+        echo 1 > /sys/class/block/$(basename "$disk")/device/rescan
+        resize2fs "$dev" 2>&1
+      args:
+        executable: /bin/bash
+      loop: "{{ urbex_vm_disks.results }}"
+      register: urbex_grown
+      changed_when: "'is now' in urbex_grown.stdout"
+
 # A named volume is a Docker volume on the folder of a mount point. Docker
 # fills it with the image's files, and their owners, only when the folder
 # is empty, and a mount point formatted ext4 has a lost+found. Nothing is

@@ -25,7 +25,7 @@ Builds and release webhook go too; its repo and images stay on Gitea.
 Services that were never applied are skipped; if none were, this is a
 no-op.
 
-An application's named volumes go with its LXC: an environment that has
+An application's named volumes go with its machine: an environment that has
 any is destroyed only with --delete-data, and urbex names them
 otherwise. Shares are never touched.
 
@@ -54,7 +54,7 @@ in urbforge/urbex.`,
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
-	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the named volumes of the environment's applications with their LXCs")
+	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the named volumes of the environment's applications with their machines")
 
 	return cmd
 }

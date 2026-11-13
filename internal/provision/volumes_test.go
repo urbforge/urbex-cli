@@ -304,7 +304,7 @@ func TestApply_RefusesRemovingAnApplicationWithVolumes(t *testing.T) {
 	if strings.Contains(fmt.Sprint(err), "would delete") {
 		t.Fatalf("--delete-data should let the removal through, got %v", err)
 	}
-	if !strings.Contains(out.String(), "Deleting "+host+" (volumes vault/data) with their LXCs.") {
+	if !strings.Contains(out.String(), "Deleting "+host+" (volumes vault/data) with their machines.") {
 		t.Errorf("expected the deletion named:\n%s", out)
 	}
 	if !slices.Contains(ran, "apply") {
@@ -338,7 +338,7 @@ func TestDestroy_NamedVolumesNeedDeleteData(t *testing.T) {
 	if err := o.Destroy(ctx, Options{Env: "prod", GitOpsRepoPath: dir, DeleteData: true}); err != nil {
 		t.Fatalf("Destroy --delete-data: %v", err)
 	}
-	if !strings.Contains(out.String(), "Deleting the named volumes of media (prod) with their LXCs: vault/data, vault/old.") {
+	if !strings.Contains(out.String(), "Deleting the named volumes of media (prod) with their machines: vault/data, vault/old.") {
 		t.Errorf("expected the deletion named:\n%s", out)
 	}
 }
