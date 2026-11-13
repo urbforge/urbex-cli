@@ -37,6 +37,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/semver"
 	platformassets "github.com/urbforge/urbex-cli/platform"
 )
@@ -76,6 +77,7 @@ type Komodo interface {
 	EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error
 	ListStacks(ctx context.Context) (map[string]komodo.StackStatus, error)
 	DeployStack(ctx context.Context, name string) (*komodo.Update, error)
+	Shell(stack, service, name string) *komodo.StackShell
 	ExplainFailure(ctx context.Context, u *komodo.Update) string
 	RunProcedure(ctx context.Context, name string) error
 	RunAction(ctx context.Context, name string, args map[string]any) (*komodo.Update, error)
@@ -622,6 +624,17 @@ func (r *Rollout) Deploy(ctx context.Context, t Target) error {
 		}
 	}
 	return nil
+}
+
+// ShellName is the Komodo Terminal urbex opens in an application's
+// container.
+const ShellName = "urbex"
+
+// Shell is a shell in the container of the application service of
+// project in env, through a Komodo Terminal (ADR-0030: how urbex talks to
+// a PostgreSQL).
+func (r *Rollout) Shell(project, env, service string) pgadmin.Shell {
+	return r.Komodo.Shell(ResourceName(project, service, env), "app", ShellName)
 }
 
 // Reconcile makes sure Komodo acts on a push to the GitOps repo that was

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
+	"github.com/urbforge/urbex-cli/internal/links"
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
@@ -280,6 +283,7 @@ type envView struct {
 	Services   []envServiceView  `json:"services"`
 	Reconciler *reconcilerView   `json:"reconciler,omitempty"`
 	Endpoints  []envEndpointView `json:"endpoints"`
+	Databases  []databaseView    `json:"databases,omitempty"`
 	Invalid    []string          `json:"invalid,omitempty"`
 	Warnings   []string          `json:"warnings,omitempty"`
 	deployed   map[string]bool   // services Komodo reported on
@@ -306,6 +310,28 @@ type envEndpointView struct {
 	LAN     string     `json:"lan,omitempty"`
 	Public  string     `json:"public,omitempty"`
 	DNS     *dnsRecord `json:"dns,omitempty"`
+}
+
+// databaseView is a postgres provider of the environment and the roles
+// and schemas it has (ADR-0030). State is listed, not-running (its
+// schemas can't be listed) or error (with Error). Never a password.
+type databaseView struct {
+	Service  string             `json:"service"`
+	Database string             `json:"database"`
+	State    string             `json:"state"`
+	Error    string             `json:"error,omitempty"`
+	Roles    []databaseRoleView `json:"roles,omitempty"`
+}
+
+// databaseRoleView is a role on a postgres provider and its schema of
+// the same name ("" for none). Use is used (by UsedBy), unused ('urbex
+// apply --delete-data' drops it), missing (the next apply makes it for
+// UsedBy) or foreign (not made by urbex).
+type databaseRoleView struct {
+	Role   string `json:"role"`
+	Schema string `json:"schema,omitempty"`
+	Use    string `json:"use"`
+	UsedBy string `json:"usedBy,omitempty"`
 }
 
 // reconcilerView is what the reconciler did lately, for an environment
@@ -369,13 +395,14 @@ func projectStatus(ctx context.Context, warn func(string), client status.Proxmox
 	// environment, if its applications use each other.
 	deployed := map[string]rollout.Deployed{}
 	st := &envView{Project: m.Project, Env: env, deployed: map[string]bool{}}
+	var r *rollout.Rollout
 	if len(creds.MissingForPlatform()) == 0 {
 		ep, err := bootstrap.EndpointsFor(cfg)
 		if err != nil {
 			return nil, err
 		}
 		target := rollout.Target{Project: m.Project, Env: env, Services: m.Deployables()}
-		r := newRollout(cfg, creds, ep, "", io.Discard)
+		r = newRollout(cfg, creds, ep, "", io.Discard)
 		list, err := r.Status(ctx, target, envrepo.Repo{Path: repoPath})
 		if err != nil {
 			warn(fmt.Sprintf("could not query Komodo: %v", err))
@@ -406,6 +433,9 @@ func projectStatus(ctx context.Context, warn func(string), client status.Proxmox
 		}
 	}
 	st.Reconciler = newReconcilerView(st.reconciler, time.Now())
+	if r != nil {
+		st.Databases = databases(ctx, r, m, env, deployed)
+	}
 
 	// Where each service is reached: its LXC on the LAN and, if it is
 	// public or a web frontend, its HTTPS address.
@@ -415,6 +445,10 @@ func projectStatus(ctx context.Context, warn func(string), client status.Proxmox
 		e := envEndpointView{Service: svc.Name}
 		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
 			e.LAN = provision.LANAddress(entry.IP, svc.Port)
+			if svc.Provides == manifest.InterfacePostgres {
+				// tcp, internal (ADR-0030)
+				e.LAN = fmt.Sprintf("postgres://%s:%d", entry.IP, links.PostgresPort)
+			}
 			e.DNS = dns.Lookup(ctx, o.InternalHostname(env, svc), entry.IP)
 		}
 		if host := o.PublicHostname(env, svc); host != "" && (svc.Public || svc.IsWeb()) {
@@ -463,7 +497,98 @@ func runProjectStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxLi
 		}
 		fmt.Fprintf(out, "  %-16s %-28s %-48s %s\n", e.Service, lan, e.Public, e.DNS)
 	}
+	printDatabases(out, st.Env, st.Databases)
 	return nil
+}
+
+// databases lists, for each postgres provider, the schemas and roles it
+// has and which application uses each - the unused ones too, which
+// 'urbex apply --delete-data' drops (ADR-0030).
+func databases(ctx context.Context, r *rollout.Rollout, m *manifest.Manifest, env string, deployed map[string]rollout.Deployed) []databaseView {
+	var out []databaseView
+	for _, svc := range m.Deployables() {
+		if svc.Provides != manifest.InterfacePostgres {
+			continue
+		}
+		v := databaseView{Service: svc.Name, Database: links.DatabaseName(m.Project), State: "listed"}
+		if d, ok := deployed[svc.Name]; !ok || d.State != "running" {
+			v.State = "not-running"
+			out = append(out, v)
+			continue
+		}
+		users := map[string]string{}
+		for _, app := range m.Services {
+			for _, name := range app.Uses {
+				if name == svc.Name {
+					users[links.RoleName(app.Name)] = app.Name
+				}
+			}
+		}
+		shell := r.Shell(m.Project, env, svc.Name)
+		spaces, err := pgadmin.Server{Shell: shell}.Spaces(ctx)
+		_ = shell.Close(context.WithoutCancel(ctx))
+		if err != nil {
+			v.State, v.Error = "error", err.Error()
+			out = append(out, v)
+			continue
+		}
+		seen := map[string]bool{}
+		for _, s := range spaces {
+			seen[s.Role] = true
+			role := databaseRoleView{Role: s.Role, Schema: s.Schema, Use: "unused"}
+			if app, ok := users[s.Role]; ok {
+				role.Use, role.UsedBy = "used", app
+			} else if s.Schema != s.Role {
+				role.Use = "foreign"
+			}
+			v.Roles = append(v.Roles, role)
+		}
+		var missing []string
+		for role := range users {
+			if !seen[role] {
+				missing = append(missing, role)
+			}
+		}
+		sort.Strings(missing)
+		for _, role := range missing {
+			v.Roles = append(v.Roles, databaseRoleView{Role: role, Use: "missing", UsedBy: users[role]})
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// printDatabases prints databases' views. Never a password.
+func printDatabases(out io.Writer, env string, dbs []databaseView) {
+	for _, db := range dbs {
+		fmt.Fprintf(out, "\nDatabase %s (postgres, database %s):\n", db.Service, db.Database)
+		switch db.State {
+		case "not-running":
+			fmt.Fprintln(out, "  (not running: its schemas can't be listed)")
+			continue
+		case "error":
+			fmt.Fprintf(out, "  (could not list its schemas: %s)\n", db.Error)
+			continue
+		}
+		for _, r := range db.Roles {
+			schema := r.Schema
+			if schema == "" {
+				schema = "-"
+			}
+			var use string
+			switch r.Use {
+			case "used":
+				use = "used by " + r.UsedBy
+			case "unused":
+				use = "unused: 'urbex apply " + env + " --delete-data' drops it"
+			case "missing":
+				use = "missing: 'urbex apply " + env + "' makes it for " + r.UsedBy
+			default:
+				use = "not made by urbex"
+			}
+			fmt.Fprintf(out, "  role %-16s schema %-16s %s\n", r.Role, schema, use)
+		}
+	}
 }
 
 // versionLabel is a version as status prints it: "none" when the

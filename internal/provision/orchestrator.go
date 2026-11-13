@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
+	"github.com/urbforge/urbex-cli/internal/links"
 	"github.com/urbforge/urbex-cli/internal/progress"
 	"io"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
 	"github.com/urbforge/urbex-cli/internal/netalloc"
+	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/rollout"
 	"github.com/urbforge/urbex-cli/internal/runner"
@@ -57,6 +59,7 @@ type Rollouter interface {
 	RemoveEnv(ctx context.Context, t rollout.Target) error
 	RemoveServers(ctx context.Context, t rollout.Target) error
 	RemoveProject(ctx context.Context, project string, services []manifest.Service) error
+	Shell(project, env, service string) pgadmin.Shell
 }
 
 // ImageResolver resolves a published image's tag to the digest it points
@@ -124,6 +127,12 @@ type Orchestrator struct {
 	// skipped are the applications apply leaves out of Komodo because
 	// what they keep isn't mounted yet.
 	skipped map[string]bool
+	// linkPlan is what linkedTarget worked out: the applications'
+	// generated variables, their passwords among them.
+	linkPlan links.Plan
+	// databasesDone says the applications' roles and schemas are made
+	// already in this command.
+	databasesDone bool
 	// Progress records apply's phases for 'urbex status --progress'; nil
 	// records nothing.
 	Progress *progress.Tracker
@@ -317,6 +326,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		if err := o.sync(ctx, opts, "keycloak test users of"); err != nil {
 			return err
 		}
+	}
+
+	// The PostgreSQL servers first, then their applications' roles and
+	// schemas, which the applications' waits log in with.
+	if err := o.deployDatabases(ctx, opts.Env, opts.DeleteData); err != nil {
+		return err
 	}
 
 	// The applications from images are pinned by now: whether there is
@@ -605,7 +620,7 @@ func (o *Orchestrator) deployImages(ctx context.Context, opts Options, repo envr
 			return err
 		}
 		current, _ := imageref.ParsePinned(st.Version)
-		if err := o.checkMajor(svc, current.Tag, tag, opts.AllowMajor); err != nil {
+		if err := o.checkMajor(ctx, opts.Env, svc, current.Tag, tag, opts.AllowMajor); err != nil {
 			return err
 		}
 		pinned, err := o.resolve(ctx, svc, tag)
@@ -637,10 +652,15 @@ func (o *Orchestrator) deployImages(ctx context.Context, opts Options, repo envr
 
 // checkMajor refuses a new major version of an application with volumes
 // without allowMajor: its data usually needs a dump and restore that
-// urbex doesn't do (ADR-0028).
-func (o *Orchestrator) checkMajor(svc manifest.Service, from, to string, allowMajor bool) error {
-	if from == "" || len(svc.Volumes) == 0 || allowMajor || imageref.SameMajor(from, to) {
+// urbex doesn't do (ADR-0028). A PostgreSQL's is refused even with it
+// unless its data directory is empty, or already the new major's
+// (ADR-0030).
+func (o *Orchestrator) checkMajor(ctx context.Context, env string, svc manifest.Service, from, to string, allowMajor bool) error {
+	if from == "" || len(svc.Volumes) == 0 || imageref.SameMajor(from, to) {
 		return nil
+	}
+	if allowMajor {
+		return o.checkDataVersion(ctx, env, svc, to)
 	}
 	return fmt.Errorf("%s would go from %s to %s, a new major version, and has volumes: its data may need a dump and restore first - pass --allow-major once that is done", svc.Name, from, to)
 }
@@ -737,7 +757,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allow
 		if svc.FromImage() {
 			from, _ := imageref.ParsePinned(prod[svc.Name].Version)
 			to, _ := imageref.ParsePinned(version)
-			if err := o.checkMajor(svc, from.Tag, to.Tag, allowMajor); err != nil {
+			if err := o.checkMajor(ctx, "prod", svc, from.Tag, to.Tag, allowMajor); err != nil {
 				return false, err
 			}
 		} else if want, err = releaseOf(version, releases); err != nil {
@@ -881,6 +901,11 @@ func (o *Orchestrator) waitAndReportServices(ctx context.Context, opts Options, 
 	if len(target.Services) == 0 {
 		// Every application is waiting for its shares: nothing to wait for.
 		return nil
+	}
+	// A password regenerated for a lost one is set on its role here, for
+	// the commands that deploy without apply.
+	if err := o.ensureDatabases(ctx, opts.Env, false); err != nil {
+		return err
 	}
 	fmt.Fprintf(o.Out, "Waiting for Komodo to deploy %s (%s) from the GitOps repo...\n", o.Manifest.Project, opts.Env)
 	deployed, err := o.Rollout.WaitDeployed(ctx, target, envrepo.Repo{Path: opts.GitOpsRepoPath})

@@ -41,6 +41,7 @@ func (o *Orchestrator) linkedTarget(ctx context.Context, env string, repo envrep
 	if err != nil {
 		return t, err
 	}
+	o.linkPlan = plan
 	t.Links = map[string]*envrepo.Links{}
 	for _, svc := range o.Manifest.Services {
 		if _, ok := plan.Plain[svc.Name]; !ok {
@@ -51,7 +52,11 @@ func (o *Orchestrator) linkedTarget(ctx context.Context, env string, repo envrep
 			provider, _ := o.Manifest.Service(name)
 			w := envrepo.Wait{Name: name, Interface: provider.Provides, Host: o.InternalHostname(env, provider), Port: provider.Port, Healthcheck: provider.Healthcheck}
 			if provider.Provides == manifest.InterfacePostgres {
+				// Its wait logs in with the application's own role: the
+				// role exists, and has this password (ADR-0030).
 				w.Port = links.PostgresPort
+				w.User, w.Database = links.RoleName(svc.Name), links.DatabaseName(o.Manifest.Project)
+				w.PasswordVar = links.PasswordKey(name)
 			}
 			l.Waits = append(l.Waits, w)
 		}

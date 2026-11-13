@@ -117,6 +117,8 @@ func (f *fakeKomodo) EnsureStack(ctx context.Context, name string, cfg komodo.St
 func (f *fakeKomodo) ListStacks(ctx context.Context) (map[string]komodo.StackStatus, error) {
 	return f.status, nil
 }
+func (f *fakeKomodo) Shell(stack, service, name string) *komodo.StackShell { return nil }
+
 func (f *fakeKomodo) DeployStack(ctx context.Context, name string) (*komodo.Update, error) {
 	f.deployed = append(f.deployed, name)
 	return &komodo.Update{Status: "Complete", Success: !f.deployFail}, nil
