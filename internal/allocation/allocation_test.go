@@ -1,7 +1,9 @@
 package allocation
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -11,11 +13,11 @@ func TestAllocate_IsIdempotent(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	first, err := l.Allocate("my-app-api-staging", "192.168.1.0/24")
+	first, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
-	second, err := l.Allocate("my-app-api-staging", "192.168.1.0/24")
+	second, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
@@ -34,11 +36,11 @@ func TestAllocate_DistinctHostnamesGetDistinctSlots(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	a, err := l.Allocate("my-app-api-staging", "192.168.1.0/24")
+	a, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
-	b, err := l.Allocate("my-app-worker-staging", "192.168.1.0/24")
+	b, err := l.Allocate("my-app-worker-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestSaveAndLoad_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := l.Allocate("my-app-api-staging", "192.168.1.0/24"); err != nil {
+	if _, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1"); err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
 	if err := l.Save(path); err != nil {
@@ -70,7 +72,7 @@ func TestSaveAndLoad_RoundTrips(t *testing.T) {
 		t.Fatalf("Load (reloaded): %v", err)
 	}
 
-	got, err := reloaded.Allocate("my-app-api-staging", "192.168.1.0/24")
+	got, err := reloaded.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate (reloaded): %v", err)
 	}
@@ -92,7 +94,7 @@ func TestLookup(t *testing.T) {
 		t.Fatal("expected Lookup to report not-found before any Allocate call")
 	}
 
-	want, err := l.Allocate("my-app-api-staging", "192.168.1.0/24")
+	want, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1")
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := l.Allocate("my-app-api-staging", "192.168.1.0/24"); err != nil {
+	if _, err := l.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1"); err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
 
@@ -135,5 +137,72 @@ func TestLoad_MissingFileReturnsDefaults(t *testing.T) {
 	}
 	if len(l.Entries) != 0 {
 		t.Errorf("expected no entries, got %v", l.Entries)
+	}
+}
+
+func TestAllocate_ReusesAFreedAddress(t *testing.T) {
+	l, err := Load(filepath.Join(t.TempDir(), "allocations.json"), 9100, 210)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	a, _ := l.Allocate("a", "192.168.1.0/24", "192.168.1.1")
+	if _, err := l.Allocate("b", "192.168.1.0/24", "192.168.1.1"); err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	l.Remove("a")
+	c, err := l.Allocate("c", "192.168.1.0/24", "192.168.1.1")
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	if c.IP != a.IP {
+		t.Errorf("c got %s, want a's freed %s", c.IP, a.IP)
+	}
+	if c.VMID == a.VMID {
+		t.Errorf("c reused a's VMID %d: VMIDs only go forwards", c.VMID)
+	}
+}
+
+func TestAllocate_NeverTheBroadcastNetworkOrGateway(t *testing.T) {
+	// A /29: offsets 1..6 are hosts, 0 the network, 7 the broadcast.
+	l, err := Load(filepath.Join(t.TempDir(), "allocations.json"), 9100, 0)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var got []string
+	for _, h := range []string{"h1", "h2", "h3", "h4", "h5"} {
+		e, err := l.Allocate(h, "10.0.0.8/29", "10.0.0.9")
+		if err != nil {
+			t.Fatalf("Allocate %s: %v", h, err)
+		}
+		got = append(got, e.IP)
+	}
+	want := []string{"10.0.0.10", "10.0.0.11", "10.0.0.12", "10.0.0.13", "10.0.0.14"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	_, err = l.Allocate("h6", "10.0.0.8/29", "10.0.0.9")
+	if err == nil || !strings.Contains(err.Error(), "no free address") || !strings.Contains(err.Error(), "urbex destroy") {
+		t.Errorf("a full network should say so and what frees addresses, got %v", err)
+	}
+}
+
+// A ledger written before addresses were reused: its nextIpOffset is past
+// the network's end, and an entry sits on the broadcast.
+func TestAllocate_OldLedgerPastTheEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "allocations.json")
+	old := `{"entries":{"web":{"vmid":9145,"ip":"192.168.1.255"},"api":{"vmid":9144,"ip":"192.168.1.210"}},"nextVmid":9146,"nextIpOffset":256}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Load(path, 9100, 210)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, err := l.Allocate("new", "192.168.1.0/24", "192.168.1.1")
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	if e.IP != "192.168.1.211" || e.VMID != 9146 {
+		t.Errorf("got %+v, want 192.168.1.211 and VMID 9146", e)
 	}
 }
