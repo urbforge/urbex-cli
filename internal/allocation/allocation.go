@@ -10,6 +10,7 @@ package allocation
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,11 +24,17 @@ type Entry struct {
 	IP   string `json:"ip"`
 }
 
-// Ledger tracks assignments and the next values to hand out.
+// Ledger tracks assignments and the next VMID to hand out.
 type Ledger struct {
-	Entries      map[string]Entry `json:"entries"`
-	NextVMID     int              `json:"nextVmid"`
-	NextIPOffset int              `json:"nextIpOffset"`
+	Entries  map[string]Entry `json:"entries"`
+	NextVMID int              `json:"nextVmid"`
+	// NextIPOffset is no longer what decides an address (Allocate takes
+	// the lowest free one); kept so that ledgers read and write as before.
+	NextIPOffset int `json:"nextIpOffset"`
+
+	// firstIPOffset is the first host offset Allocate may hand out:
+	// Load's defaultNextIPOffset.
+	firstIPOffset int
 }
 
 // Load reads the ledger from path, or returns a fresh one seeded with the
@@ -36,9 +43,10 @@ func Load(path string, defaultNextVMID, defaultNextIPOffset int) (*Ledger, error
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return &Ledger{
-			Entries:      map[string]Entry{},
-			NextVMID:     defaultNextVMID,
-			NextIPOffset: defaultNextIPOffset,
+			Entries:       map[string]Entry{},
+			NextVMID:      defaultNextVMID,
+			NextIPOffset:  defaultNextIPOffset,
+			firstIPOffset: defaultNextIPOffset,
 		}, nil
 	}
 	if err != nil {
@@ -52,6 +60,7 @@ func Load(path string, defaultNextVMID, defaultNextIPOffset int) (*Ledger, error
 	if l.Entries == nil {
 		l.Entries = map[string]Entry{}
 	}
+	l.firstIPOffset = defaultNextIPOffset
 	return &l, nil
 }
 
@@ -64,22 +73,55 @@ func (l *Ledger) Lookup(hostname string) (Entry, bool) {
 }
 
 // Allocate returns the existing entry for hostname if one was already
-// assigned, or assigns and persists a new VMID/IP for it from cidr.
-func (l *Ledger) Allocate(hostname, cidr string) (Entry, error) {
+// assigned, or assigns a new VMID and the lowest free address of cidr
+// from the first project offset: an address Remove freed is handed out
+// again. The network address, the broadcast address and gateway ("" for
+// none) never are.
+func (l *Ledger) Allocate(hostname, cidr, gateway string) (Entry, error) {
 	if e, ok := l.Entries[hostname]; ok {
 		return e, nil
 	}
 
-	addrs, _, err := netalloc.Allocate(cidr, l.NextIPOffset, 1)
+	ip, err := l.freeIP(cidr, gateway)
 	if err != nil {
 		return Entry{}, fmt.Errorf("allocating an IP for %s: %w", hostname, err)
 	}
 
-	e := Entry{VMID: l.NextVMID, IP: addrs[0]}
+	e := Entry{VMID: l.NextVMID, IP: ip}
 	l.Entries[hostname] = e
 	l.NextVMID++
-	l.NextIPOffset++
 	return e, nil
+}
+
+// freeIP is the lowest address of cidr, from the first project offset,
+// that no entry holds and that isn't the network's, its broadcast or
+// gateway.
+func (l *Ledger) freeIP(cidr, gateway string) (string, error) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("parsing cidr %q: %w", cidr, err)
+	}
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 || ones > 30 {
+		return "", fmt.Errorf("cidr %q is no IPv4 network with room for hosts", cidr)
+	}
+	broadcast := 1<<(bits-ones) - 1
+	used := map[string]bool{gateway: true}
+	for _, e := range l.Entries {
+		used[e.IP] = true
+	}
+	first := max(l.firstIPOffset, 1)
+	for offset := first; offset < broadcast; offset++ {
+		addrs, _, err := netalloc.Allocate(cidr, offset, 1)
+		if err != nil {
+			return "", err
+		}
+		if !used[addrs[0]] {
+			return addrs[0], nil
+		}
+	}
+	return "", fmt.Errorf("no free address left in %s from host offset %d (%d addresses, all in use): 'urbex destroy' frees the addresses of the environments it removes",
+		cidr, first, max(broadcast-first, 0))
 }
 
 // Remove deletes hostname's entry, if any. Used when infrastructure is

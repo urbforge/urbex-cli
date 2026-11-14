@@ -1260,7 +1260,7 @@ func (o *Orchestrator) prepare(ctx context.Context, opts Options) (string, error
 	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
 	for _, svc := range o.Manifest.Services {
 		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
-		entry, err := ledger.Allocate(hostname, o.Config.Proxmox.Network.CIDR)
+		entry, err := ledger.Allocate(hostname, o.Config.Proxmox.Network.CIDR, o.Config.Proxmox.Network.Gateway)
 		if err != nil {
 			return "", fmt.Errorf("allocating resources for %s: %w", hostname, err)
 		}
