@@ -181,8 +181,17 @@ mise run build         # ./urbex
 mise run test          # unit tests
 mise run lint          # go vet + gofmt check (mise run fmt formats)
 mise run e2e           # end-to-end, needs podman - see e2e/README.md
+mise run release-snapshot  # the release archives in dist/, publishing nothing
 mise tasks             # every task
 ```
+
+A release is a `v*` tag, pushed by a maintainer:
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs the
+tests, then [GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`)
+builds `urbex` for Linux and macOS (amd64, arm64), with checksums,
+provenance and a changelog from the commit titles, and publishes the
+GitHub release - a pre-release while urbex is 0.x or the tag has a
+suffix (`v0.1.0-rc.1`).
 
 With mise [activated in your shell](https://mise.jdx.dev/getting-started.html),
 `go`, `terraform`, `ansible-playbook`... are the pinned ones whenever you

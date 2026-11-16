@@ -1,0 +1,80 @@
+# The release of urbex: on a v* tag, .github/workflows/release.yml runs
+# this, and publishes the GitHub release it drafts. Try it locally, with
+# nothing published: mise run release-snapshot (binaries and archives in
+# dist/).
+version: 2
+
+project_name: urbex
+
+builds:
+  - id: urbex
+    main: ./cmd/urbex
+    binary: urbex
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # The version urbex version prints (internal/version).
+    ldflags:
+      - -s -w
+      - -X github.com/urbforge/urbex-cli/internal/version.Version={{ .Version }}
+      - -X github.com/urbforge/urbex-cli/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/urbforge/urbex-cli/internal/version.Date={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: urbex
+    formats: [tar.gz]
+    name_template: "urbex_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  use: github
+  # The commit and its title: no author, so no email address.
+  abbrev: 7
+  format: "{{ .SHA }} {{ .Message }}"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^.*?(test|ci|chore|style)(\(.+\))??!?:.+$'
+      - '^Merge '
+
+release:
+  github:
+    owner: urbforge
+    name: urbex-cli
+  # Drafted: the workflow publishes it, as a pre-release while urbex is
+  # 0.x or the tag has a suffix (v0.1.0-rc.1). GoReleaser's own
+  # prerelease setting only sees the suffix.
+  draft: true
+  replace_existing_draft: true
+  prerelease: auto
+  name_template: "urbex {{ .Version }}"
+  header: |
+    urbex {{ .Version }}{{ if or (eq .Major 0) .Prerelease }} - a preview release{{ end }}.
+    Install: download the archive for your system below, check it against
+    `checksums.txt`, and put `urbex` on your `PATH`. See
+    [getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md)
+    and the [known limitations](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md).
