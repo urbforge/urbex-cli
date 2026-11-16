@@ -219,3 +219,33 @@ func TestStackImages_IncludesTheBuiltImagesBase(t *testing.T) {
 		t.Errorf("stackImages(keycloak) = %v, want Keycloak's base image and PostgreSQL", images)
 	}
 }
+
+// An environment's LXCs are cloned from the current template, or else
+// from the newest outdated one, never from nothing when one is there
+// (urbforge/urbex-cli#108).
+func TestTemplateToClone(t *testing.T) {
+	cfg := validConfig()
+	current := "urbex LXC template, version " + TemplateVersion(cfg)
+	old := "urbex LXC template, version 0123456789ab"
+	tpl := func(desc string) *proxmoxapi.ContainerInfo {
+		return &proxmoxapi.ContainerInfo{Template: true, Description: desc}
+	}
+	for _, tc := range []struct {
+		name        string
+		cts         map[int]*proxmoxapi.ContainerInfo
+		vmid        int
+		wantCurrent bool
+	}{
+		{"current", map[int]*proxmoxapi.ContainerInfo{9090: tpl(old), 9091: tpl(current)}, 9091, true},
+		{"outdated: the newest", map[int]*proxmoxapi.ContainerInfo{9090: tpl(old), 9092: tpl(old)}, 9092, false},
+		{"none", nil, 0, false},
+		{"not urbex's", map[int]*proxmoxapi.ContainerInfo{9090: tpl("someone else's")}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vmid, cur, err := TemplateToClone(context.Background(), &templateProxmox{cts: tc.cts}, cfg)
+			if err != nil || vmid != tc.vmid || cur != tc.wantCurrent {
+				t.Errorf("got %d, current=%v, %v; want %d, current=%v", vmid, cur, err, tc.vmid, tc.wantCurrent)
+			}
+		})
+	}
+}

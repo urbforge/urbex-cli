@@ -1345,18 +1345,24 @@ func (o *Orchestrator) address(env string, svc manifest.Service, allocations map
 	return LANAddress(entry.IP, svc.Port)
 }
 
-// templateVMID is urbex's LXC template new LXCs are cloned from, when it
-// exists and is current (the platform phase builds it, redemptor#18), or
-// 0: create them from the Debian template.
+// templateVMID is urbex's LXC template new LXCs are cloned from (the
+// platform phase builds it, redemptor#18): the current one, or the
+// newest, outdated, with a note (urbforge/urbex-cli#108); or 0: create
+// them from the Debian template, which says so too.
 func (o *Orchestrator) templateVMID() int {
 	p, ok := o.Proxmox.(bootstrap.TemplateProxmox)
 	if !ok {
 		return 0
 	}
-	vmid, err := bootstrap.CurrentTemplate(context.Background(), p, o.Config)
-	if err != nil {
+	vmid, current, err := bootstrap.TemplateToClone(context.Background(), p, o.Config)
+	switch {
+	case err != nil:
 		fmt.Fprintf(o.Out, "Warning: couldn't check urbex's LXC template (%v): new LXCs are created from %s.\n", err, o.Config.Proxmox.LXCTemplate)
 		return 0
+	case vmid == 0:
+		fmt.Fprintf(o.Out, "No urbex LXC template: new LXCs are created from %s and install Docker and the agents themselves ('urbex bootstrap' builds the template).\n", o.Config.Proxmox.LXCTemplate)
+	case !current:
+		fmt.Fprintf(o.Out, "urbex's LXC template (%d) is out of date: new LXCs are cloned from it and brought up to date ('urbex bootstrap' rebuilds it).\n", vmid)
 	}
 	return vmid
 }
