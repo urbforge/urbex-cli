@@ -13,6 +13,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/doctor"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
+	"github.com/urbforge/urbex-cli/internal/version"
 )
 
 // errDoctorFailed makes urbex doctor exit non-zero when a check failed;
@@ -33,7 +34,7 @@ Proxmox token, the node (the API answers, the node, pool, storage, LXC
 template and bridge exist, the token has the privileges urbex needs); and,
 with Cloudflare in the config, the token and the zone.
 
-Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
+It starts with urbex's own version. Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
 exits non-zero when a check failed. It changes nothing, and prints no
 secret. --output json prints the report as one JSON document. See
 docs/reference/cli.md in urbforge/urbex.`,
@@ -41,7 +42,7 @@ docs/reference/cli.md in urbforge/urbex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			sys := doctor.LocalSystem()
-			r := &doctor.Report{}
+			r := &doctor.Report{Version: version.Get().String()}
 			doctor.Tools(ctx, sys, r)
 
 			ws := doctor.Workspace{}
@@ -101,6 +102,9 @@ docs/reference/cli.md in urbforge/urbex.`,
 // printDoctor prints the report, a group at a time, with the fix under
 // each check that isn't ok.
 func printDoctor(out io.Writer, r *doctor.Report) {
+	if r.Version != "" {
+		fmt.Fprintf(out, "%s\n\n", r.Version)
+	}
 	group := ""
 	for _, c := range r.Checks {
 		if c.Group != group {

@@ -3,6 +3,8 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/urbforge/urbex-cli/internal/version"
 )
 
 // Execute runs the urbex root command.
@@ -20,7 +22,10 @@ personal apps to staging and production on your own Proxmox server.
 See https://github.com/urbforge/urbex for architecture and design decisions.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// --version: the same line as urbex version.
+		Version: version.Get().String(),
 	}
+	root.SetVersionTemplate("{{.Version}}\n")
 
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newBootstrapCmd())
@@ -36,6 +41,7 @@ See https://github.com/urbforge/urbex for architecture and design decisions.`,
 	root.AddCommand(newUsersCmd())
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newDiscoverCmd())
+	root.AddCommand(newVersionCmd())
 
 	return root
 }
