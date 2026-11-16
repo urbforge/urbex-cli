@@ -3,6 +3,7 @@
 # holds everything a platform needs on the operator's side. See README.md.
 #
 #   urbex-op build                   build the operator image from this checkout
+#   urbex-op version                 this script's version and the image it runs
 #   urbex-op [-w DIR] init           create the workspace: keys, folders
 #   urbex-op [-w DIR] set KEY        store a credential in the workspace (asks for it)
 #   urbex-op [-w DIR] shell          a shell in the container, ready to run urbex
@@ -11,25 +12,52 @@
 # DIR defaults to $URBEX_WORKSPACE, then ~/urbex-workspace. Tokens come from
 # the environment if set (URBEX_PROXMOX_TOKEN, URBEX_CLOUDFLARE_TOKEN), else
 # from the workspace's credentials file - 'set proxmoxToken' puts them there.
+#
+# A release's urbex-op runs that release's image, ghcr.io/urbforge/urbex-op,
+# pulled the first time; from a checkout, the image 'build' makes.
+# URBEX_OPERATOR_IMAGE overrides either.
 set -euo pipefail
+
+# The release workflow sets this in the copy attached to a release.
+URBEX_OP_VERSION=dev
 
 WS=${URBEX_WORKSPACE:-$HOME/urbex-workspace}
 if [ "${1:-}" = "-w" ]; then WS=$2; shift 2; fi
-IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
+if [ "$URBEX_OP_VERSION" = dev ]; then
+  IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
+else
+  IMAGE=${URBEX_OPERATOR_IMAGE:-ghcr.io/urbforge/urbex-op:$URBEX_OP_VERSION}
+fi
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 ENGINE=$(command -v podman || command -v docker || { echo "urbex-op: podman or docker is needed" >&2; exit 1; })
 # Files the container writes stay owned by you: podman maps your user in.
 # macOS bash 3.2 calls an empty "${a[@]}" unbound under set -u: expand arrays as ${a[@]+"${a[@]}"}.
 USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
 
+# The image, pulled the first time when it is a published one.
+need_image() {
+  "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 && return
+  case "$IMAGE" in
+    */*) echo "urbex-op: pulling $IMAGE" >&2; "$ENGINE" pull "$IMAGE" >&2 ;;
+    *) echo "urbex-op: no image $IMAGE - run 'urbex-op build' in a checkout of urbforge/urbex-cli" >&2; exit 1 ;;
+  esac
+}
+
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  version|--version)
+    echo "urbex-op $URBEX_OP_VERSION, image $IMAGE"
     exit 0 ;;
   build)
+    [ -f "$REPO/tools/operator/Containerfile" ] || {
+      echo "urbex-op: build needs a checkout of urbforge/urbex-cli; a release's urbex-op pulls its image" >&2; exit 1; }
     # Go's and mise's versions come from mise.toml, like every other tool's.
     pinned() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$REPO/mise.toml"; }
+    COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)
     exec "$ENGINE" build -t "$IMAGE" --build-arg "GO_VERSION=$(pinned go)" --build-arg "MISE_VERSION=$(pinned min_version)" \
+      --build-arg "URBEX_COMMIT=$COMMIT" \
       -f "$REPO/tools/operator/Containerfile" "$REPO" ;;
   set)
     KEY=${2:?usage: urbex-op set KEY - e.g. proxmoxToken, cloudflareToken, ageKey}
@@ -37,6 +65,7 @@ case "${1:-}" in
     VALUE=
     if [ -t 0 ]; then read -rsp "$KEY: " VALUE || true; echo; else IFS= read -r VALUE || true; fi
     [ -n "$VALUE" ] || { echo "urbex-op: empty value, nothing stored" >&2; exit 1; }
+    need_image
     # Written with the image's Python (Ansible's, which has PyYAML), so the file stays valid YAML and
     # keeps every other credential; mode 0600.
     printf '%s' "$VALUE" | "$ENGINE" run --rm -i ${USERNS[@]+"${USERNS[@]}"} --user "$(id -u):$(id -g)" \
@@ -59,6 +88,7 @@ os.chmod(path, 0o600)
     chmod 700 "$WS/home/.ssh" "$WS/home/.urbex"
     [ -f "$WS/home/.ssh/urbex" ] || ssh-keygen -q -t ed25519 -N "" -C urbex -f "$WS/home/.ssh/urbex"
     if [ ! -f "$WS/home/age.key" ]; then
+      need_image
       "$ENGINE" run --rm -v "$WS/home:/h:z" "$IMAGE" age-keygen -o /h/age.key 2>/dev/null
       chmod 600 "$WS/home/age.key"
     fi
@@ -76,6 +106,7 @@ esac
 [ -d "$WS/home" ] || { echo "urbex-op: no workspace at $WS - run 'urbex-op -w $WS init' first" >&2; exit 1; }
 CMD=$1
 [ "$CMD" = shell ] && CMD="exec bash"
+need_image
 TTY=(); [ -t 0 ] && [ -t 1 ] && TTY=(-it)
 
 # OpenSSH (Ansible's transport) refuses to run for a uid with no passwd entry. Podman's keep-id adds
