@@ -50,7 +50,7 @@ func TestProject_ReportsAllocatedAndProvisioned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := ledger.Allocate("my-app-api-staging", "192.168.1.0/24"); err != nil {
+	if _, err := ledger.Allocate("my-app-api-staging", "192.168.1.0/24", "192.168.1.1"); err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
 

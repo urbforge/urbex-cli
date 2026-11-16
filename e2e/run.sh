@@ -415,16 +415,16 @@ step "destroy staging: prod and the project Builds untouched" '
   echo "ok: staging is gone from komodo, the gitops repo, and technitium"'
 
 # What terraform does for real: the destroyed LXC is gone, and the next
-# apply creates a new one at the next free address - with a Periphery
-# identity Komodo has never seen under that name.
+# apply creates a new one - at the address destroy freed, the lowest free
+# one - with a Periphery identity Komodo has never seen under that name.
 podman rm -f e2e-hello-api-staging >/dev/null
-machine hello-api-staging 212
+machine hello-api-staging 210
 step "apply staging again on a new machine: it rejoins Komodo and follows main" '
   urbex apply staging
-  expect_http http://$NET.212:8080/ "hello v5 from urbex (staging)" 5
-  [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.212" ] || fail "internal dns record was not re-created at the new address"'
+  expect_http http://$NET.210:8080/ "hello v5 from urbex (staging)" 5
+  [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "internal dns record was not re-created"'
 
-machine site-web-prod 213
+machine site-web-prod 212
 echo site-web-prod >>"$WORK/pve-containers.txt"
 step "an application from a published image: pinned to a digest, updated, one environment" '
   cd /work/site
@@ -432,17 +432,17 @@ step "an application from a published image: pinned to a digest, updated, one en
   grep -q "has no staging environment" /tmp/staging.log || { cat /tmp/staging.log; fail "unexpected apply staging error"; }
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
   cat /tmp/apply.log
-  expect_http http://$NET.213/ "Welcome to nginx" 5
+  expect_http http://$NET.212/ "Welcome to nginx" 5
   grep -qE "^VERSION=1[.]29@sha256:[0-9a-f]{64}$" /work/gitops/environments/prod/site/web/version.env || fail "version.env should pin the tag to its digest"
   grep -q "image: docker.io/library/nginx:\${VERSION}" /work/gitops/environments/prod/site/web/compose.yaml || fail "the stack should pull the published image"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "an application from an image needs no Build: $(komodo_names Builds)"
-  [ "$(technitium_record web.site.urbex.urbex.test)" = "$NET.213" ] || fail "no internal dns record for site web"
+  [ "$(technitium_record web.site.urbex.urbex.test)" = "$NET.212" ] || fail "no internal dns record for site web"
   urbex deploy prod --update | tee /tmp/update.log
   grep -q "already runs docker.io/library/nginx:1.29" /tmp/update.log || fail "an unchanged tag should change nothing"
   urbex deploy prod --app web --version 1.28 | tee /tmp/version.log
   grep -qE "^VERSION=1[.]28@sha256:[0-9a-f]{64}$" /work/gitops/environments/prod/site/web/version.env || fail "deploy --version should pin the other tag"
-  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.213 "docker inspect -f {{.Config.Image}} site-web-prod-app-1" | grep -q "nginx:1.28@sha256:" || fail "the container does not run the pinned 1.28 digest"
-  expect_http http://$NET.213/ "Welcome to nginx" 5
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "docker inspect -f {{.Config.Image}} site-web-prod-app-1" | grep -q "nginx:1.28@sha256:" || fail "the container does not run the pinned 1.28 digest"
+  expect_http http://$NET.212/ "Welcome to nginx" 5
   urbex promote >/tmp/promote.log 2>&1 && fail "promote should not apply to a prod-only stack"
   grep -q "only prod" /tmp/promote.log || { cat /tmp/promote.log; fail "unexpected promote error"; }
   urbex release >/tmp/release.log 2>&1 && fail "release should not apply to a prod-only stack"
@@ -468,7 +468,7 @@ services:
       - { name: data, path: /data, size: $1 }
 YAML
   }
-  lxc() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.213 "$@"; }
+  lxc() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "$@"; }
   mounts() { cat /work/pve-lxc-*.json; }
 
   site_volume 2Gi
@@ -502,11 +502,14 @@ YAML
   [ -z "$(komodo_stack_state site-web-prod)" ] || fail "the stack should be gone after destroy --delete-data"
   echo "ok: the volume was mounted, kept, grown, never shrunk, and deleted only with --delete-data"'
 
-# One machine per application, at the addresses apply allocates in the
-# manifest's order.
-machine shop-db-prod 214
-machine shop-api-prod 215
-machine shop-web-prod 216
+# site's LXC went with destroy --delete-data, and its address (.212) with
+# it. One machine per application, at the addresses apply allocates in
+# the manifest's order, the lowest free first.
+podman rm -f e2e-site-web-prod >/dev/null
+podman volume rm -f e2e-site-web-prod-docker e2e-site-web-prod-containerd >/dev/null 2>&1 || true
+machine shop-db-prod 212
+machine shop-api-prod 213
+machine shop-web-prod 214
 printf '%s\n' shop-db-prod shop-api-prod shop-web-prod >>"$WORK/pve-containers.txt"
 # The PostgreSQL's volume, a mount point as Proxmox makes it (see the
 # volumes step).
@@ -536,11 +539,11 @@ step "linked applications: each starts once what it uses is ready, with what it 
     [ "$(on $octet "docker inspect -f {{.RestartCount}} shop-$svc-prod-app-1")" = 0 ] || fail "$svc restarted"
     [ "$(komodo_stack_state shop-$svc-prod)" = running ] || fail "$svc: Komodo shows the Stack $(komodo_stack_state shop-$svc-prod), not running (ignore_services)"
   }
-  consumer 215 api db
-  consumer 216 web api db
+  consumer 213 api db
+  consumer 214 web api db
   [ "$(komodo_stack_state shop-db-prod)" = running ] || fail "db: Komodo shows the Stack $(komodo_stack_state shop-db-prod)"
-  later "$(first 215 shop-api-prod-app-1 start)" "$(first 214 shop-db-prod-app-1 start)" || fail "api started before db"
-  later "$(first 216 shop-web-prod-app-1 start)" "$(first 215 shop-api-prod-app-1 start)" || fail "web started before api"
+  later "$(first 213 shop-api-prod-app-1 start)" "$(first 212 shop-db-prod-app-1 start)" || fail "api started before db"
+  later "$(first 214 shop-web-prod-app-1 start)" "$(first 213 shop-api-prod-app-1 start)" || fail "web started before api"
 
   # The probes: the PostgreSQL takes connections, the api answers its
   # healthcheck (a port that answers is not enough); a budget per level.
@@ -550,11 +553,11 @@ step "linked applications: each starts once what it uses is ready, with what it 
   if grep -q wait_for $dir/db/compose.yaml; then fail "db uses nothing and should not wait"; fi
 
   # What the consumers get to reach what they use.
-  [ "$(on 215 "docker exec shop-api-prod-app-1 printenv PGHOST")" = db.shop.urbex.urbex.test ] || fail "api has no PGHOST"
-  on 215 "docker exec shop-api-prod-app-1 printenv DATABASE_URL" | grep -q "^postgres://api:.*@db.shop.urbex.urbex.test:5432/shop$" || fail "api has no DATABASE_URL"
-  [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_ADDRESS")" = http://api.shop.urbex.urbex.test:80 ] || fail "the reference to api.url did not resolve"
-  [ "$(on 216 "docker exec shop-web-prod-app-1 printenv API_URL")" = http://api.shop.urbex.urbex.test:80 ] || fail "web has no API_URL"
-  if grep -rq "$(on 215 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" $dir; then fail "a generated password is in plaintext in the GitOps repo"; fi
+  [ "$(on 213 "docker exec shop-api-prod-app-1 printenv PGHOST")" = db.shop.urbex.urbex.test ] || fail "api has no PGHOST"
+  on 213 "docker exec shop-api-prod-app-1 printenv DATABASE_URL" | grep -q "^postgres://api:.*@db.shop.urbex.urbex.test:5432/shop$" || fail "api has no DATABASE_URL"
+  [ "$(on 214 "docker exec shop-web-prod-app-1 printenv API_ADDRESS")" = http://api.shop.urbex.urbex.test:80 ] || fail "the reference to api.url did not resolve"
+  [ "$(on 214 "docker exec shop-web-prod-app-1 printenv API_URL")" = http://api.shop.urbex.urbex.test:80 ] || fail "web has no API_URL"
+  if grep -rq "$(on 213 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" $dir; then fail "a generated password is in plaintext in the GitOps repo"; fi
 
   # Each consumer has its own role and schema on db (ADR-0030): it logs
   # in with its DATABASE_URL, writes and reads in its schema without
@@ -562,17 +565,17 @@ step "linked applications: each starts once what it uses is ready, with what it 
   sql() { # sql <octet> <service> <statement>: as the service, from its LXC
     on $1 "docker run --rm --network host docker.io/library/postgres:17-alpine psql \"\$(docker exec shop-$2-prod-app-1 printenv DATABASE_URL)\" -X -q -A -t -v ON_ERROR_STOP=1 -c \"$3\"" 2>&1
   }
-  sql 215 api "CREATE TABLE notes (v text); INSERT INTO notes VALUES ('"'"'from api'"'"')" || fail "api cannot write in its schema"
-  sql 216 web "CREATE TABLE notes (v text); INSERT INTO notes VALUES ('"'"'from web'"'"')" || fail "web cannot write in its schema"
-  [ "$(sql 215 api "SELECT v FROM notes")" = "from api" ] || fail "api reads $(sql 215 api "SELECT v FROM notes"), not its own row"
-  [ "$(sql 215 api "SELECT current_schema()")" = api ] || fail "api'"'"'s search_path is not its schema"
-  sql 215 api "SELECT v FROM web.notes" | grep -q "permission denied" || fail "api can read web'"'"'s schema"
-  sql 216 web "CREATE TABLE public.t (v int)" | grep -q "permission denied" || fail "web can create in public"
+  sql 213 api "CREATE TABLE notes (v text); INSERT INTO notes VALUES ('"'"'from api'"'"')" || fail "api cannot write in its schema"
+  sql 214 web "CREATE TABLE notes (v text); INSERT INTO notes VALUES ('"'"'from web'"'"')" || fail "web cannot write in its schema"
+  [ "$(sql 213 api "SELECT v FROM notes")" = "from api" ] || fail "api reads $(sql 213 api "SELECT v FROM notes"), not its own row"
+  [ "$(sql 213 api "SELECT current_schema()")" = api ] || fail "api'"'"'s search_path is not its schema"
+  sql 213 api "SELECT v FROM web.notes" | grep -q "permission denied" || fail "api can read web'"'"'s schema"
+  sql 214 web "CREATE TABLE public.t (v int)" | grep -q "permission denied" || fail "web can create in public"
   # The admin, password and all, is no application'"'"'s.
-  if on 215 "docker exec shop-api-prod-app-1 printenv" | grep -q "^POSTGRES_PASSWORD="; then fail "api has the server'"'"'s password"; fi
+  if on 213 "docker exec shop-api-prod-app-1 printenv" | grep -q "^POSTGRES_PASSWORD="; then fail "api has the server'"'"'s password"; fi
   urbex status prod >/tmp/status.log 2>&1
   grep -q "role api *schema api *used by api" /tmp/status.log && grep -q "role web *schema web *used by web" /tmp/status.log || fail "status should list the roles and schemas of db: $(cat /tmp/status.log)"
-  if grep -q "$(on 215 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" /tmp/status.log; then fail "status prints a password"; fi
+  if grep -q "$(on 213 "docker exec shop-api-prod-app-1 printenv PGPASSWORD")" /tmp/status.log; then fail "status prints a password"; fi
   urbex status prod --output json | tr -d " \n" | grep -qF "{\"role\":\"api\",\"schema\":\"api\",\"use\":\"used\",\"usedBy\":\"api\"}" || fail "status --output json should list the roles of db: $(urbex status prod --output json)"
   urbex secret list prod api | grep -q "^DATABASE_URL  (generated by urbex)$" || fail "secret list should mark DATABASE_URL as generated: $(urbex secret list prod api)"
   urbex secret set prod api PGPASSWORD=x >/tmp/secret.log 2>&1 && fail "secret set should refuse a generated key"
@@ -580,7 +583,7 @@ step "linked applications: each starts once what it uses is ready, with what it 
   # A second apply changes nothing on the server, and keeps the data.
   urbex apply prod >/tmp/apply2.log 2>&1 || { cat /tmp/apply2.log; fail "the second apply of the linked stack failed"; }
   if grep -Eq "^db: (created|set|took|gave)" /tmp/apply2.log; then fail "the second apply changed db: $(grep "^db: " /tmp/apply2.log)"; fi
-  [ "$(sql 215 api "SELECT v FROM notes")" = "from api" ] || fail "the second apply lost api'"'"'s data"
+  [ "$(sql 213 api "SELECT v FROM notes")" = "from api" ] || fail "the second apply lost api'"'"'s data"
 
   # web stops using db: its role and schema stay, with their data, named
   # as unused - until --delete-data.
@@ -589,10 +592,10 @@ step "linked applications: each starts once what it uses is ready, with what it 
   urbex apply prod >/tmp/apply3.log 2>&1 || { cat /tmp/apply3.log; fail "the apply without web on db failed"; }
   grep -q "no application uses the schema and role web any more: kept" /tmp/apply3.log || fail "apply should name web'"'"'s unused schema: $(cat /tmp/apply3.log)"
   urbex status prod | grep -q "role web *schema web *unused" || fail "status should show web'"'"'s schema unused: $(urbex status prod)"
-  [ "$(on 214 "docker exec shop-db-prod-app-1 psql -U urbex -d shop -X -A -t -c \"SELECT v FROM web.notes\"")" = "from web" ] || fail "web'"'"'s data should be kept"
+  [ "$(on 212 "docker exec shop-db-prod-app-1 psql -U urbex -d shop -X -A -t -c \"SELECT v FROM web.notes\"")" = "from web" ] || fail "web'"'"'s data should be kept"
   cp /tmp/shop-urbex.yaml urbex.yaml
   urbex apply prod >/tmp/apply4.log 2>&1 || { cat /tmp/apply4.log; fail "the apply with web back on db failed"; }
-  [ "$(sql 216 web "SELECT v FROM notes")" = "from web" ] || fail "web back on db should find its data"
+  [ "$(sql 214 web "SELECT v FROM notes")" = "from web" ] || fail "web back on db should find its data"
 
   # A provider with no way to tell it is ready is refused: without its
   # healthcheck, api could only be probed on its port.
@@ -632,23 +635,23 @@ step "the reconciler: a change waits for what it needs, a late provider is handl
   # 1. A change to api while db is down: the preflight keeps the running
   # api (compose would have replaced it with one waiting for db), and the
   # reconciler deploys the change once db is back.
-  before=$(app 215 api)
-  on 214 "docker stop shop-db-prod-app-1" >/dev/null
+  before=$(app 213 api)
+  on 212 "docker stop shop-db-prod-app-1" >/dev/null
   sleep 6
   cd /work/gitops && git pull -q "$(gitops_remote)" main 2>/dev/null
   echo "RECONCILE_MARK=1" >>environments/prod/shop/api/config.env
   git commit -qam "Change api while db is down" && git push -q "$(gitops_remote)" HEAD:main 2>/dev/null
   # Longer than the preflight waits for db (110 s), from the push on.
   for _ in $(seq 1 30); do
-    [ "$(app 215 api)" = "$before" ] || fail "api was touched while db was down: $before -> $(app 215 api)"
+    [ "$(app 213 api)" = "$before" ] || fail "api was touched while db was down: $before -> $(app 213 api)"
     sleep 5
   done
-  on 214 "docker start shop-db-prod-app-1" >/dev/null
+  on 212 "docker start shop-db-prod-app-1" >/dev/null
   # The reconciler deploys it within a minute or two, unless the GitOps
   # Procedure (every quarter of an hour) happens to run first: either way
   # the change lands.
   _deadline=$(( $(date +%s) + 360 ))
-  until [ "$(on 215 "docker exec shop-api-prod-app-1 printenv RECONCILE_MARK" 2>/dev/null)" = 1 ]; do
+  until [ "$(on 213 "docker exec shop-api-prod-app-1 printenv RECONCILE_MARK" 2>/dev/null)" = 1 ]; do
     [ "$(date +%s)" -ge "$_deadline" ] && fail "the change to api was not deployed once db was back; the reconciler: $(reconciler_runs | head -n 3)"
     sleep 10
   done
@@ -657,20 +660,20 @@ step "the reconciler: a change waits for what it needs, a late provider is handl
   # reconciler brings api back, through its wait, once db is ready. Only
   # its runs from now on count: the change above logged the same success.
   since=$(date +%s)000
-  on 214 "docker stop shop-db-prod-app-1" >/dev/null
-  on 215 "docker rm -f shop-api-prod-app-1" >/dev/null
+  on 212 "docker stop shop-db-prod-app-1" >/dev/null
+  on 213 "docker rm -f shop-api-prod-app-1" >/dev/null
   sleep 150
-  [ -z "$(app 215 api)" ] || fail "api should stay down while db is: $(app 215 api)"
+  [ -z "$(app 213 api)" ] || fail "api should stay down while db is: $(app 213 api)"
   reconciler_runs | head -n 1 | grep -q "shop-api-prod: waiting for shop-db-prod" || fail "the reconciler should hold api for db: $(reconciler_runs | head -n 1)"
-  on 214 "docker start shop-db-prod-app-1" >/dev/null
-  expect_running 215 api 360
+  on 212 "docker start shop-db-prod-app-1" >/dev/null
+  expect_running 213 api 360
   expect_reconciler "shop-api-prod: missing - DeployStack started" 60 "$since"
   expect_reconciler "shop-api-prod: the deploy started earlier succeeded" 240 "$since"
-  [ "$(app 215 api | cut -d/ -f3)" = 0 ] || fail "api restarted: $(app 215 api)"
+  [ "$(app 213 api | cut -d/ -f3)" = 0 ] || fail "api restarted: $(app 213 api)"
 
   # What the reboot, next, must not recreate.
-  on 215 "docker inspect -f {{.Id}} shop-api-prod-app-1" >/work/api-before-reboot
-  on 216 "docker inspect -f {{.Id}} shop-web-prod-app-1" >/work/web-before-reboot
+  on 213 "docker inspect -f {{.Id}} shop-api-prod-app-1" >/work/api-before-reboot
+  on 214 "docker inspect -f {{.Id}} shop-web-prod-app-1" >/work/web-before-reboot
   # The runs the next step looks at: from the reboot on.
   date +%s000 >/work/reboot-at
   echo "ok: a change waited for db and a late db was handled, with no deploy on what was not ready"'
@@ -704,12 +707,12 @@ step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   # runs that see them back do not fail, call nothing a crash loop and
   # deploy nothing - api and web are the containers they were.
   _deadline=$(( $(date +%s) + 180 ))
-  until [ "$(on 214 "docker inspect -f {{.State.Health.Status}} shop-db-prod-app-1" 2>/dev/null)" = healthy ]; do
-    [ "$(date +%s)" -ge "$_deadline" ] && fail "db did not come back healthy after the reboot: $(app 214 db)"
+  until [ "$(on 212 "docker inspect -f {{.State.Health.Status}} shop-db-prod-app-1" 2>/dev/null)" = healthy ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "db did not come back healthy after the reboot: $(app 212 db)"
     sleep 5
   done
-  expect_running 215 api 60
-  expect_running 216 web 60
+  expect_running 213 api 60
+  expect_running 214 web 60
   # Five runs from then: the ones that see them back, and well past the
   # two they stay unstable for; and the runs while they were down, all
   # from the reboot on (the last run before it may still deploy).
@@ -720,19 +723,19 @@ step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   if echo "$runs" | grep -q "DeployStack"; then fail "a reboot should deploy nothing: $runs"; fi
   echo "$runs" | grep -q "its server is unreachable: left alone" || fail "the runs during the reboot should leave the Stacks alone: $runs"
   if urbex status prod | grep -q "crash loop"; then fail "urbex status calls a reboot a crash loop: $(urbex status prod | grep -A3 Reconciler)"; fi
-  [ "$(on 215 "docker inspect -f {{.Id}} shop-api-prod-app-1")" = "$(cat /work/api-before-reboot)" ] || fail "api was recreated after the reboot"
-  [ "$(on 216 "docker inspect -f {{.Id}} shop-web-prod-app-1")" = "$(cat /work/web-before-reboot)" ] || fail "web was recreated after the reboot"
+  [ "$(on 213 "docker inspect -f {{.Id}} shop-api-prod-app-1")" = "$(cat /work/api-before-reboot)" ] || fail "api was recreated after the reboot"
+  [ "$(on 214 "docker inspect -f {{.Id}} shop-web-prod-app-1")" = "$(cat /work/web-before-reboot)" ] || fail "web was recreated after the reboot"
 
   # 4. api in a crash loop: web, gone, is not deployed on it, and the runs
   # fail - Komodo shows it; once api stays up, web comes back.
-  on 216 "docker rm -f shop-web-prod-app-1" >/dev/null
-  on 215 "for i in \$(seq 1 18); do docker exec shop-api-prod-app-1 kill 1 2>/dev/null; sleep 10; done" &
+  on 214 "docker rm -f shop-web-prod-app-1" >/dev/null
+  on 213 "for i in \$(seq 1 18); do docker exec shop-api-prod-app-1 kill 1 2>/dev/null; sleep 10; done" &
   killer=$!
   expect_reconciler "shop-api-prod is restarting (crash loop): what uses it waits" 240
   reconciler_runs | grep "crash loop" | head -n 1 | grep -q "^FAILED" || fail "a run that sees a crash loop should fail"
-  [ -z "$(app 216 web)" ] || fail "web should not be deployed on a crash-looping api: $(app 216 web)"
+  [ -z "$(app 214 web)" ] || fail "web should not be deployed on a crash-looping api: $(app 214 web)"
   wait $killer
-  expect_running 216 web 480
+  expect_running 214 web 480
   echo "ok: a reboot of the node alerted and deployed nothing; a crash-looping api held web back and failed the runs"'
 
 step "the reconciler: an environment destroyed is no longer looked after, its graph read by name" '
