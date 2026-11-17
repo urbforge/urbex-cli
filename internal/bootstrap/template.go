@@ -162,6 +162,39 @@ func CurrentTemplate(ctx context.Context, p TemplateProxmox, cfg *platform.Confi
 	return 0, nil
 }
 
+// TemplateToClone returns the template an environment's new LXCs are
+// cloned from (urbforge/urbex-cli#108): the current one, or else the
+// newest urbex template there is, and whether it is the current one; 0
+// when there is none. An outdated template still has Docker, the
+// packages and the agents' images, and the roles bring a clone of it up
+// to date - they are idempotent - so it saves most of what the Debian
+// template would cost; only the platform phase rebuilds it. The newest
+// is the highest VMID: the platform phase keeps an older template only
+// while LXCs are clones of it.
+func TemplateToClone(ctx context.Context, p TemplateProxmox, cfg *platform.Config) (vmid int, current bool, err error) {
+	from, to := templateVMIDs(cfg)
+	ids, err := p.Templates(ctx, cfg.Proxmox.Node, from, to)
+	if err != nil {
+		return 0, false, err
+	}
+	want := "version " + TemplateVersion(cfg)
+	newest := 0
+	for _, id := range ids {
+		info, err := p.Container(ctx, cfg.Proxmox.Node, id)
+		if err != nil {
+			return 0, false, err
+		}
+		if info == nil || !info.Template || !strings.Contains(info.Description, "version ") {
+			continue
+		}
+		if strings.Contains(info.Description, want) {
+			return id, true, nil
+		}
+		newest = max(newest, id)
+	}
+	return newest, false, nil
+}
+
 // ensureTemplate returns the current template's VMID, building it first
 // when there is none. The template only saves time: when Proxmox doesn't
 // offer what building it needs, or building fails, the LXCs are created
