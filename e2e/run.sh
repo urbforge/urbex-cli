@@ -233,7 +233,7 @@ step "bootstrap again: idempotent" '
   # Proxmox, and there is no Cloudflare.
   urbex status --progress | tee /tmp/progress.txt
   grep -q "^urbex bootstrap: done in" /tmp/progress.txt || fail "status --progress should show the bootstrap done"
-  grep -q "✓ Install Gitea and Komodo" /tmp/progress.txt || fail "status --progress should show the parallel play done"
+  grep -q "✓ Install Forgejo and Komodo" /tmp/progress.txt || fail "status --progress should show the parallel play done"
   grep -q "skipped: no Cloudflare" /tmp/progress.txt || fail "status --progress should show Cloudflare skipped"
   echo "ok: second bootstrap changed nothing"'
 
@@ -260,7 +260,7 @@ step "apply staging: it follows main, and runs main's head right away" '
   # users browsers reach Keycloak at, not how a service reaches it.
   ! grep -rnE "([0-9]{1,3}[.]){3}[0-9]{1,3}" /work/gitops/environments | grep -v KEYCLOAK_ISSUER || fail "the environments in the gitops repo hold addresses, not names"
   grep -q "image: git.urbex.urbex.test:3000/urbex/hello-api" /work/gitops/environments/staging/hello/api/compose.yaml || fail "the image should come from the registry by name"
-  urbex status | grep -F "Gitea" | grep -F "http://git.urbex.urbex.test:3000" | grep -F "http://$NET.200:3000" | grep -qv "(missing)\|(points to" || fail "status should show gitea by internal name and LAN address, with its record"
+  urbex status | grep -F "Forgejo" | grep -F "http://git.urbex.urbex.test:3000" | grep -F "http://$NET.200:3000" | grep -qv "(missing)\|(points to" || fail "status should show gitea by internal name and LAN address, with its record"
   echo "ok: staging follows main"'
 
 step "a push to main is deployed to staging, with no command" '
