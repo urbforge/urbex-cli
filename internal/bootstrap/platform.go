@@ -306,7 +306,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	if err := g.EnsureRepo(ctx, o.Config.Git.Org, GitOpsRepoName); err != nil {
 		return err
 	}
-	fmt.Fprintf(o.Out, "Gitea ready at %s (org %s).\n", ep.GiteaURL, o.Config.Git.Org)
+	fmt.Fprintf(o.Out, "Forgejo ready at %s (org %s).\n", ep.GiteaURL, o.Config.Git.Org)
 
 	k := clients.Komodo(ep.KomodoURL, "", "")
 	if err := k.WaitReady(ctx, 3*time.Minute); err != nil {

@@ -319,7 +319,7 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "cloudflare.hostnames must be flat or nested")
 	}
 	if cf.Enabled() && len(cf.Access.Emails) == 0 {
-		errs = append(errs, "cloudflare.access.emails is required: who may reach Gitea and Komodo through Cloudflare Access")
+		errs = append(errs, "cloudflare.access.emails is required: who may reach Forgejo and Komodo through Cloudflare Access")
 	}
 	for _, f := range c.DNS.Forwarders {
 		if net.ParseIP(f) == nil {

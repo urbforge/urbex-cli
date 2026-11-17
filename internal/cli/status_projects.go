@@ -210,6 +210,6 @@ func refreshForStatus(ctx context.Context, warn func(string), cfg *platform.Conf
 		err = bootstrap.PullRepo(ctx, repoPath, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.ForgeToken)
 	}
 	if err != nil {
-		warn(fmt.Sprintf("could not update the GitOps repo from Gitea: %v - showing the local copy", err))
+		warn(fmt.Sprintf("could not update the GitOps repo from Forgejo: %v - showing the local copy", err))
 	}
 }

@@ -292,7 +292,7 @@ func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
 	if err := r.Git.Push(ctx, r.RepoDir, url, r.Token, "HEAD:refs/heads/"+bootstrap.TrunkBranch); err != nil {
 		return fmt.Errorf("creating branch %s on gitea from %s: %w", bootstrap.TrunkBranch, r.RepoDir, err)
 	}
-	fmt.Fprintf(r.Out, "Created %s/%s on Gitea with branch %s from the local HEAD.\n", r.Org, project, bootstrap.TrunkBranch)
+	fmt.Fprintf(r.Out, "Created %s/%s on Forgejo with branch %s from the local HEAD.\n", r.Org, project, bootstrap.TrunkBranch)
 	return nil
 }
 

@@ -86,7 +86,7 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
-	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the project's main branch on Gitea if it is missing")
+	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, used to create the project's main branch on Forgejo if it is missing")
 
 	cmd.Flags().BoolVar(&deleteData, "delete-data", false, "delete the LXC and the named volumes of an application removed from urbex.yaml")
 	events.Register(cmd)

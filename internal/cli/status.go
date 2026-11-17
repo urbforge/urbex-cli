@@ -188,7 +188,7 @@ type loginView struct {
 
 func logins(path string) loginsView {
 	return loginsView{CredentialsFile: path, Users: []loginView{
-		{"gitea", bootstrap.GiteaAdminUser, "giteaAdminPassword"},
+		{"gitea", bootstrap.GiteaAdminUser, "forgeAdminPassword"},
 		{"komodo", bootstrap.GiteaAdminUser, "komodoAdminPassword"},
 		{"grafana", "admin", "grafanaAdminPassword"},
 		{"keycloak", "admin", "keycloakAdminPassword"},
@@ -269,9 +269,9 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 // printLogins lists the platform's admin users and the names of their
 // passwords in the credentials file at path.
 func printLogins(out io.Writer, path string) {
-	fmt.Fprintf(out, "\nLogins: Gitea and Komodo %s, Grafana admin, Keycloak admin, Technitium %s; passwords in %s\n",
+	fmt.Fprintf(out, "\nLogins: Forgejo and Komodo %s, Grafana admin, Keycloak admin, Technitium %s; passwords in %s\n",
 		bootstrap.GiteaAdminUser, bootstrap.TechnitiumAdminUser, path)
-	fmt.Fprintln(out, "(giteaAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword, technitiumAdminPassword).")
+	fmt.Fprintln(out, "(forgeAdminPassword, komodoAdminPassword, grafanaAdminPassword, keycloakAdminPassword, technitiumAdminPassword).")
 }
 
 // --- a project environment ---------------------------------------------------

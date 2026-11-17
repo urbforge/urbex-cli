@@ -185,7 +185,7 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 		}
 	}
 	fmt.Fprintf(o.Out, "Published on Cloudflare: Keycloak https://%s (its admin console behind Access), webhooks https://%s;\n", pub.Keycloak, pub.Hooks)
-	fmt.Fprintf(o.Out, "behind Access: Gitea https://%s, Komodo https://%s, Technitium https://%s, Grafana https://%s, Prometheus https://%s, Loki https://%s.\n",
+	fmt.Fprintf(o.Out, "behind Access: Forgejo https://%s, Komodo https://%s, Technitium https://%s, Grafana https://%s, Prometheus https://%s, Loki https://%s.\n",
 		pub.Gitea, pub.Komodo, pub.DNS, pub.Grafana, pub.Prometheus, pub.Loki)
 	return nil
 }
@@ -195,7 +195,7 @@ func (o *Orchestrator) publishPlatform(ctx context.Context, clients Clients) err
 func (o *Orchestrator) ensureOneTimePIN(ctx context.Context, cf CloudflareAPI) error {
 	ok, err := cf.HasOneTimePIN(ctx)
 	if cloudflare.Forbidden(err) {
-		fmt.Fprintln(o.Out, "Warning: the Cloudflare token can't read Zero Trust login methods; make sure One-time PIN is enabled (Zero Trust > Settings > Authentication), or nobody can log in through Access (Gitea, Komodo, Grafana, ...).")
+		fmt.Fprintln(o.Out, "Warning: the Cloudflare token can't read Zero Trust login methods; make sure One-time PIN is enabled (Zero Trust > Settings > Authentication), or nobody can log in through Access (Forgejo, Komodo, Grafana, ...).")
 		return nil
 	}
 	if err != nil || ok {

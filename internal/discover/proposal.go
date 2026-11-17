@@ -26,11 +26,11 @@ func proposal(r *Result) string {
 	w("  org: urbex")
 	w("")
 	if cf != nil && cf.ZoneID != "" {
-		w("cloudflare:   # public HTTPS on %s; Gitea and Komodo behind Cloudflare Access", domain)
+		w("cloudflare:   # public HTTPS on %s; Forgejo and Komodo behind Cloudflare Access", domain)
 		w("  accountId: %s", cf.AccountID)
 		w("  zoneId: %s", cf.ZoneID)
 		w("  access:")
-		w("    emails: [you@example.com]   # FILL IN: who may open Gitea and Komodo (a one-time PIN goes to the address)")
+		w("    emails: [you@example.com]   # FILL IN: who may open Forgejo and Komodo (a one-time PIN goes to the address)")
 		w("")
 	} else {
 		w("# No Cloudflare: everything stays on the LAN. For public addresses without")

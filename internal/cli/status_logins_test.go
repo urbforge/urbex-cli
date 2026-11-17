@@ -12,7 +12,7 @@ func TestPrintLogins_ListsTechnitium(t *testing.T) {
 	for _, want := range []string{
 		"Technitium admin",
 		"technitiumAdminPassword",
-		"Gitea and Komodo urbex-admin",
+		"Forgejo and Komodo urbex-admin",
 		"passwords in /Users/me/urbex-work/home/.urbex/credentials.yaml",
 	} {
 		if !strings.Contains(out.String(), want) {

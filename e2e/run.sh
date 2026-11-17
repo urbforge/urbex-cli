@@ -137,7 +137,7 @@ step "bootstrap: scaffold urbex.platform.yaml" '
 cat >"$WORK/gitops/urbex.platform.yaml" <<EOF
 domain: urbex.test
 git:
-  giteaUrl: http://$NET.200:3000
+  forgeUrl: http://$NET.200:3000
   org: urbex
 proxmox:
   apiUrl: http://127.0.0.1:8006/api2/json
@@ -216,7 +216,7 @@ step "bootstrap: base services and platform setup" '
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done
   # No generated secret is in plaintext anywhere under platform/.
-  for name in keycloakAdminPassword keycloakDbPassword grafanaAdminPassword technitiumAdminPassword komodoDbPassword komodoAdminPassword giteaAdminPassword; do
+  for name in keycloakAdminPassword keycloakDbPassword grafanaAdminPassword technitiumAdminPassword komodoDbPassword komodoAdminPassword forgeAdminPassword; do
     value=$(cred $name)
     [ -n "$value" ] || fail "no $name in the credentials"
     ! grep -rqF "$value" /work/gitops/platform || fail "$name in plaintext in the gitops repo: $(grep -rlF "$value" /work/gitops/platform)"
