@@ -27,7 +27,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
@@ -53,7 +53,7 @@ type Rollouter interface {
 	DeployTelemetry(ctx context.Context, t rollout.Target) error
 	Reconcile(ctx context.Context) error
 	BuildMain(ctx context.Context, project string) error
-	Releases(ctx context.Context, project string) ([]gitea.Tag, error)
+	Releases(ctx context.Context, project string) ([]forge.Tag, error)
 	MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error)
 	WaitDeployed(ctx context.Context, t rollout.Target, repo envrepo.Repo) ([]rollout.Deployed, error)
 	RemoveEnv(ctx context.Context, t rollout.Target) error
@@ -740,7 +740,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allow
 	if err != nil {
 		return false, err
 	}
-	var releases []gitea.Tag
+	var releases []forge.Tag
 	if len(manifest.Built(o.Manifest.Deployables())) > 0 {
 		if releases, err = o.Rollout.Releases(ctx, o.Manifest.Project); err != nil {
 			return false, err
@@ -783,7 +783,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allow
 
 // releaseOf returns the release a version is: itself if it is one, the
 // release tagged on that commit if it is a commit.
-func releaseOf(version string, releases []gitea.Tag) (string, error) {
+func releaseOf(version string, releases []forge.Tag) (string, error) {
 	if v, ok := semver.Parse(version); ok {
 		return v.String(), nil
 	}

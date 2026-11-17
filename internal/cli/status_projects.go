@@ -202,12 +202,12 @@ func quickTunnelRoute(ctx context.Context, ip string) string {
 // Action commits too, so what status reads is current; on failure it
 // warns and goes on with the local copy.
 func refreshForStatus(ctx context.Context, warn func(string), cfg *platform.Config, creds *credentials.Credentials, repoPath string) {
-	if creds.GiteaToken == "" {
+	if creds.ForgeToken == "" {
 		return
 	}
 	ep, err := bootstrap.EndpointsFor(cfg)
 	if err == nil {
-		err = bootstrap.PullRepo(ctx, repoPath, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken)
+		err = bootstrap.PullRepo(ctx, repoPath, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.ForgeToken)
 	}
 	if err != nil {
 		warn(fmt.Sprintf("could not update the GitOps repo from Gitea: %v - showing the local copy", err))

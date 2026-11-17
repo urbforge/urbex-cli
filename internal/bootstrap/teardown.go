@@ -63,8 +63,8 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	o.Progress.Begin(PhaseTeardownCheck)
 	// Gitea has the latest GitOps repo - for the last time.
 	repoURL := ep.RepoURL(o.Config.Git.Org, GitOpsRepoName)
-	if o.Credentials.GiteaToken != "" {
-		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.GiteaToken); err != nil {
+	if o.Credentials.ForgeToken != "" {
+		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.ForgeToken); err != nil {
 			fmt.Fprintf(o.Out, "Warning: could not update the GitOps repo from Gitea (%v); using the local copy.\n", err)
 		}
 	}
@@ -77,7 +77,7 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "base")
 	var repos []string
-	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.GiteaToken).(repoLister); ok && o.Credentials.GiteaToken != "" {
+	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.ForgeToken).(repoLister); ok && o.Credentials.ForgeToken != "" {
 		repos, _ = g.ListOrgRepos(ctx, o.Config.Git.Org) // best effort: Gitea may already be gone
 	}
 	fmt.Fprintln(o.Out, "This destroys the Urbex platform on Proxmox:")

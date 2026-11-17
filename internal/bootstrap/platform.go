@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/gitsync"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -214,7 +214,7 @@ type Clients struct {
 // DefaultClients returns Clients backed by the real HTTP clients and git.
 func DefaultClients() Clients {
 	return Clients{
-		Gitea:      func(u, t string) GiteaAPI { return gitea.New(u, t) },
+		Gitea:      func(u, t string) GiteaAPI { return forge.New(u, t) },
 		Komodo:     func(u, k, s string) KomodoAPI { return komodo.New(u, k, s) },
 		SyncRepo:   SyncRepo,
 		PullRepo:   PullRepo,
@@ -225,7 +225,7 @@ func DefaultClients() Clients {
 // ansibleSecretEnv are the secrets the base-service roles read with
 // lookup('env', ...). ensureSecrets generates any that are missing.
 var ansibleSecretEnv = []string{
-	"URBEX_GITEA_ADMIN_PASSWORD",
+	"URBEX_FORGE_ADMIN_PASSWORD",
 	"URBEX_KOMODO_ADMIN_PASSWORD",
 	"URBEX_KOMODO_DB_PASSWORD",
 	"URBEX_KOMODO_JWT_SECRET",
@@ -290,16 +290,16 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 	if err := g.WaitReady(ctx, 3*time.Minute); err != nil {
 		return err
 	}
-	if creds.GiteaToken == "" {
-		token, err := g.CreateToken(ctx, GiteaAdminUser, creds.GiteaAdminPassword, "urbex-cli", cliTokenScopes)
+	if creds.ForgeToken == "" {
+		token, err := g.CreateToken(ctx, GiteaAdminUser, creds.ForgeAdminPassword, "urbex-cli", cliTokenScopes)
 		if err != nil {
 			return err
 		}
-		if err := creds.Update(func(c *credentials.Credentials) { c.GiteaToken = token }); err != nil {
+		if err := creds.Update(func(c *credentials.Credentials) { c.ForgeToken = token }); err != nil {
 			return fmt.Errorf("saving gitea token: %w", err)
 		}
 	}
-	g = clients.Gitea(ep.GiteaURL, creds.GiteaToken)
+	g = clients.Gitea(ep.GiteaURL, creds.ForgeToken)
 	if err := g.EnsureOrg(ctx, o.Config.Git.Org); err != nil {
 		return err
 	}
@@ -336,10 +336,10 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 			return fmt.Errorf("saving komodo onboarding key: %w", err)
 		}
 	}
-	if err := k.EnsureGitProviderAccount(ctx, internal.Registry, false, GiteaAdminUser, creds.GiteaToken); err != nil {
+	if err := k.EnsureGitProviderAccount(ctx, internal.Registry, false, GiteaAdminUser, creds.ForgeToken); err != nil {
 		return err
 	}
-	if err := k.EnsureDockerRegistryAccount(ctx, internal.Registry, GiteaAdminUser, creds.GiteaToken); err != nil {
+	if err := k.EnsureDockerRegistryAccount(ctx, internal.Registry, GiteaAdminUser, creds.ForgeToken); err != nil {
 		return err
 	}
 
@@ -351,9 +351,11 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		name, value string
 		secret      bool
 	}{
+		// Named for Gitea still: the Actions of existing platforms read
+		// them (docs/decisions/0034-forgejo-lts-forge.md).
 		{"URBEX_GITEA_URL", internal.GiteaURL, false},
 		{"URBEX_GITEA_USER", GiteaAdminUser, false},
-		{"URBEX_GITEA_TOKEN", creds.GiteaToken, true},
+		{"URBEX_GITEA_TOKEN", creds.ForgeToken, true},
 		{"URBEX_ORG", o.Config.Git.Org, false},
 		// Where the reconciler sends its heartbeat and its errors, which
 		// Grafana alerts on.
@@ -422,7 +424,7 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		return fmt.Errorf("writing .sops.yaml: %w", err)
 	}
 
-	if err := clients.SyncRepo(ctx, gitopsRepoPath, ep.RepoURL(o.Config.Git.Org, GitOpsRepoName), creds.GiteaToken, "urbex bootstrap"); err != nil {
+	if err := clients.SyncRepo(ctx, gitopsRepoPath, ep.RepoURL(o.Config.Git.Org, GitOpsRepoName), creds.ForgeToken, "urbex bootstrap"); err != nil {
 		return fmt.Errorf("syncing gitops repo: %w", err)
 	}
 	fmt.Fprintf(o.Out, "GitOps repo pushed to %s.\n", ep.RepoURL(o.Config.Git.Org, GitOpsRepoName))

@@ -3,6 +3,7 @@ package credentials
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,9 @@ func clearEnv(t *testing.T) {
 		"URBEX_PROXMOX_TOKEN",
 		"URBEX_CLOUDFLARE_TOKEN",
 		"URBEX_GITEA_TOKEN",
+		"URBEX_FORGE_TOKEN",
+		"URBEX_GITEA_ADMIN_PASSWORD",
+		"URBEX_FORGE_ADMIN_PASSWORD",
 		"URBEX_AGE_KEY",
 	} {
 		t.Setenv(k, "")
@@ -125,18 +129,18 @@ func TestUpdate_PersistsOnlyChangedValuesWithPrivateMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := c.Update(func(c *Credentials) { c.GiteaToken = "generated" }); err != nil {
+	if err := c.Update(func(c *Credentials) { c.ForgeToken = "generated" }); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if c.GiteaToken != "generated" {
-		t.Errorf("in-memory GiteaToken = %q, want generated", c.GiteaToken)
+	if c.ForgeToken != "generated" {
+		t.Errorf("in-memory ForgeToken = %q, want generated", c.ForgeToken)
 	}
 
 	onDisk, err := loadFile(path)
 	if err != nil {
 		t.Fatalf("loadFile: %v", err)
 	}
-	if onDisk.GiteaToken != "generated" || onDisk.AgeKey != "file-age-key" {
+	if onDisk.ForgeToken != "generated" || onDisk.AgeKey != "file-age-key" {
 		t.Errorf("unexpected file content: %+v", onDisk)
 	}
 	if onDisk.ProxmoxToken != "" {
@@ -152,9 +156,9 @@ func TestUpdate_PersistsOnlyChangedValuesWithPrivateMode(t *testing.T) {
 }
 
 func TestEnv_ReturnsOnlyRequestedVariables(t *testing.T) {
-	c := &Credentials{GiteaAdminPassword: "pw", KomodoDBPassword: "db", ProxmoxToken: "secret"}
-	got := c.Env("URBEX_GITEA_ADMIN_PASSWORD", "URBEX_KOMODO_DB_PASSWORD")
-	want := []string{"URBEX_GITEA_ADMIN_PASSWORD=pw", "URBEX_KOMODO_DB_PASSWORD=db"}
+	c := &Credentials{ForgeAdminPassword: "pw", KomodoDBPassword: "db", ProxmoxToken: "secret"}
+	got := c.Env("URBEX_FORGE_ADMIN_PASSWORD", "URBEX_KOMODO_DB_PASSWORD")
+	want := []string{"URBEX_FORGE_ADMIN_PASSWORD=pw", "URBEX_KOMODO_DB_PASSWORD=db"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("Env = %v, want %v", got, want)
 	}
@@ -165,7 +169,7 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 	c := &Credentials{}
 	if err := c.Update(func(c *Credentials) {
 		c.ProxmoxToken, c.AgeKey, c.CloudflareToken = "pve", "age", "cf"
-		c.GiteaToken, c.KomodoAPIKey, c.GrafanaAdminPassword = "g", "k", "p"
+		c.ForgeToken, c.KomodoAPIKey, c.GrafanaAdminPassword = "g", "k", "p"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +185,52 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 		if got.ProxmoxToken != "pve" || got.AgeKey != "age" || got.CloudflareToken != "cf" {
 			t.Errorf("provided credentials lost: %+v", got)
 		}
-		if got.GiteaToken != "" || got.KomodoAPIKey != "" || got.GrafanaAdminPassword != "" {
+		if got.ForgeToken != "" || got.KomodoAPIKey != "" || got.GrafanaAdminPassword != "" {
 			t.Errorf("generated credentials kept: %+v", got)
 		}
+	}
+}
+
+// A workspace written before the forge was Forgejo (ADR-0034) works: the
+// legacy names are read, from the file and the environment, the new ones
+// win, and the next write moves the file to the new keys.
+func TestLoad_LegacyForgeNames(t *testing.T) {
+	clearEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".urbex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(path, []byte("giteaToken: old-token\ngiteaAdminPassword: old-pw\nageKey: k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ForgeToken != "old-token" || c.ForgeAdminPassword != "old-pw" {
+		t.Fatalf("legacy keys not read: %+v", c)
+	}
+	if c.Get("URBEX_GITEA_TOKEN") != "old-token" || c.Get("URBEX_FORGE_TOKEN") != "old-token" {
+		t.Error("Get should answer to both names")
+	}
+
+	if err := c.Update(func(x *Credentials) { x.KomodoAPIKey = "k2" }); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if got := string(data); !strings.Contains(got, "forgeToken: old-token") || strings.Contains(got, "giteaToken") {
+		t.Errorf("the file should hold the new keys only, got:\n%s", got)
+	}
+
+	t.Setenv("URBEX_GITEA_TOKEN", "env-old")
+	if c, _ := Load(); c.ForgeToken != "env-old" {
+		t.Errorf("legacy env not read: %q", c.ForgeToken)
+	}
+	t.Setenv("URBEX_FORGE_TOKEN", "env-new")
+	if c, _ := Load(); c.ForgeToken != "env-new" {
+		t.Errorf("the new env name should win: %q", c.ForgeToken)
 	}
 }

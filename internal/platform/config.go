@@ -38,9 +38,14 @@ type Share struct {
 	Path string `yaml:"path"`
 }
 
+// GitConfig is the platform's forge (Forgejo, ADR-0034) and the org of
+// its repos.
 type GitConfig struct {
-	GiteaURL string `yaml:"giteaUrl"`
+	ForgeURL string `yaml:"forgeUrl"`
 	Org      string `yaml:"org"`
+	// LegacyGiteaURL is giteaUrl, the key before the forge was Forgejo:
+	// still read, forgeUrl wins (LoadFile moves it there).
+	LegacyGiteaURL string `yaml:"giteaUrl,omitempty"`
 }
 
 // CloudflareConfig is where the platform's public endpoints live: the
@@ -254,6 +259,9 @@ func LoadFile(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Git.ForgeURL == "" {
+		cfg.Git.ForgeURL = cfg.Git.LegacyGiteaURL
+	}
 	if cfg.Proxmox.StoragePool == "" {
 		cfg.Proxmox.StoragePool = "local-lvm"
 	}
@@ -301,7 +309,7 @@ func (c *Config) Validate() []string {
 	require(c.Proxmox.SSHPublicKey, "proxmox.sshPublicKey")
 	require(c.Proxmox.Network.CIDR, "proxmox.network.cidr")
 	require(c.Proxmox.Network.Gateway, "proxmox.network.gateway")
-	require(c.Git.GiteaURL, "git.giteaUrl")
+	require(c.Git.ForgeURL, "git.forgeUrl")
 
 	cf := c.Cloudflare
 	if (cf.AccountID == "") != (cf.ZoneID == "") {

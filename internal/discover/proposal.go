@@ -22,7 +22,7 @@ func proposal(r *Result) string {
 	w("domain: %s   # %s", domain, domainNote)
 	w("")
 	w("git:")
-	w("  giteaUrl: https://git-urbex.%s", domain)
+	w("  forgeUrl: https://git-urbex.%s", domain)
 	w("  org: urbex")
 	w("")
 	if cf != nil && cf.ZoneID != "" {
