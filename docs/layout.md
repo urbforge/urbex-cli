@@ -34,6 +34,7 @@ internal/keycloak/           minimal Keycloak admin API client (realms, clients,
 internal/technitium/         minimal Technitium API client (the internal zone and its A records)
 internal/links/              linked applications: what each `provides`/`uses` yields, `${app.key}` references
 internal/progress/           the record `bootstrap` and `apply` write and `urbex status --progress` reads
+internal/version/            the binary's version, commit and build date (`urbex version`, set with -ldflags -X)
 platform/terraform/          embedded Terraform modules (modules/lxc, base/, project/)
 platform/ansible/            embedded Ansible playbooks/roles (base services + Periphery for project LXCs)
 platform/dockerfiles/        embedded Dockerfiles for the go/java/python runtimes and web frontends

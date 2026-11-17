@@ -34,8 +34,11 @@ type Check struct {
 
 // Report is every check, in order.
 type Report struct {
-	Checks []Check `json:"checks"`
-	OK     bool    `json:"ok"` // no check failed
+	// Version is the urbex binary's, as `urbex version` prints it: a bug
+	// report with the doctor's output says which build it came from.
+	Version string  `json:"version,omitempty"`
+	Checks  []Check `json:"checks"`
+	OK      bool    `json:"ok"` // no check failed
 }
 
 func (r *Report) add(c Check) {
