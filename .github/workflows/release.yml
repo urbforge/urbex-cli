@@ -49,10 +49,21 @@ jobs:
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: go goreleaser
+      # The tag that started this run, and the one its changelog starts
+      # from: the previous release without a suffix (an -rc on the same
+      # commit would leave it empty), or the first commit for the first
+      # release. Left to itself, GoReleaser picks one of the tags of the
+      # commit, and v0.1.0 on v0.1.0-rc.1's commit was built as the rc.
       - name: Build and draft the release
-        run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+        run: |
+          prev=$({ git tag --list 'v*' | grep -v -e '-'; echo "$GORELEASER_CURRENT_TAG"; } | sort -uV | grep -B1 -x "$GORELEASER_CURRENT_TAG" | head -n 1)
+          [ "$prev" = "$GORELEASER_CURRENT_TAG" ] && prev=
+          export GORELEASER_PREVIOUS_TAG=${prev:-$(git rev-list --max-parents=0 HEAD | tail -n 1)}
+          echo "Releasing $GORELEASER_CURRENT_TAG, changes since $GORELEASER_PREVIOUS_TAG"
+          goreleaser release --clean
       - name: Build provenance of the archives
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
