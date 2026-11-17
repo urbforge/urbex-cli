@@ -41,6 +41,7 @@ See https://github.com/urbforge/urbex for architecture and design decisions.`,
 	root.AddCommand(newUsersCmd())
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newDiscoverCmd())
+	root.AddCommand(newUpdatesCmd())
 	root.AddCommand(newVersionCmd())
 
 	return root
