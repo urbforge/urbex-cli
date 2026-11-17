@@ -163,6 +163,11 @@ credentials, the keys, the GitOps repo and your projects. Only podman or
 docker is needed, on Linux or on macOS (docker with colima, or podman
 machine). See [`tools/operator/README.md`](tools/operator/README.md).
 
+Each release attaches `urbex-op` and publishes its image,
+`ghcr.io/urbforge/urbex-op:<version>`, which `urbex-op` pulls the first
+time: download the one file and run it. From a checkout, build the image
+first:
+
 ```sh
 tools/operator/urbex-op build && tools/operator/urbex-op -w ~/urbex-work init
 export URBEX_PROXMOX_TOKEN=...

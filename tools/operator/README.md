@@ -20,6 +20,21 @@ script expands its arrays the way macOS's bash 3.2 accepts. What it needs:
 
 ## Quick start
 
+From a release, nothing to clone: download `urbex-op` from the
+[release](https://github.com/urbforge/urbex-cli/releases) (one file). It
+runs that release's image, `ghcr.io/urbforge/urbex-op:<version>`, and
+pulls it the first time:
+
+```sh
+curl -fsSLo ~/bin/urbex-op https://github.com/urbforge/urbex-cli/releases/download/v0.1.0/urbex-op
+chmod +x ~/bin/urbex-op
+urbex-op version                                   # urbex-op 0.1.0, image ghcr.io/urbforge/urbex-op:0.1.0
+urbex-op -w ~/urbex-work init                      # the workspace: SSH key, age key
+```
+
+From a checkout of this repository (to work on urbex), build the image
+from it first:
+
 ```sh
 tools/operator/urbex-op build                      # the image, from this checkout
 tools/operator/urbex-op -w ~/urbex-work init       # the workspace: SSH key, age key
@@ -115,9 +130,14 @@ See *Find every endpoint* in the cookbook
 | Variable | Default | Meaning |
 |---|---|---|
 | `URBEX_WORKSPACE` | `~/urbex-workspace` | The workspace, if `-w` isn't given. |
-| `URBEX_OPERATOR_IMAGE` | `urbex-operator` | The image `build` creates and runs use. |
+| `URBEX_OPERATOR_IMAGE` | a release's `urbex-op`: `ghcr.io/urbforge/urbex-op:<its version>`; from a checkout: `urbex-operator` | The image runs use (and `build` creates). |
 | `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN`, `URBEX_AGE_KEY` | - | Passed to the container when set; otherwise the credentials file is used. |
 
-Rebuild the image (`urbex-op build`, or `mise run operator-image`) after
-updating this checkout: the image contains the `urbex` binary built from
+From a checkout, rebuild the image (`urbex-op build`, or `mise run
+operator-image`) after updating it: the image contains the `urbex` binary built from
 it, and the tools at the versions `mise.toml` pins.
+
+A release builds the same Containerfile with `--target release`, from
+the binaries GoReleaser made, for linux/amd64 and linux/arm64, and pushes
+it to `ghcr.io/urbforge/urbex-op` (`:<version>`, and `:latest` unless the
+tag has a suffix such as `-rc.1`).

@@ -1,17 +1,24 @@
-# The operator image: urbex, built from this checkout, and everything it
-# shells out to - terraform, ansible-playbook, sops, age, git, ssh - at the
-# versions pinned in mise.toml. Build it with `tools/operator/urbex-op
-# build` (or `mise run operator-image`), which passes mise.toml's Go and
-# mise versions as GO_VERSION and MISE_VERSION.
-ARG GO_VERSION
+# The operator image: urbex and everything it shells out to - terraform,
+# ansible-playbook, sops, age, git, ssh - at the versions pinned in
+# mise.toml. Two ways to build it, both passing mise.toml's Go and mise
+# versions as GO_VERSION and MISE_VERSION:
+#
+# - from this checkout (the last stage, the default): `tools/operator/urbex-op
+#   build`, or `mise run operator-image`;
+# - from a release's binaries (--target release): the release workflow,
+#   with a context holding mise.toml and <os>/<arch>/urbex for each
+#   platform - published as ghcr.io/urbforge/urbex-op.
+ARG GO_VERSION=1
 FROM docker.io/library/golang:${GO_VERSION} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/urbex ./cmd/urbex
+# The commit urbex version reports: the context has no .git for Go to read.
+ARG URBEX_COMMIT=
+RUN CGO_ENABLED=0 go build -ldflags "-X github.com/urbforge/urbex-cli/internal/version.Commit=${URBEX_COMMIT}" -o /out/urbex ./cmd/urbex
 
-FROM docker.io/library/debian:13-slim
+FROM docker.io/library/debian:13-slim AS tools
 ARG MISE_VERSION
 # The tools, from mise.toml, linked into /usr/local/bin; mise itself and
 # uv are only needed to install them, and are removed in the same layer.
@@ -36,4 +43,12 @@ RUN apt-get update \
  && chmod +x /usr/local/bin/urbex-python \
  && rm -rf /tmp/mise /tmp/mise-cache "$MISE_DATA_DIR/installs/uv" "$MISE_DATA_DIR/shims"
 WORKDIR /
+
+# A release: the binary GoReleaser built for this platform.
+FROM tools AS release
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/urbex /usr/local/bin/urbex
+
+# From this checkout.
+FROM tools
 COPY --from=build /out/urbex /usr/local/bin/urbex

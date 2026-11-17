@@ -1,7 +1,9 @@
 # The release: on a v* tag (pushed by Teg - a tag publishes), the tests,
 # then GoReleaser (.goreleaser.yaml) builds the binaries and archives and
-# drafts the GitHub release, then the release is published: as a
-# pre-release while urbex is 0.x or the tag has a suffix (v0.1.0-rc.1).
+# drafts the GitHub release; the operator image is built from those
+# binaries and pushed to ghcr.io/urbforge/urbex-op, urbex-op is attached
+# to the release, and the release is published: as a pre-release while
+# urbex is 0.x or the tag has a suffix (v0.1.0-rc.1).
 name: release
 
 on:
@@ -36,6 +38,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write # the release and its assets
+      packages: write # the operator image on ghcr.io
       id-token: write # build provenance
       attestations: write
     steps:
@@ -54,6 +57,57 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
+      - name: The image's context, and its tags
+        id: image
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # <os>/<arch>/urbex, as the Containerfile's release stage reads it.
+          jq -r '.[] | select(.type == "Binary" and .goos == "linux") | "\(.goarch) \(.path)"' dist/artifacts.json |
+            while read -r arch path; do
+              mkdir -p "dist/image/linux/$arch"
+              cp "$path" "dist/image/linux/$arch/urbex"
+            done
+          cp mise.toml dist/image/
+          version=${TAG#v}
+          tags="ghcr.io/urbforge/urbex-op:$version"
+          case "$TAG" in *-*) ;; *) tags="$tags,ghcr.io/urbforge/urbex-op:latest" ;; esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tags=$tags" >>"$GITHUB_OUTPUT"
+          echo "mise=$(sed -n 's/^min_version = "\(.*\)"$/\1/p' mise.toml)" >>"$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the operator image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: dist/image
+          file: tools/operator/Containerfile
+          target: release
+          platforms: linux/amd64,linux/arm64
+          build-args: MISE_VERSION=${{ steps.image.outputs.mise }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+            org.opencontainers.image.description=urbex and the tools it runs, for urbex-op
+            org.opencontainers.image.licenses=Apache-2.0
+          push: true
+          provenance: mode=max
+      - name: Attach urbex-op, set to this release's image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.image.outputs.version }}
+        run: |
+          sed "s/^URBEX_OP_VERSION=dev\$/URBEX_OP_VERSION=$VERSION/" tools/operator/urbex-op >dist/urbex-op
+          grep -qx "URBEX_OP_VERSION=$VERSION" dist/urbex-op
+          chmod +x dist/urbex-op
+          gh release upload "$TAG" dist/urbex-op --repo "$GITHUB_REPOSITORY" --clobber
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
