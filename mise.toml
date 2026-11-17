@@ -19,6 +19,8 @@ uv = "0.12.23"
 "pipx:ansible-core" = "2.21.5"
 # The runtime of Komodo's Actions: tests the reconciler's logic.
 deno = "2.9.7"
+# Builds the release binaries and archives (.goreleaser.yaml).
+goreleaser = "2.19.0"
 
 [settings]
 # Install Python tools (ansible-core) with uv.
@@ -46,6 +48,10 @@ run = [
 [tasks.fmt]
 description = "Format the code with gofmt"
 run = "gofmt -w cmd internal"
+
+[tasks.release-snapshot]
+description = "Build the release binaries and archives into dist/, publishing nothing"
+run = "goreleaser release --snapshot --clean"
 
 [tasks.e2e]
 description = "End-to-end test, needs podman (see e2e/README.md)"

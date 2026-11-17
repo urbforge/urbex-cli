@@ -3,3 +3,4 @@
 .DS_Store
 /e2e/.work/
 /mise.local.toml
+/dist/
