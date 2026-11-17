@@ -184,6 +184,11 @@ mise run e2e           # end-to-end, needs podman - see e2e/README.md
 mise tasks             # every task
 ```
 
+Every pull request and push to `main` runs `mise run lint` and `mise
+run test` on GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)),
+with Go and Deno from `mise.toml`: run both before you push. The e2e
+needs a Proxmox node and runs on ours, not in CI.
+
 With mise [activated in your shell](https://mise.jdx.dev/getting-started.html),
 `go`, `terraform`, `ansible-playbook`... are the pinned ones whenever you
 are in this directory; otherwise prefix commands with `mise exec --`.

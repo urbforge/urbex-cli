@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -162,14 +163,18 @@ func TestTracker_WatchBeginsPhasesFromPlayHeaders(t *testing.T) {
 	w := tr.Watch(&out)
 	fmt.Fprintln(w, "PLAY [Configure all urbex base-service containers] *****")
 	fmt.Fprintln(w, "TASK [common : Install Docker] ****")
+	// Wait for both lines: the phase the play begins, then the task's step
+	// event. Returning before the step is written would race Watch's
+	// goroutine against t.TempDir's cleanup.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		r, _ := Latest(dir)
-		if r.Phases[2].State == Running {
+		events, _ := os.ReadFile(eventsPath(tr.path))
+		if r.Phases[2].State == Running && strings.Contains(string(events), `Install Docker"`) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the play didn't begin its phase: %+v", r.Phases)
+			t.Fatalf("the play didn't begin its phase, or its task no step: %+v\n%s", r.Phases, events)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

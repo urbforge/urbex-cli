@@ -339,7 +339,7 @@ func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
 		`name=auth host=auth.staging.my-app.lab; probe() { wget -q --spider -T 2 --header "Host: auth.staging.my-app.lab:9000" "http://$$1:9000/ready"; }; wait_for || exit 1`,
 		// How it decides is TestWait_*; a provider that doesn't answer
 		// is probed less and less often, with jitter.
-		"sleep $$((delay + $$RANDOM % (delay + 1)))",
+		"sleep $$((delay + $${RANDOM:-0} % (delay + 1)))",
 		"[ $$delay -lt 8 ] && delay=$$((delay * 2))",
 		"      - urbex.env\n      - path: ${URBEX_GENERATED_SECRETS_FILE:-urbex.secrets.env}\n        required: false",
 	} {
