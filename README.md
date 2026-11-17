@@ -195,11 +195,16 @@ run test` on GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.y
 with Go and Deno from `mise.toml`: run both before you push. The e2e
 needs a Proxmox node and runs on ours, not in CI.
 
+What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md): a
+pull request that changes what users see adds a line under
+*Unreleased*, and a release moves them under its version.
+
 A release is a `v*` tag, pushed by a maintainer:
 [`.github/workflows/release.yml`](.github/workflows/release.yml) runs the
 tests, then [GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`)
 builds `urbex` for Linux and macOS (amd64, arm64), with checksums,
-provenance and a changelog from the commit titles, and publishes the
+provenance, the version's notes from `CHANGELOG.md` (the workflow fails
+without them) and the list of commits, and publishes the
 GitHub release - a pre-release while urbex is 0.x or the tag has a
 suffix (`v0.1.0-rc.1`).
 
