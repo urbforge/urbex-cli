@@ -585,7 +585,9 @@ func writeWait(b *strings.Builder, l *Links) {
 	b.WriteString("            fi\n")
 	b.WriteString("            [ $$(date +%s) -ge $$end ] && { echo \"wait: gave up waiting for $$name\"; return 1; }\n")
 	fmt.Fprintf(b, "            if [ -n \"$$since\" ]; then sleep %s; continue; fi\n", WaitProbeInterval)
-	b.WriteString("            sleep $$((delay + $$RANDOM % (delay + 1)))\n")
+	// $RANDOM isn't POSIX: busybox's sh (the wait image's) has it, dash
+	// hasn't; without it the probes back off with no jitter.
+	b.WriteString("            sleep $$((delay + $${RANDOM:-0} % (delay + 1)))\n")
 	fmt.Fprintf(b, "            [ $$delay -lt %d ] && delay=$$((delay * 2))\n", WaitMaxBackoffSeconds)
 	b.WriteString("          done\n")
 	b.WriteString("          echo \"wait: $$name is ready\"\n")
