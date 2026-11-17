@@ -185,6 +185,11 @@ mise run release-snapshot  # the release archives in dist/, publishing nothing
 mise tasks             # every task
 ```
 
+Every pull request and push to `main` runs `mise run lint` and `mise
+run test` on GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)),
+with Go and Deno from `mise.toml`: run both before you push. The e2e
+needs a Proxmox node and runs on ours, not in CI.
+
 A release is a `v*` tag, pushed by a maintainer:
 [`.github/workflows/release.yml`](.github/workflows/release.yml) runs the
 tests, then [GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`)

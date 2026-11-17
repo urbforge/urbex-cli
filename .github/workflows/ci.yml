@@ -1,0 +1,41 @@
+# Lint and unit tests on every pull request and push to main: the same
+# `mise run lint` and `mise run test` as on our machines, with the tools
+# pinned in mise.toml. The e2e needs the Proxmox lab and stays out of CI;
+# so do secrets: this workflow reads the code and nothing else.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Only Go and Deno: the unit tests need neither Terraform, Ansible
+      # nor sops. The tools are cached by mise.toml's hash.
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        with:
+          install_args: go deno
+      - name: Go module and build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+      - run: mise run lint
+      - run: mise run test
