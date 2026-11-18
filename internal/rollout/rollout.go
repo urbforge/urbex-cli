@@ -32,7 +32,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/gitsync"
 	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/komodo"
@@ -63,7 +63,7 @@ type Gitea interface {
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	EnsureWebhook(ctx context.Context, owner, repo, targetURL, secret, branchFilter string) error
 	DeleteWebhook(ctx context.Context, owner, repo, targetURL string) error
-	ListTags(ctx context.Context, owner, repo string) ([]gitea.Tag, error)
+	ListTags(ctx context.Context, owner, repo string) ([]forge.Tag, error)
 	BranchCommit(ctx context.Context, owner, repo, branch string) (string, error)
 	ResolveCommit(ctx context.Context, owner, repo, ref string) (string, error)
 	CreateTag(ctx context.Context, owner, repo, tag, target, message string) error
@@ -292,7 +292,7 @@ func (r *Rollout) ensureTrunk(ctx context.Context, project string) error {
 	if err := r.Git.Push(ctx, r.RepoDir, url, r.Token, "HEAD:refs/heads/"+bootstrap.TrunkBranch); err != nil {
 		return fmt.Errorf("creating branch %s on gitea from %s: %w", bootstrap.TrunkBranch, r.RepoDir, err)
 	}
-	fmt.Fprintf(r.Out, "Created %s/%s on Gitea with branch %s from the local HEAD.\n", r.Org, project, bootstrap.TrunkBranch)
+	fmt.Fprintf(r.Out, "Created %s/%s on Forgejo with branch %s from the local HEAD.\n", r.Org, project, bootstrap.TrunkBranch)
 	return nil
 }
 
@@ -503,12 +503,12 @@ func (r *Rollout) DeployTelemetry(ctx context.Context, t Target) error {
 }
 
 // Releases returns the project's releases: its vX.Y.Z tags on Gitea.
-func (r *Rollout) Releases(ctx context.Context, project string) ([]gitea.Tag, error) {
+func (r *Rollout) Releases(ctx context.Context, project string) ([]forge.Tag, error) {
 	tags, err := r.Gitea.ListTags(ctx, r.Org, project)
 	if err != nil {
 		return nil, err
 	}
-	var releases []gitea.Tag
+	var releases []forge.Tag
 	for _, t := range tags {
 		if _, ok := semver.Parse(t.Name); ok && strings.HasPrefix(t.Name, "v") {
 			releases = append(releases, t)

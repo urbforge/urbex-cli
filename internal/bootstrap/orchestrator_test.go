@@ -41,7 +41,7 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) error {
 func validConfig() *platform.Config {
 	return &platform.Config{
 		Domain: "example.com",
-		Git:    platform.GitConfig{GiteaURL: "https://git.example.com", Org: "urbex"},
+		Git:    platform.GitConfig{ForgeURL: "https://git.example.com", Org: "urbex"},
 		Proxmox: platform.ProxmoxConfig{
 			APIURL:       "https://proxmox.example.internal:8006/api2/json",
 			Node:         "pve",
@@ -420,7 +420,7 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	}
 
 	creds := o.Credentials
-	if creds.GiteaAdminPassword == "" || creds.KomodoDBPassword == "" || creds.KeycloakAdminPassword == "" || creds.TechnitiumAdminPassword == "" {
+	if creds.ForgeAdminPassword == "" || creds.KomodoDBPassword == "" || creds.KeycloakAdminPassword == "" || creds.TechnitiumAdminPassword == "" {
 		t.Errorf("expected platform secrets to be generated, got %+v", creds)
 	}
 	if creds.TechnitiumToken != "technitium-token" {
@@ -443,7 +443,7 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	}
 	ansible := runner.calls[2]
 	env := strings.Join(ansible.Env, "\n")
-	for _, want := range []string{"URBEX_GITEA_ADMIN_PASSWORD=" + creds.GiteaAdminPassword, "URBEX_KOMODO_JWT_SECRET=" + creds.KomodoJWTSecret} {
+	for _, want := range []string{"URBEX_FORGE_ADMIN_PASSWORD=" + creds.ForgeAdminPassword, "URBEX_KOMODO_JWT_SECRET=" + creds.KomodoJWTSecret} {
 		if !strings.Contains(env, want) {
 			t.Errorf("expected %q in ansible env", want)
 		}
@@ -452,10 +452,10 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 		t.Error("the proxmox token must not be passed to ansible")
 	}
 
-	if fp.tokens["urbex-cli"] != creds.GiteaAdminPassword || len(fp.tokens) != 1 {
+	if fp.tokens["urbex-cli"] != creds.ForgeAdminPassword || len(fp.tokens) != 1 {
 		t.Errorf("expected exactly the cli token, created with the admin password, got %v", fp.tokens)
 	}
-	if creds.GiteaToken != "token-urbex-cli" || creds.KomodoOnboardingKey != "O_onboarding_O" {
+	if creds.ForgeToken != "token-urbex-cli" || creds.KomodoOnboardingKey != "O_onboarding_O" {
 		t.Errorf("token/onboarding key not stored in credentials: %+v", creds)
 	}
 	if creds.KomodoAPIKey != "K_key_K" || creds.KomodoAPISecret != "S_secret_S" {
@@ -525,18 +525,18 @@ func TestRun_SetsUpGiteaAndKomodoAndPushesGitOpsRepo(t *testing.T) {
 	if !strings.Contains(string(inventory), "gitea_registry: git.urbex.example.com:3000") {
 		t.Errorf("expected gitea_registry in inventory vars:\n%s", inventory)
 	}
-	if strings.Contains(string(inventory), creds.GiteaAdminPassword) {
+	if strings.Contains(string(inventory), creds.ForgeAdminPassword) {
 		t.Error("secrets must never be written to the inventory")
 	}
 
 	// Re-running keeps existing secrets and tokens instead of rotating them.
-	password, token := creds.GiteaAdminPassword, creds.GiteaToken
+	password, token := creds.ForgeAdminPassword, creds.ForgeToken
 	technitiumPassword, technitiumToken := creds.TechnitiumAdminPassword, creds.TechnitiumToken
 	fp.tokens, fp.apiKeys, fp.onboardingKeys = nil, 0, 0
 	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
-	if creds.GiteaAdminPassword != password || creds.GiteaToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 || fp.onboardingKeys != 0 {
+	if creds.ForgeAdminPassword != password || creds.ForgeToken != token || len(fp.tokens) != 0 || fp.apiKeys != 0 || fp.onboardingKeys != 0 {
 		t.Errorf("expected no secret/token rotation on re-run (tokens=%v apiKeys=%d onboardingKeys=%d)", fp.tokens, fp.apiKeys, fp.onboardingKeys)
 	}
 	if creds.TechnitiumAdminPassword != technitiumPassword || creds.TechnitiumToken != technitiumToken {

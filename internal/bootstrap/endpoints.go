@@ -39,7 +39,7 @@ func PlatformEndpoints(cfg *platform.Config) ([]PlatformEndpoint, error) {
 		keycloakNote = "realms public; admin console behind Cloudflare Access"
 	}
 	return []PlatformEndpoint{
-		{"gitea", "Gitea (web, git, registry)", internal("git", "3000"), lan("gitea", "3000"), https(pub.Gitea), access},
+		{"gitea", "Forgejo (web, git, registry)", internal("git", "3000"), lan("gitea", "3000"), https(pub.Gitea), access},
 		{"komodo", "Komodo", internal("komodo", "9120"), lan("komodo", "9120"), https(pub.Komodo), access},
 		{"komodo", "Komodo webhooks", internal("hooks", "9120") + "/listener/", lan("komodo", "9120") + "/listener/", httpsPath(pub.Hooks, "/listener/"), "signed calls only"},
 		{"keycloak", "Keycloak", internal("auth", "8080"), lan("keycloak", "8080"), https(pub.Keycloak), keycloakNote},

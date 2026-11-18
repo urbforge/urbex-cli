@@ -20,7 +20,7 @@ func TestPlatformEndpoints(t *testing.T) {
 	if e := byName["Grafana"]; e.LAN != "http://192.168.1.204:3000" || e.Internal != "http://grafana.urbex.example.com:3000" || e.Public != "" {
 		t.Errorf("Grafana = %+v", e)
 	}
-	if e := byName["Gitea (web, git, registry)"]; e.LAN != "http://192.168.1.200:3000" || e.Public != "" {
+	if e := byName["Forgejo (web, git, registry)"]; e.LAN != "http://192.168.1.200:3000" || e.Public != "" {
 		t.Errorf("without Cloudflare nothing is public: %+v", e)
 	}
 

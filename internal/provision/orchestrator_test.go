@@ -14,7 +14,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/allocation"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/pgadmin"
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -43,7 +43,7 @@ func (f runnerFunc) Run(_ context.Context, c runner.Command) error {
 func validPlatformConfig() *platform.Config {
 	return &platform.Config{
 		Domain: "example.com",
-		Git:    platform.GitConfig{GiteaURL: "https://git.example.com"},
+		Git:    platform.GitConfig{ForgeURL: "https://git.example.com"},
 		Proxmox: platform.ProxmoxConfig{
 			APIURL:       "https://proxmox.example.internal:8006/api2/json",
 			Node:         "pve",
@@ -74,7 +74,7 @@ func validCredentials() *credentials.Credentials {
 	return &credentials.Credentials{
 		ProxmoxToken:        "pve-token",
 		AgeKey:              "AGE-SECRET-KEY-13E9XGFYJN5M6PKTQJFHSXX3MCEZS9XT2EA88VFZ3Z3RFA3VHXGGQ6LS0RC",
-		GiteaToken:          "gitea-token",
+		ForgeToken:          "gitea-token",
 		KomodoAPIKey:        "K_key_K",
 		KomodoAPISecret:     "S_secret_S",
 		KomodoOnboardingKey: "O_onboard_O",
@@ -97,7 +97,7 @@ type fakeRollout struct {
 	mainBuilds                   int
 	// mainVersion is what a build of main sets following environments to.
 	mainVersion string
-	releases    []gitea.Tag
+	releases    []forge.Tag
 	repo        *envrepo.Repo
 	services    []manifest.Service
 	// pg are the postgres providers' fake servers, by service: one is
@@ -167,7 +167,7 @@ func (f *fakeRollout) BuildMain(ctx context.Context, project string) error {
 	return nil
 }
 
-func (f *fakeRollout) Releases(ctx context.Context, project string) ([]gitea.Tag, error) {
+func (f *fakeRollout) Releases(ctx context.Context, project string) ([]forge.Tag, error) {
 	return f.releases, nil
 }
 
@@ -512,7 +512,7 @@ func TestPromote_PutsTheReleaseStagingRunsInProd(t *testing.T) {
 	}
 
 	// Once released, promote finds the release by its commit.
-	ro.releases = []gitea.Tag{
+	ro.releases = []forge.Tag{
 		{Name: "v1.4.1", Commit: "0000000000000000000000000000000000000000"},
 		{Name: "v1.4.2", Commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
 	}

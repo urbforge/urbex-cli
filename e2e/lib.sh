@@ -38,7 +38,7 @@ expect_status() {
 }
 
 gitea_api() { # gitea_api <method> <path> [json]
-  curl -s -X "$1" "$GITEA/api/v1$2" -H "authorization: token $(cred giteaToken)" \
+  curl -s -X "$1" "$GITEA/api/v1$2" -H "authorization: token $(cred forgeToken)" \
     -H 'content-type: application/json' ${3:+-d "$3"}
 }
 
@@ -49,11 +49,11 @@ komodo_names() { # komodo_names <Servers|Builds|Deployments|Procedures>
 }
 
 git_remote() { # the app repo's clone URL on Gitea, with credentials
-  echo "http://urbex-admin:$(cred giteaToken)@$NET.200:3000/urbex/hello.git"
+  echo "http://urbex-admin:$(cred forgeToken)@$NET.200:3000/urbex/hello.git"
 }
 
 gitops_remote() { # the GitOps repo's clone URL on Gitea, with credentials
-  echo "http://urbex-admin:$(cred giteaToken)@$NET.200:3000/urbex/gitops.git"
+  echo "http://urbex-admin:$(cred forgeToken)@$NET.200:3000/urbex/gitops.git"
 }
 
 # push_main <new-version>: what a developer does on a trunk-based

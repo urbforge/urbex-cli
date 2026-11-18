@@ -5,7 +5,7 @@ import "os"
 const templateContent = `domain: example.com
 
 git:
-  giteaUrl: https://git.example.com
+  forgeUrl: https://git.example.com
   org: urbex
 
 # Public endpoints on Cloudflare (optional: leave accountId and zoneId

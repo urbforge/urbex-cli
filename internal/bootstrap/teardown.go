@@ -63,9 +63,9 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	o.Progress.Begin(PhaseTeardownCheck)
 	// Gitea has the latest GitOps repo - for the last time.
 	repoURL := ep.RepoURL(o.Config.Git.Org, GitOpsRepoName)
-	if o.Credentials.GiteaToken != "" {
-		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.GiteaToken); err != nil {
-			fmt.Fprintf(o.Out, "Warning: could not update the GitOps repo from Gitea (%v); using the local copy.\n", err)
+	if o.Credentials.ForgeToken != "" {
+		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.ForgeToken); err != nil {
+			fmt.Fprintf(o.Out, "Warning: could not update the GitOps repo from Forgejo (%v); using the local copy.\n", err)
 		}
 	}
 
@@ -77,15 +77,15 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "base")
 	var repos []string
-	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.GiteaToken).(repoLister); ok && o.Credentials.GiteaToken != "" {
+	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.ForgeToken).(repoLister); ok && o.Credentials.ForgeToken != "" {
 		repos, _ = g.ListOrgRepos(ctx, o.Config.Git.Org) // best effort: Gitea may already be gone
 	}
 	fmt.Fprintln(o.Out, "This destroys the Urbex platform on Proxmox:")
 	fmt.Fprintf(o.Out, "  - the base-service LXCs and their disks: %s\n", strings.Join(baseHostnames(o.Config), ", "))
 	if len(repos) > 0 {
-		fmt.Fprintf(o.Out, "  - everything on Gitea: %s, and their images - make sure the project repos live elsewhere too\n", strings.Join(repos, ", "))
+		fmt.Fprintf(o.Out, "  - everything on Forgejo: %s, and their images - make sure the project repos live elsewhere too\n", strings.Join(repos, ", "))
 	} else {
-		fmt.Fprintln(o.Out, "  - everything on Gitea: every repository and image - make sure the project repos live elsewhere too")
+		fmt.Fprintln(o.Out, "  - everything on Forgejo: every repository and image - make sure the project repos live elsewhere too")
 	}
 	fmt.Fprintln(o.Out, "  - Komodo's, Keycloak's and Grafana's configuration and data")
 	if o.Config.Cloudflare.Enabled() {
@@ -152,7 +152,7 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 		return fmt.Errorf("committing the gitops repo: %w", err)
 	}
 	fmt.Fprintln(o.Out, "Platform destroyed.")
-	fmt.Fprintf(o.Out, "Keep %s: 'urbex bootstrap' creates a new platform and pushes it to its Gitea.\n", opts.GitOpsRepoPath)
+	fmt.Fprintf(o.Out, "Keep %s: 'urbex bootstrap' creates a new platform and pushes it to its Forgejo.\n", opts.GitOpsRepoPath)
 	return nil
 }
 

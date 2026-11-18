@@ -16,7 +16,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/semver"
@@ -26,7 +26,7 @@ type fakeGitea struct {
 	repos    []string
 	branches map[string]bool
 	hooks    map[string]string // url -> "secret|filter"
-	tags     []gitea.Tag
+	tags     []forge.Tag
 	images   map[string]bool // "name:tag"
 	// imagesAfter makes images appear after that many lookups, as a
 	// build finishing would.
@@ -52,11 +52,11 @@ func (f *fakeGitea) DeleteWebhook(ctx context.Context, owner, repo, targetURL st
 	delete(f.hooks, targetURL)
 	return nil
 }
-func (f *fakeGitea) ListTags(ctx context.Context, owner, repo string) ([]gitea.Tag, error) {
+func (f *fakeGitea) ListTags(ctx context.Context, owner, repo string) ([]forge.Tag, error) {
 	return f.tags, nil
 }
 func (f *fakeGitea) CreateTag(ctx context.Context, owner, repo, tag, target, message string) error {
-	f.tags = append(f.tags, gitea.Tag{Name: tag, Commit: target})
+	f.tags = append(f.tags, forge.Tag{Name: tag, Commit: target})
 	return nil
 }
 func (f *fakeGitea) BranchCommit(ctx context.Context, owner, repo, branch string) (string, error) {
@@ -421,7 +421,7 @@ func TestRelease_TagsMainAndWaitsForEveryImage(t *testing.T) {
 	if err := r.Release(context.Background(), "my-app", services(), semver.Version{Major: 1, Minor: 4, Patch: 2}, commit); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	if len(g.tags) != 1 || g.tags[0] != (gitea.Tag{Name: "v1.4.2", Commit: commit}) {
+	if len(g.tags) != 1 || g.tags[0] != (forge.Tag{Name: "v1.4.2", Commit: commit}) {
 		t.Errorf("expected v1.4.2 tagged on the commit, got %v", g.tags)
 	}
 	if g.lookups <= 3 {
@@ -626,7 +626,7 @@ func TestBuildMain_RunsTheReleaseActionAsAPushToMainWould(t *testing.T) {
 }
 
 func TestReleases_OnlyVersionTags(t *testing.T) {
-	g := &fakeGitea{tags: []gitea.Tag{{Name: "v1.0.0", Commit: "a"}, {Name: "nightly", Commit: "b"}, {Name: "1.1.0", Commit: "c"}, {Name: "v1.2.0-rc.1", Commit: "d"}}}
+	g := &fakeGitea{tags: []forge.Tag{{Name: "v1.0.0", Commit: "a"}, {Name: "nightly", Commit: "b"}, {Name: "1.1.0", Commit: "c"}, {Name: "v1.2.0-rc.1", Commit: "d"}}}
 	releases, err := newRollout(g, &fakeKomodo{}, &fakeGit{}).Releases(context.Background(), "my-app")
 	if err != nil || len(releases) != 1 || releases[0].Name != "v1.0.0" {
 		t.Errorf("Releases = %v, %v; want only v1.0.0", releases, err)

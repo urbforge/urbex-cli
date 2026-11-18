@@ -44,7 +44,7 @@ func TestTeardown_RefusesWhileProjectEnvironmentsExist(t *testing.T) {
 
 func TestTeardown_WithoutYesOnlyReports(t *testing.T) {
 	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
-	o.Credentials.GiteaToken = "tok"
+	o.Credentials.ForgeToken = "tok"
 	dir := gitopsRepo(t)
 
 	err := o.Teardown(context.Background(), TeardownOptions{GitOpsRepoPath: dir})
@@ -86,7 +86,7 @@ func TestTeardown_DestroysBaseServicesAndForgetsGeneratedCredentials(t *testing.
 	if strings.Join(args, ",") != "init,destroy -auto-approve -parallelism=2" {
 		t.Errorf("unexpected terraform calls: %v", args)
 	}
-	if o.Credentials.KomodoAPIKey != "" || o.Credentials.GiteaToken != "" {
+	if o.Credentials.KomodoAPIKey != "" || o.Credentials.ForgeToken != "" {
 		t.Error("the generated credentials of the destroyed platform should be forgotten")
 	}
 	if o.Credentials.ProxmoxToken == "" || o.Credentials.AgeKey == "" {

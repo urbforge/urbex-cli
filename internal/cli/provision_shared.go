@@ -15,7 +15,7 @@ import (
 
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/komodo"
 	"github.com/urbforge/urbex-cli/internal/manifest"
@@ -128,10 +128,10 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 		Out:         out,
 		Images:      &imageref.Resolver{HTTP: &http.Client{Timeout: 30 * time.Second}},
 		SyncGitOps: func(ctx context.Context, path, message string) error {
-			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken, message)
+			return bootstrap.SyncRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.ForgeToken, message)
 		},
 		RefreshGitOps: func(ctx context.Context, path string) error {
-			return bootstrap.PullRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.GiteaToken)
+			return bootstrap.PullRepo(ctx, path, ep.RepoURL(cfg.Git.Org, bootstrap.GitOpsRepoName), creds.ForgeToken)
 		},
 	}
 	ro := newRollout(cfg, creds, ep, repoDir, out)
@@ -160,13 +160,13 @@ func newProvisionOrchestrator(cmd *cobra.Command, manifestPath, gitopsRepoPath, 
 func newRollout(cfg *platform.Config, creds *credentials.Credentials, ep bootstrap.Endpoints, repoDir string, out io.Writer) *rollout.Rollout {
 	internal, _ := bootstrap.InternalEndpointsFor(cfg) // fails only where ep did
 	return &rollout.Rollout{
-		Gitea:         gitea.New(ep.GiteaURL, creds.GiteaToken),
+		Gitea:         forge.New(ep.GiteaURL, creds.ForgeToken),
 		Komodo:        komodo.New(ep.KomodoURL, creds.KomodoAPIKey, creds.KomodoAPISecret),
 		Git:           rollout.GitCLI{},
 		Endpoints:     ep,
 		Internal:      internal,
 		Org:           cfg.Git.Org,
-		Token:         creds.GiteaToken,
+		Token:         creds.ForgeToken,
 		WebhookSecret: creds.KomodoWebhookSecret,
 		RepoDir:       repoDir,
 		Out:           out,
