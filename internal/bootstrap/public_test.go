@@ -346,7 +346,19 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
 		}
 	}
-	want := "urbex-keycloak,urbex-observability,urbex-tunnel," +
+	// The builder's cache is pruned by a Stack on Komodo's Server, with
+	// the defaults (urbforge/urbex-cli#92).
+	bc := fp.stacks["urbex-build-cache"]
+	if bc.ServerID != KomodoServerName || bc.RunDirectory != "platform/build-cache" {
+		t.Errorf("build-cache stack = %+v", bc)
+	}
+	bcEnv, _ := os.ReadFile(filepath.Join(dir, "platform/build-cache/config.env"))
+	for _, want := range []string{"KEEP_STORAGE=3GB", "KEEP_FOR=168h", "KEEP_EVERY=86400"} {
+		if !strings.Contains(string(bcEnv), want) {
+			t.Errorf("build-cache config.env lacks %s:\n%s", want, bcEnv)
+		}
+	}
+	want := "urbex-build-cache,urbex-keycloak,urbex-observability,urbex-tunnel," +
 		"urbex-telemetry-urbex-gitea,urbex-telemetry-urbex-komodo,urbex-telemetry-urbex-technitium," +
 		"urbex-telemetry-urbex-keycloak,urbex-telemetry-urbex-observability,urbex-telemetry-urbex-tunnel"
 	// All at once (urbforge/urbex-cli#30): in any order.

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	assets "github.com/urbforge/urbex-cli/platform"
 
@@ -32,8 +33,11 @@ type SecretWriter interface {
 // secrets.sops.env; the Stack Name runs on the Server of the same name.
 type PlatformStack struct {
 	Name, Dir string
-	Config    map[string]string
-	Secrets   map[string]string
+	// Server is the Komodo Server it runs on; "" is the Server of the
+	// same name as the Stack (its own LXC).
+	Server  string
+	Config  map[string]string
+	Secrets map[string]string
 }
 
 // ComposeWrapper is the command every Stack deployed from the GitOps repo
@@ -96,6 +100,15 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 		stacks = append(stacks, PlatformStack{Name: Hostname(TunnelService.Name), Dir: "tunnel", Config: map[string]string{},
 			Secrets: map[string]string{"TUNNEL_TOKEN": tunnelToken}})
 	}
+	// The builder's cache, pruned on Komodo's LXC (urbforge/urbex-cli#92).
+	bc := o.Config.Komodo.BuildCache.WithDefaults()
+	every, _ := time.ParseDuration(bc.Every) // validated
+	stacks = append(stacks, PlatformStack{Name: Hostname("build-cache"), Dir: "build-cache", Server: KomodoServerName,
+		Config: map[string]string{
+			"KEEP_STORAGE": bc.KeepStorage,
+			"KEEP_FOR":     bc.KeepFor,
+			"KEEP_EVERY":   fmt.Sprint(int(every.Seconds())),
+		}})
 	return stacks
 }
 
@@ -195,8 +208,12 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 	}
 	var deploys []stackDeploy
 	for _, st := range stacks {
+		server := st.Server
+		if server == "" {
+			server = st.Name
+		}
 		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: komodo.StackConfig{
-			ServerID:     st.Name,
+			ServerID:     server,
 			GitProvider:  internal.Registry,
 			GitAccount:   GiteaAdminUser,
 			Repo:         o.Config.Git.Org + "/" + GitOpsRepoName,

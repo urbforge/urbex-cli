@@ -127,6 +127,9 @@ var Catalog = []Service{
 		// cloudflared connects out to Cloudflare; its name is reserved.
 		Endpoints:    []Endpoint{{Label: "tunnel", Exposure: ExposureInternal}},
 		OutboundOnly: true},
+	// Prunes the build cache on Komodo's LXC, the builder
+	// (urbforge/urbex-cli#92); it listens on nothing.
+	{Name: "build-cache", Kind: KindPlatform, LXC: "komodo", Deploy: DeployGitOps, Provides: []string{"build-cache-pruning"}, OutboundOnly: true},
 	{Name: "periphery", Kind: KindAgent, Deploy: DeployAnsible, Provides: []string{"deploy-agent"}, OutboundOnly: true},
 	{Name: "alloy", Kind: KindAgent, Deploy: DeployGitOps, Provides: []string{"telemetry-agent"}, OutboundOnly: true},
 	{Name: "quicktunnel", Kind: KindAgent, Deploy: DeployAnsible, Provides: []string{"ingress"}, OutboundOnly: true},
