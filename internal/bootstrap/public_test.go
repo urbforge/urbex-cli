@@ -349,7 +349,7 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 	// The builder's cache is pruned by a Stack on Komodo's Server, with
 	// the defaults (urbforge/urbex-cli#92).
 	bc := fp.stacks["urbex-build-cache"]
-	if bc.ServerID != KomodoServerName || bc.RunDirectory != "platform/build-cache" {
+	if bc.ServerID != KomodoServerName || bc.RunDirectory != "platform/build-cache" || bc.ComposeCmdWrapper != "" || len(bc.ConfigFiles) != 1 {
 		t.Errorf("build-cache stack = %+v", bc)
 	}
 	bcEnv, _ := os.ReadFile(filepath.Join(dir, "platform/build-cache/config.env"))

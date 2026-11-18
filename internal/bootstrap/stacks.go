@@ -168,6 +168,9 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 		if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte(renderEnv(config)), 0o644); err != nil {
 			return err
 		}
+		if len(st.Secrets) == 0 {
+			continue // no secrets file, and no wrapper to decrypt it (platformStackDeploys)
+		}
 		if err := store.Write(ctx, filepath.Join(dir, "secrets.sops.env"), st.Secrets); err != nil {
 			return fmt.Errorf("encrypting the %s stack's secrets: %w", st.Dir, err)
 		}
@@ -212,7 +215,7 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 		if server == "" {
 			server = st.Name
 		}
-		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: komodo.StackConfig{
+		cfg := komodo.StackConfig{
 			ServerID:     server,
 			GitProvider:  internal.Registry,
 			GitAccount:   GiteaAdminUser,
@@ -222,10 +225,16 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 			ProjectName:  "urbex",
 			ConfigFiles: []komodo.ConfigFile{
 				{Path: "config.env", Requires: "Redeploy"},
-				{Path: "secrets.sops.env", Requires: "Redeploy"},
 			},
-			ComposeCmdWrapper: ComposeWrapper,
-		}})
+		}
+		// Secrets are decrypted by the compose wrapper (sops-tools); a
+		// Stack without them needs neither - the wrapper isn't on
+		// Komodo's own LXC, where the build cache's Stack runs.
+		if len(st.Secrets) > 0 {
+			cfg.ConfigFiles = append(cfg.ConfigFiles, komodo.ConfigFile{Path: "secrets.sops.env", Requires: "Redeploy"})
+			cfg.ComposeCmdWrapper = ComposeWrapper
+		}
+		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: cfg})
 	}
 	return deploys, nil
 }
