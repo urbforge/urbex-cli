@@ -35,6 +35,7 @@ description = "Run the unit tests"
 run = [
   "go test ./...",
   "deno test --no-prompt platform/komodo",
+  "bash tools/operator/test-urbex-op.sh",
 ]
 
 [tasks.lint]
