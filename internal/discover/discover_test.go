@@ -126,7 +126,7 @@ func TestRun_Lab(t *testing.T) {
 	if cfg.Proxmox.Network.BaseHostOffset != 206 || cfg.Proxmox.Pool != "urbex" || !cfg.Proxmox.Insecure || cfg.Cloudflare.ZoneID != "z1" || cfg.Proxmox.SSHPublicKey != "ssh-ed25519 AAAA urbex" {
 		t.Errorf("config = %+v", cfg.Proxmox)
 	}
-	if !strings.Contains(r.Proposal, "FILL IN: who may open Gitea and Komodo") {
+	if !strings.Contains(r.Proposal, "FILL IN: who may open Forgejo and Komodo") {
 		t.Errorf("the Access emails should be marked to fill in:\n%s", r.Proposal)
 	}
 }

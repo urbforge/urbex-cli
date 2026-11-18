@@ -42,7 +42,7 @@
   command: >-
     docker compose exec -T -u git gitea gitea admin user create --admin
     --username {{ gitea_admin_username }}
-    --password {{ lookup('env', 'URBEX_GITEA_ADMIN_PASSWORD') | quote }}
+    --password {{ lookup('env', 'URBEX_FORGE_ADMIN_PASSWORD') | quote }}
     --email {{ gitea_admin_username }}@{{ urbex_domain | default('urbex.local') }}
     --must-change-password=false
   args:

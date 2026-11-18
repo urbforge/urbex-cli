@@ -7,7 +7,8 @@
 # urbforge/urbex.
 services:
   gitea:
-    image: gitea/gitea:1.24
+    # Forgejo LTS (urbforge/urbex-cli#112), pinned by digest.
+    image: codeberg.org/forgejo/forgejo:15.0.11@sha256:5d050e6d623e540923ff54b1c0c7acf41c3f9174a6c7ad515cc0c63d703fcd22
     labels:
       urbex.kind: "platform"
       urbex.service: "gitea"
@@ -18,14 +19,14 @@ services:
       # By internal name (docs/decisions/0027-service-conventions.md): the
       # container registry's token endpoint is derived from ROOT_URL, so it
       # must be reachable from every LXC that pulls images.
-      - GITEA__server__DOMAIN={{ gitea_url | urlsplit('hostname') }}
-      - GITEA__server__ROOT_URL={{ gitea_url }}/
-      - GITEA__security__INSTALL_LOCK=true
-      - GITEA__service__DISABLE_REGISTRATION=true
-      - GITEA__packages__ENABLED=true
+      - FORGEJO__server__DOMAIN={{ gitea_url | urlsplit('hostname') }}
+      - FORGEJO__server__ROOT_URL={{ gitea_url }}/
+      - FORGEJO__security__INSTALL_LOCK=true
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+      - FORGEJO__packages__ENABLED=true
       # Komodo's webhook listener is on the LAN; Gitea only delivers to
       # public addresses by default.
-      - GITEA__webhook__ALLOWED_HOST_LIST=private
+      - FORGEJO__webhook__ALLOWED_HOST_LIST=private
     volumes:
       - gitea-data:/data
     ports:

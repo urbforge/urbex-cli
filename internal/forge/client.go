@@ -1,11 +1,12 @@
-// Package gitea is a minimal Gitea API client covering what urbex needs
-// from the Git server it provisions: API tokens, the org that owns every
-// urbex-managed repo, the repos themselves (GitOps repo + app repos), and
-// lookups in Gitea's container registry. See
+// Package forge is a minimal client of the platform's forge - Forgejo
+// (docs/decisions/0034-forgejo-lts-forge.md), whose API is Gitea's -
+// covering what urbex needs from the Git server it provisions: API tokens,
+// the org that owns every urbex-managed repo, the repos themselves (GitOps
+// repo + app repos), and lookups in its container registry. See
 // docs/decisions/0004-gitops-gitea-komodo.md and
 // docs/decisions/0018-image-build-komodo-gitea-registry.md in
 // urbforge/urbex.
-package gitea
+package forge
 
 import (
 	"bytes"

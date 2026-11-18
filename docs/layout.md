@@ -17,7 +17,7 @@ internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-
 internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
 internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
 internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox
-internal/gitea/              minimal Gitea API client (tokens, org, repos, webhooks, tags, registry lookups)
+internal/forge/              minimal client of the forge, Forgejo (tokens, org, repos, webhooks, tags, registry lookups)
 internal/komodo/             minimal Komodo v2 API client (keys, accounts, servers, builds, stacks, actions, procedures)
 internal/gitsync/            git commit/push helpers (GitOps repo, a project's main branch)
 internal/rollout/            a project's Builds and an environment's Stacks on Komodo; releases; waiting for deploys

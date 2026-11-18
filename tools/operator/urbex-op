@@ -34,13 +34,18 @@ ENGINE=$(command -v podman || command -v docker || { echo "urbex-op: podman or d
 # macOS bash 3.2 calls an empty "${a[@]}" unbound under set -u: expand arrays as ${a[@]+"${a[@]}"}.
 USERNS=(); [[ "$ENGINE" == *podman ]] && USERNS=(--userns keep-id)
 
-# The image, pulled the first time when it is a published one.
+# The image, pulled the first time when it is a published one: one that
+# names its registry (ghcr.io/urbforge/urbex-op:0.1.0). One built here is
+# never pulled - docker names it bare (urbex-operator), podman localhost/...
 need_image() {
   "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 && return
-  case "$IMAGE" in
-    */*) echo "urbex-op: pulling $IMAGE" >&2; "$ENGINE" pull "$IMAGE" >&2 ;;
-    *) echo "urbex-op: no image $IMAGE - run 'urbex-op build' in a checkout of urbforge/urbex-cli" >&2; exit 1 ;;
+  case "${IMAGE%%/*}" in
+    "$IMAGE" | localhost | localhost:*)
+      echo "urbex-op: no image $IMAGE - build it with 'urbex-op build' (or 'mise run operator-image') in a checkout of urbforge/urbex-cli" >&2
+      exit 1 ;;
   esac
+  echo "urbex-op: pulling $IMAGE" >&2
+  "$ENGINE" pull "$IMAGE" >&2
 }
 
 case "${1:-}" in

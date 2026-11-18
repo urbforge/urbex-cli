@@ -63,9 +63,9 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	o.Progress.Begin(PhaseTeardownCheck)
 	// Gitea has the latest GitOps repo - for the last time.
 	repoURL := ep.RepoURL(o.Config.Git.Org, GitOpsRepoName)
-	if o.Credentials.GiteaToken != "" {
-		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.GiteaToken); err != nil {
-			fmt.Fprintf(o.Out, "Warning: could not update the GitOps repo from Gitea (%v); using the local copy.\n", err)
+	if o.Credentials.ForgeToken != "" {
+		if err := clients.PullRepo(ctx, opts.GitOpsRepoPath, repoURL, o.Credentials.ForgeToken); err != nil {
+			fmt.Fprintf(o.Out, "Warning: could not update the GitOps repo from Forgejo (%v); using the local copy.\n", err)
 		}
 	}
 
@@ -74,18 +74,21 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 	} else if len(projects) > 0 {
 		return fmt.Errorf("project environments still exist (%s): run 'urbex destroy <env>' for each of them first", strings.Join(projects, ", "))
 	}
+	if err := o.forgetStaleLedger(ctx, opts.GitOpsRepoPath); err != nil {
+		return err
+	}
 
 	tfDir := filepath.Join(opts.GitOpsRepoPath, "terraform", "base")
 	var repos []string
-	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.GiteaToken).(repoLister); ok && o.Credentials.GiteaToken != "" {
+	if g, ok := clients.Gitea(ep.GiteaURL, o.Credentials.ForgeToken).(repoLister); ok && o.Credentials.ForgeToken != "" {
 		repos, _ = g.ListOrgRepos(ctx, o.Config.Git.Org) // best effort: Gitea may already be gone
 	}
 	fmt.Fprintln(o.Out, "This destroys the Urbex platform on Proxmox:")
 	fmt.Fprintf(o.Out, "  - the base-service LXCs and their disks: %s\n", strings.Join(baseHostnames(o.Config), ", "))
 	if len(repos) > 0 {
-		fmt.Fprintf(o.Out, "  - everything on Gitea: %s, and their images - make sure the project repos live elsewhere too\n", strings.Join(repos, ", "))
+		fmt.Fprintf(o.Out, "  - everything on Forgejo: %s, and their images - make sure the project repos live elsewhere too\n", strings.Join(repos, ", "))
 	} else {
-		fmt.Fprintln(o.Out, "  - everything on Gitea: every repository and image - make sure the project repos live elsewhere too")
+		fmt.Fprintln(o.Out, "  - everything on Forgejo: every repository and image - make sure the project repos live elsewhere too")
 	}
 	fmt.Fprintln(o.Out, "  - Komodo's, Keycloak's and Grafana's configuration and data")
 	if o.Config.Cloudflare.Enabled() {
@@ -152,12 +155,12 @@ func (o *Orchestrator) Teardown(ctx context.Context, opts TeardownOptions) error
 		return fmt.Errorf("committing the gitops repo: %w", err)
 	}
 	fmt.Fprintln(o.Out, "Platform destroyed.")
-	fmt.Fprintf(o.Out, "Keep %s: 'urbex bootstrap' creates a new platform and pushes it to its Gitea.\n", opts.GitOpsRepoPath)
+	fmt.Fprintf(o.Out, "Keep %s: 'urbex bootstrap' creates a new platform and pushes it to its Forgejo.\n", opts.GitOpsRepoPath)
 	return nil
 }
 
 // remainingProjects lists the project environments the GitOps repo still
-// has: folders under environments/, and LXCs in the allocation ledger.
+// has: folders under environments/.
 func remainingProjects(gitopsRepoPath string) ([]string, error) {
 	found := map[string]bool{}
 	envs, err := os.ReadDir(filepath.Join(gitopsRepoPath, "environments"))
@@ -178,13 +181,6 @@ func remainingProjects(gitopsRepoPath string) ([]string, error) {
 			}
 		}
 	}
-	ledger, err := allocation.Load(filepath.Join(gitopsRepoPath, "state", "allocations.json"), 0, 0)
-	if err != nil {
-		return nil, err
-	}
-	for _, hostname := range ledger.Hostnames() {
-		found[hostname] = true
-	}
 	out := make([]string, 0, len(found))
 	for name := range found {
 		out = append(out, name)
@@ -200,4 +196,64 @@ func baseHostnames(cfg *platform.Config) []string {
 		names = append(names, Hostname(svc.Name))
 	}
 	return names
+}
+
+// forgetStaleLedger handles what the allocation ledger still holds once
+// no project environment is left: entries an older urbex left behind
+// (urbforge/urbex-cli#115). An entry whose machine is gone from Proxmox
+// is removed, and said; one whose machine still exists stops the
+// teardown, naming it - nothing is deleted that urbex doesn't account for.
+// Without a way to list Proxmox's machines it names them all.
+func (o *Orchestrator) forgetStaleLedger(ctx context.Context, gitopsRepoPath string) error {
+	path := filepath.Join(gitopsRepoPath, "state", "allocations.json")
+	ledger, err := allocation.Load(path, 0, 0)
+	if err != nil {
+		return err
+	}
+	hostnames := ledger.Hostnames()
+	if len(hostnames) == 0 {
+		return nil
+	}
+	sort.Strings(hostnames)
+	describe := func(hs []string) string {
+		var parts []string
+		for _, h := range hs {
+			e, _ := ledger.Lookup(h)
+			parts = append(parts, fmt.Sprintf("%s (VMID %d)", h, e.VMID))
+		}
+		return strings.Join(parts, ", ")
+	}
+	lister, ok := o.Proxmox.(tfstate.ContainerLister)
+	if !ok {
+		return fmt.Errorf("the allocation ledger still has machines no project environment holds: %s. If they are gone from Proxmox, remove their entries from %s and run teardown again", describe(hostnames), path)
+	}
+	ids, err := lister.ListContainerIDs(ctx, o.Config.Proxmox.Node)
+	if err != nil {
+		return fmt.Errorf("listing proxmox containers: %w", err)
+	}
+	exists := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		exists[id] = true
+	}
+	var gone, live []string
+	for _, h := range hostnames {
+		if e, _ := ledger.Lookup(h); exists[e.VMID] {
+			live = append(live, h)
+		} else {
+			gone = append(gone, h)
+		}
+	}
+	if len(gone) > 0 {
+		fmt.Fprintf(o.Out, "Forgot stale entries of the allocation ledger, whose machines are gone from Proxmox: %s.\n", describe(gone))
+		for _, h := range gone {
+			ledger.Remove(h)
+		}
+		if err := ledger.Save(path); err != nil {
+			return fmt.Errorf("saving allocation ledger: %w", err)
+		}
+	}
+	if len(live) > 0 {
+		return fmt.Errorf("machines no project environment holds still exist on Proxmox: %s. Delete them in pool %s (or put their application back in its urbex.yaml and run 'urbex destroy <env>'), then run teardown again", describe(live), o.Config.Proxmox.Pool)
+	}
+	return nil
 }

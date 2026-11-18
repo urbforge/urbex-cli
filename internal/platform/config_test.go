@@ -95,7 +95,7 @@ func TestCloudflareHostnames(t *testing.T) {
 
 func TestCloudflareValidation(t *testing.T) {
 	base := func() *Config {
-		c := &Config{Domain: "d", Git: GitConfig{GiteaURL: "g"}}
+		c := &Config{Domain: "d", Git: GitConfig{ForgeURL: "g"}}
 		c.Proxmox = ProxmoxConfig{APIURL: "a", Node: "n", LXCTemplate: "t", SSHPublicKey: "k", Network: NetworkConfig{CIDR: "c", Gateway: "g"}}
 		return c
 	}
@@ -120,7 +120,7 @@ func TestCloudflareValidation(t *testing.T) {
 
 func TestQuickTunnelValidation(t *testing.T) {
 	base := func() *Config {
-		c := &Config{Domain: "d", Git: GitConfig{GiteaURL: "g"}}
+		c := &Config{Domain: "d", Git: GitConfig{ForgeURL: "g"}}
 		c.Proxmox = ProxmoxConfig{APIURL: "a", Node: "n", LXCTemplate: "t", SSHPublicKey: "k", Network: NetworkConfig{CIDR: "c", Gateway: "g"}}
 		return c
 	}
@@ -246,5 +246,26 @@ func TestTemplate_KeyctlOff(t *testing.T) {
 	}
 	if cfg.Proxmox.KeyctlEnabled() {
 		t.Error("the template turns keyctl on")
+	}
+}
+
+// A platform config written before the forge was Forgejo (ADR-0034) has
+// git.giteaUrl: it is read as git.forgeUrl, which wins when both are set.
+func TestLoadFile_LegacyGiteaURL(t *testing.T) {
+	for _, tc := range []struct{ yaml, want string }{
+		{"git:\n  giteaUrl: https://git.old.example.com\n  org: urbex\n", "https://git.old.example.com"},
+		{"git:\n  forgeUrl: https://git.new.example.com\n  giteaUrl: https://git.old.example.com\n", "https://git.new.example.com"},
+	} {
+		path := filepath.Join(t.TempDir(), "urbex.platform.yaml")
+		if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Git.ForgeURL != tc.want {
+			t.Errorf("ForgeURL = %q, want %q", cfg.Git.ForgeURL, tc.want)
+		}
 	}
 }

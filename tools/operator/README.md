@@ -133,6 +133,11 @@ See *Find every endpoint* in the cookbook
 | `URBEX_OPERATOR_IMAGE` | a release's `urbex-op`: `ghcr.io/urbforge/urbex-op:<its version>`; from a checkout: `urbex-operator` | The image runs use (and `build` creates). |
 | `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN`, `URBEX_AGE_KEY` | - | Passed to the container when set; otherwise the credentials file is used. |
 
+`urbex-op` pulls an image the first time only if it names its registry
+(`ghcr.io/...`): one built here - `localhost/...` with podman, a bare
+name such as `urbex-operator` with docker - is never pulled; when it is
+missing, `urbex-op` says to build it.
+
 From a checkout, rebuild the image (`urbex-op build`, or `mise run
 operator-image`) after updating it: the image contains the `urbex` binary built from
 it, and the tools at the versions `mise.toml` pins.

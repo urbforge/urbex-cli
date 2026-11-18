@@ -44,7 +44,7 @@ func TestTeardown_RefusesWhileProjectEnvironmentsExist(t *testing.T) {
 
 func TestTeardown_WithoutYesOnlyReports(t *testing.T) {
 	o, runner, fp := newRunOrchestrator(t, &fakeProxmox{})
-	o.Credentials.GiteaToken = "tok"
+	o.Credentials.ForgeToken = "tok"
 	dir := gitopsRepo(t)
 
 	err := o.Teardown(context.Background(), TeardownOptions{GitOpsRepoPath: dir})
@@ -86,7 +86,7 @@ func TestTeardown_DestroysBaseServicesAndForgetsGeneratedCredentials(t *testing.
 	if strings.Join(args, ",") != "init,destroy -auto-approve -parallelism=2" {
 		t.Errorf("unexpected terraform calls: %v", args)
 	}
-	if o.Credentials.KomodoAPIKey != "" || o.Credentials.GiteaToken != "" {
+	if o.Credentials.KomodoAPIKey != "" || o.Credentials.ForgeToken != "" {
 		t.Error("the generated credentials of the destroyed platform should be forgotten")
 	}
 	if o.Credentials.ProxmoxToken == "" || o.Credentials.AgeKey == "" {
@@ -95,5 +95,52 @@ func TestTeardown_DestroysBaseServicesAndForgetsGeneratedCredentials(t *testing.
 	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%s").Output()
 	if err != nil || strings.TrimSpace(string(out)) != "urbex teardown" {
 		t.Errorf("expected the gitops repo committed locally, last commit %q (%v)", out, err)
+	}
+}
+
+// idProxmox also lists its machines' VMIDs, as proxmoxapi.Client does.
+type idProxmox struct {
+	fakeProxmox
+	ids []int
+}
+
+func (p *idProxmox) ListContainerIDs(context.Context, string) ([]int, error) { return p.ids, nil }
+
+// With no environment left, teardown forgets the ledger entries whose
+// machines are gone from Proxmox, and stops on one whose machine still
+// exists, naming it (urbforge/urbex-cli#115).
+func TestForgetStaleLedger(t *testing.T) {
+	write := func(dir string) {
+		os.MkdirAll(filepath.Join(dir, "state"), 0o755)
+		os.WriteFile(filepath.Join(dir, "state", "allocations.json"), []byte(`{"entries":{"pgtest-board-staging":{"vmid":9129,"ip":"192.168.1.239"},"shop-api-prod":{"vmid":9130,"ip":"192.168.1.240"}},"nextVmid":9131,"nextIpOffset":241}`), 0o644)
+	}
+	for _, tc := range []struct {
+		name    string
+		ids     []int
+		wantErr string
+		left    string
+	}{
+		{"all gone", []int{9000, 9001}, "", ""},
+		{"one still exists", []int{9130}, "shop-api-prod (VMID 9130)", "shop-api-prod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+			o.Proxmox = &idProxmox{ids: tc.ids}
+			var out bytes.Buffer
+			o.Out = &out
+			dir := t.TempDir()
+			write(dir)
+			err := o.forgetStaleLedger(context.Background(), dir)
+			if (err == nil) != (tc.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if !strings.Contains(out.String(), "pgtest-board-staging (VMID 9129)") {
+				t.Errorf("output should name the forgotten entry: %q", out.String())
+			}
+			data, _ := os.ReadFile(filepath.Join(dir, "state", "allocations.json"))
+			if strings.Contains(string(data), "pgtest-board-staging") || (tc.left != "" && !strings.Contains(string(data), tc.left)) {
+				t.Errorf("ledger after: %s", data)
+			}
+		})
 	}
 }

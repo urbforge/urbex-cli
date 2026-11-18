@@ -27,7 +27,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/envrepo"
-	"github.com/urbforge/urbex-cli/internal/gitea"
+	"github.com/urbforge/urbex-cli/internal/forge"
 	"github.com/urbforge/urbex-cli/internal/imageref"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/materialize"
@@ -53,7 +53,7 @@ type Rollouter interface {
 	DeployTelemetry(ctx context.Context, t rollout.Target) error
 	Reconcile(ctx context.Context) error
 	BuildMain(ctx context.Context, project string) error
-	Releases(ctx context.Context, project string) ([]gitea.Tag, error)
+	Releases(ctx context.Context, project string) ([]forge.Tag, error)
 	MissingImages(ctx context.Context, project string, services []manifest.Service, version string) ([]string, error)
 	WaitDeployed(ctx context.Context, t rollout.Target, repo envrepo.Repo) ([]rollout.Deployed, error)
 	RemoveEnv(ctx context.Context, t rollout.Target) error
@@ -211,6 +211,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
+	// What the state holds now, vanished machines included: those that
+	// leave it and urbex.yaml no longer declares free their addresses.
+	before, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
@@ -231,6 +237,17 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
+		return err
+	}
+	after, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
+	declared := map[string]bool{}
+	for _, svc := range o.Manifest.Services {
+		declared[Hostname(o.Manifest.Project, svc.Name, opts.Env)] = true
+	}
+	if err := o.freeGone(opts, before, after, declared); err != nil {
 		return err
 	}
 	if o.cloneVMID > 0 {
@@ -740,7 +757,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allow
 	if err != nil {
 		return false, err
 	}
-	var releases []gitea.Tag
+	var releases []forge.Tag
 	if len(manifest.Built(o.Manifest.Deployables())) > 0 {
 		if releases, err = o.Rollout.Releases(ctx, o.Manifest.Project); err != nil {
 			return false, err
@@ -783,7 +800,7 @@ func (o *Orchestrator) Promote(ctx context.Context, gitopsRepoPath string, allow
 
 // releaseOf returns the release a version is: itself if it is one, the
 // release tagged on that commit if it is a commit.
-func releaseOf(version string, releases []gitea.Tag) (string, error) {
+func releaseOf(version string, releases []forge.Tag) (string, error) {
 	if v, ok := semver.Parse(version); ok {
 		return v.String(), nil
 	}
@@ -1131,6 +1148,12 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
+	// Every machine of the state goes, those urbex.yaml no longer declares
+	// too: their ledger entries go with them (urbforge/urbex-cli#115).
+	inState, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
@@ -1196,6 +1219,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("updating known hosts: %w", err)
 	}
 	for _, hostname := range hostnames {
+		ledger.Remove(hostname)
+	}
+	for hostname := range inState {
 		ledger.Remove(hostname)
 	}
 	if err := ledger.Save(ledgerPath); err != nil {
