@@ -18,6 +18,13 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`urbex-op`'s default workspace is `~/urbex-work`**, as in the docs
+  and the Claude Code plugin (it was `~/urbex-workspace`). A workspace
+  in `~/urbex-workspace` is still found when `~/urbex-work` doesn't
+  exist; `-w` and `URBEX_WORKSPACE` choose any other.
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,
