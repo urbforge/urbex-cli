@@ -28,6 +28,10 @@ jobs:
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: go deno
+      # A release needs its notes: the tag's version must have a section
+      # in CHANGELOG.md (urbforge/redemptor#54). Checked first.
+      - name: Release notes in CHANGELOG.md
+        run: tools/release/notes.sh "${{ github.ref_name }}" >/dev/null
       - run: mise run lint
       - run: mise run test
 
@@ -63,7 +67,24 @@ jobs:
           [ "$prev" = "$GORELEASER_CURRENT_TAG" ] && prev=
           export GORELEASER_PREVIOUS_TAG=${prev:-$(git rev-list --max-parents=0 HEAD | tail -n 1)}
           echo "Releasing $GORELEASER_CURRENT_TAG, changes since $GORELEASER_PREVIOUS_TAG"
-          goreleaser release --clean
+          # The release opens with the hand-written notes of the version,
+          # then GoReleaser's list of commits.
+          notes=$RUNNER_TEMP/release-header.md
+          {
+            version=${GORELEASER_CURRENT_TAG#v}
+            case "$GORELEASER_CURRENT_TAG" in
+              v0.* | *-*) echo "urbex $version - a preview release." ;;
+              *) echo "urbex $version." ;;
+            esac
+            echo
+            tools/release/notes.sh "$GORELEASER_CURRENT_TAG"
+            echo
+            echo "## Install"
+            echo
+            echo "Download the archive for your system below, check it against \`checksums.txt\`, and put \`urbex\` on your \`PATH\`; or download \`urbex-op\`, which runs \`ghcr.io/urbforge/urbex-op:$version\`. See [getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md), [upgrading](https://github.com/urbforge/urbex/blob/main/docs/upgrading.md) and the [known limitations](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md). The docs and the Claude Code plugin: [urbforge/urbex $GORELEASER_CURRENT_TAG](https://github.com/urbforge/urbex/releases/tag/$GORELEASER_CURRENT_TAG)."
+            echo
+          } >"$notes"
+          goreleaser release --clean --release-header "$notes"
       - name: Build provenance of the archives
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -104,6 +125,8 @@ jobs:
           tags: ${{ steps.image.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+            org.opencontainers.image.documentation=https://github.com/urbforge/urbex/blob/main/docs/getting-started.md
             org.opencontainers.image.version=${{ steps.image.outputs.version }}
             org.opencontainers.image.description=urbex and the tools it runs, for urbex-op
             org.opencontainers.image.licenses=Apache-2.0

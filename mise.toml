@@ -36,6 +36,7 @@ run = [
   "go test ./...",
   "deno test --no-prompt platform/komodo",
   "bash tools/operator/test-urbex-op.sh",
+  "bash tools/release/test-notes.sh",
 ]
 
 [tasks.lint]
