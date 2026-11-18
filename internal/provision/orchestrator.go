@@ -211,6 +211,12 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
+	// What the state holds now, vanished machines included: those that
+	// leave it and urbex.yaml no longer declares free their addresses.
+	before, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
@@ -231,6 +237,17 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		return err
 	}
 	if err := runner.TerraformChange(ctx, o.Runner, o.Out, tfDir, "apply", env); err != nil {
+		return err
+	}
+	after, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
+	declared := map[string]bool{}
+	for _, svc := range o.Manifest.Services {
+		declared[Hostname(o.Manifest.Project, svc.Name, opts.Env)] = true
+	}
+	if err := o.freeGone(opts, before, after, declared); err != nil {
 		return err
 	}
 	if o.cloneVMID > 0 {
@@ -1131,6 +1148,12 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	if err := o.Runner.Run(ctx, runner.Command{Dir: tfDir, Name: "terraform", Args: []string{"init"}, Env: env}); err != nil {
 		return fmt.Errorf("terraform init: %w", err)
 	}
+	// Every machine of the state goes, those urbex.yaml no longer declares
+	// too: their ledger entries go with them (urbforge/urbex-cli#115).
+	inState, err := stateHostnames(tfDir)
+	if err != nil {
+		return fmt.Errorf("reading terraform state: %w", err)
+	}
 	if err := o.forgetVanished(ctx, tfDir, env); err != nil {
 		return err
 	}
@@ -1196,6 +1219,9 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 		return fmt.Errorf("updating known hosts: %w", err)
 	}
 	for _, hostname := range hostnames {
+		ledger.Remove(hostname)
+	}
+	for hostname := range inState {
 		ledger.Remove(hostname)
 	}
 	if err := ledger.Save(ledgerPath); err != nil {
