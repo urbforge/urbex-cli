@@ -18,6 +18,53 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The forge is Forgejo 15 LTS** in place of Gitea 1.24 (urbforge/urbex
+  ADR-0034, #116). A platform installed with 0.1.0 runs Gitea 1.24, whose
+  database Forgejo can't open: on such a platform `urbex bootstrap` with
+  this release starts Forgejo on Gitea's data, Forgejo exits ("Your
+  database (migration version: 321) is for a newer Forgejo") without
+  changing it, and the forge stays down. Gitea's data is untouched.
+
+### Upgrading
+
+- From 0.1.0: don't run `urbex bootstrap` on the existing platform. Tear
+  it down and bootstrap again (`urbex teardown`, then `urbex bootstrap`;
+  the repositories are pushed again from your clones), or stay on 0.1.0.
+  The workspace needs no change: the credentials and the platform config
+  written by 0.1.0 are still read (`giteaAdminPassword`, `giteaToken`,
+  `git.giteaUrl`); the new names (`forgeAdminPassword`, `forgeToken`,
+  `git.forgeUrl`) win when both are there.
+
+### Added
+
+- **`urbex updates [<env>]`** (#119): for each application from a
+  published image, whether a newer image is available - the tag asked
+  for moved (`urbex deploy <env> --update`), a newer minor or patch
+  (`urbex deploy <env> --app <app> --version <tag>`), a new major
+  (listed, not proposed). The tags come from the registry, anonymously.
+
+### Changed
+
+- The forge is Forgejo 15 LTS, pinned by digest, and "forge" replaces
+  "Gitea" where the name is generic: messages, `urbex status`, the
+  credentials and the platform config (see Breaking and Upgrading). The
+  LXC, Stack and volume keep their names (`urbex-gitea`, `gitea-data`)
+  (#116).
+- Releases carry their notes from this file, and fail without them
+  (#118).
+
+### Fixed
+
+- `urbex-op` never pulls an image built locally (`localhost/...`, or
+  docker's bare name): it says how to build it instead (#117).
+- The allocation ledger frees the addresses of machines that are gone:
+  `urbex apply` for an application removed from `urbex.yaml`, `urbex
+  destroy` for every machine of the environment's state; `urbex teardown`
+  forgets stale entries whose machine is no longer on Proxmox, and names
+  those that still are (#120).
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,
