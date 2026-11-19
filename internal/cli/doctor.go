@@ -78,7 +78,7 @@ docs/reference/cli.md in urbforge/urbex.`,
 			if cfg != nil && creds.ProxmoxMonitorToken != "" {
 				mon = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxMonitorToken, cfg.Proxmox.Insecure)
 			}
-			doctor.NodeMetricsChecks(ctx, mon, cfg, r)
+			doctor.NodeMetricsChecks(ctx, mon, creds.ProxmoxMonitorToken, cfg, r)
 			var cf doctor.CloudflareReader
 			if cfg != nil && creds.CloudflareToken != "" {
 				cf = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)

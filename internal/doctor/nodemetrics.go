@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/urbforge/urbex-cli/internal/platform"
@@ -15,12 +16,15 @@ type PermissionsReader interface {
 
 // nodeMetricsPrivileges are what pve-exporter reads on / : the node's
 // status and its storages (PVEAuditor has both).
+// proxmoxToken is an API token as urbex stores it: user@realm!name=secret.
+var proxmoxToken = regexp.MustCompile(`^[^@!=\s]+@[^@!=\s]+![^@!=\s]+=\S+$`)
+
 var nodeMetricsPrivileges = []string{"Sys.Audit", "Datastore.Audit"}
 
 // NodeMetricsChecks checks the optional read-only token for the Proxmox
 // node's metrics (urbforge/urbex-cli#94). m is nil without the token:
 // the node metrics are off, which is fine.
-func NodeMetricsChecks(ctx context.Context, m PermissionsReader, cfg *platform.Config, r *Report) {
+func NodeMetricsChecks(ctx context.Context, m PermissionsReader, token string, cfg *platform.Config, r *Report) {
 	add := func(status, detail, fix string) {
 		r.add(Check{Group: "proxmox", Name: "node metrics", Status: status, Detail: detail, Fix: fix})
 	}
@@ -30,6 +34,11 @@ func NodeMetricsChecks(ctx context.Context, m PermissionsReader, cfg *platform.C
 	if m == nil {
 		add(Skip, "off: no proxmoxMonitorToken, so Grafana shows the LXCs but not the node's CPU, memory and storages",
 			"optional: create a read-only token (docs/reference/credentials.md#proxmox-monitoring-token), 'urbex-op set proxmoxMonitorToken', then 'urbex bootstrap'")
+		return
+	}
+	if !proxmoxToken.MatchString(token) {
+		add(Fail, "proxmoxMonitorToken isn't a whole token: it needs the token's id before its secret",
+			"store it again as urbex-monitor@pve!metrics=<secret> ('urbex-op set proxmoxMonitorToken'): the id is what 'pveum user token add' names, the secret its value")
 		return
 	}
 	perms, err := m.Permissions(ctx)
