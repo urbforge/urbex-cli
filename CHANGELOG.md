@@ -18,6 +18,13 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `urbex bootstrap` refuses a platform created by urbex 0.1.0, whose forge
+  is still Gitea: Forgejo can't open Gitea 1.24's database, and starting it
+  there left the forge down. Nothing is changed; the message says how to
+  start the platform again on Forgejo (see Upgrading).
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,
