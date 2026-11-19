@@ -463,3 +463,20 @@ func TestBaseServicesAreInTheCatalog(t *testing.T) {
 		}
 	}
 }
+
+// Java4Shell (urbforge/urbex-cli#130): Keycloak's JVM starts without
+// the Base64 intrinsic, from the Stack's config.env.
+func TestRun_KeycloakWithoutBase64Intrinsics(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	env, err := os.ReadFile(filepath.Join(dir, "platform/keycloak/config.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "\nJAVA_OPTS_APPEND=-XX:-UseBASE64Intrinsics\n") {
+		t.Errorf("keycloak config.env has no JAVA_OPTS_APPEND:\n%s", env)
+	}
+}

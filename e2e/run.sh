@@ -212,6 +212,9 @@ step "bootstrap: base services and platform setup" '
     [ "$(komodo_stack_state urbex-telemetry-$host)" = running ] || fail "telemetry stack of $host: $(komodo_stack_state urbex-telemetry-$host)"
     [ "$(komodo_tags Stack urbex-telemetry-$host)" = agent ] || fail "telemetry stack of $host tags: $(komodo_tags Stack urbex-telemetry-$host)"
   done
+  # Java4Shell (urbforge/urbex-cli#130): Keycloak'"'"'s JVM runs without
+  # the Base64 intrinsic (its processes, as the host sees them).
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.203 "docker ps -q --filter label=urbex.service=keycloak | xargs -n1 docker top" | grep -q -- "-XX:-UseBASE64Intrinsics" || fail "keycloak runs its JVM with the Base64 intrinsic"
   for svc in keycloak observability; do
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done

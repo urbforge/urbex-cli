@@ -18,6 +18,10 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Security
+
+- **Java4Shell (CVE-2026-114938) mitigated** (urbforge/urbex-cli#130): Keycloak's JVM, and the images of `runtime: java`, start with `-XX:-UseBASE64Intrinsics`, which turns off the OpenJDK Base64 intrinsic that corrupts memory on x86-64 CPUs with AVX-512 VBMI. Keycloak decodes Base64 before login, and its realms are public with Cloudflare. Run `urbex bootstrap` to apply it to an existing platform, and the `runtime: java` services get it with their next build (a push to `main` for staging, then a release for production). A Keycloak image with a fixed OpenJDK will follow when one is published.
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,

@@ -63,6 +63,11 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 		"POSTGRES_DB":                 keycloakDBName,
 		"POSTGRES_USER":               keycloakDBUser,
 		"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
+		// Java4Shell (CVE-2026-114938, urbforge/urbex-cli#130): OpenJDK's
+		// Base64 intrinsic on CPUs with AVX-512 VBMI corrupts memory, and
+		// Keycloak decodes Base64 before login. Off until a fixed image;
+		// kc.sh appends it to the JVM's options.
+		"JAVA_OPTS_APPEND": JavaMitigationFlags,
 		// Production mode wants HTTPS; TLS ends before Keycloak - at
 		// Cloudflare, or nowhere on the LAN.
 		"KC_HTTP_ENABLED": "true",
@@ -98,6 +103,12 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 	}
 	return stacks
 }
+
+// JavaMitigationFlags are the JVM flags every JVM Urbex runs gets:
+// Keycloak, and the images of `runtime: java` (platform/dockerfiles).
+// -XX:-UseBASE64Intrinsics mitigates Java4Shell (CVE-2026-114938,
+// urbforge/urbex-cli#130) until the images carry a fixed OpenJDK.
+const JavaMitigationFlags = "-XX:-UseBASE64Intrinsics"
 
 // Keycloak's database and its owner, in the Keycloak Stack's PostgreSQL.
 const (
