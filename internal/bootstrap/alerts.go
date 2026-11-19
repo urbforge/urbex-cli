@@ -36,10 +36,13 @@ const (
 // resolved, its summary and severity, the project, service, env and host
 // it is about, and a link to it in Grafana. A rule Grafana couldn't
 // evaluate (its data source down) has no values for its summary: the
-// message names the rule instead.
-const alertsMessage = `{{ define "urbex.message" }}{{ range .Alerts }}{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }} [{{ or .Labels.severity "info" }}] {{ if or (eq .Labels.alertname "DatasourceError") (eq .Labels.alertname "DatasourceNoData") }}could not evaluate "{{ .Labels.rulename }}" ({{ .Labels.alertname }}){{ else }}{{ or .Annotations.summary .Labels.alertname }}{{ end }}{{ with .Labels.project }} - project {{ . }}{{ end }}{{ with .Labels.service }} - service {{ . }}{{ end }}{{ with .Labels.env }} - {{ . }}{{ end }}{{ with .Labels.host }} - {{ . }}{{ end }}
+// message names the rule instead. It is each channel's message itself,
+// not a named template: Grafana's Alertmanager loads provisioned
+// templates up to a minute after it starts, and a message sent before
+// that would be empty.
+const alertsMessage = `{{ range .Alerts }}{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }} [{{ or .Labels.severity "info" }}] {{ if or (eq .Labels.alertname "DatasourceError") (eq .Labels.alertname "DatasourceNoData") }}could not evaluate "{{ .Labels.rulename }}" ({{ .Labels.alertname }}){{ else }}{{ or .Annotations.summary .Labels.alertname }}{{ end }}{{ with .Labels.project }} - project {{ . }}{{ end }}{{ with .Labels.service }} - service {{ . }}{{ end }}{{ with .Labels.env }} - {{ . }}{{ end }}{{ with .Labels.host }} - {{ . }}{{ end }}
 {{ .GeneratorURL }}
-{{ end }}{{ end }}`
+{{ end }}`
 
 // AlertsProvisioning returns the provisioning file for cfg's alert
 // channels and the secrets it reads, or "" when none is configured.
@@ -51,7 +54,7 @@ func AlertsProvisioning(cfg platform.AlertsConfig, creds *credentials.Credential
 	var missing []string
 	secrets := map[string]string{}
 	var receivers strings.Builder
-	message := strconv.Quote(`{{ template "urbex.message" . }}`)
+	message := strconv.Quote(alertsMessage)
 	if t := cfg.Telegram; t != nil {
 		if creds.TelegramBotToken == "" {
 			missing = append(missing, "telegramBotToken")
@@ -98,15 +101,7 @@ func AlertsProvisioning(cfg platform.AlertsConfig, creds *credentials.Credential
 # alerts of this Grafana to the channels configured there; their secrets
 # come from the Stack's encrypted secrets, through Grafana's environment.
 apiVersion: 1
-templates:
-  - orgId: 1
-    name: urbex
-    template: |
-`)
-	for _, line := range strings.Split(alertsMessage, "\n") {
-		b.WriteString("      " + line + "\n")
-	}
-	b.WriteString(`contactPoints:
+contactPoints:
   - orgId: 1
     name: urbex
     receivers:

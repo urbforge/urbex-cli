@@ -42,7 +42,6 @@ func TestAlertsProvisioning_AllChannels(t *testing.T) {
 	}
 	var doc struct {
 		APIVersion    int `yaml:"apiVersion"`
-		Templates     []struct{ Name, Template string }
 		ContactPoints []struct {
 			Name      string
 			Receivers []struct {
@@ -59,14 +58,14 @@ func TestAlertsProvisioning_AllChannels(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(file), &doc); err != nil {
 		t.Fatalf("not YAML: %v\n%s", err, file)
 	}
-	if doc.APIVersion != 1 || len(doc.Templates) != 1 || !strings.Contains(doc.Templates[0].Template, `define "urbex.message"`) {
-		t.Errorf("templates: %+v", doc.Templates)
+	if doc.APIVersion != 1 || strings.Contains(file, "templates:") {
+		t.Errorf("apiVersion %d, or a named template (loaded late by Grafana)", doc.APIVersion)
 	}
 	if len(doc.ContactPoints) != 1 || len(doc.ContactPoints[0].Receivers) != 3 {
 		t.Fatalf("contact points: %+v", doc.ContactPoints)
 	}
 	tg := doc.ContactPoints[0].Receivers[0]
-	if tg.Type != "telegram" || tg.Settings["bottoken"] != "$"+alertsTelegramTokenVar || tg.Settings["chatid"] != "-100123" || tg.Settings["message"] != `{{ template "urbex.message" . }}` {
+	if tg.Type != "telegram" || tg.Settings["bottoken"] != "$"+alertsTelegramTokenVar || tg.Settings["chatid"] != "-100123" || tg.Settings["message"] != alertsMessage {
 		t.Errorf("telegram receiver: %+v", tg)
 	}
 	if doc.ContactPoints[0].Receivers[1].Settings["url"] != "$"+alertsDiscordURLVar {
