@@ -18,6 +18,10 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Added
+
+- **Alerts to Telegram, Discord or a webhook** (urbforge/urbex-cli#95): `observability.alerts` in `urbex.platform.yaml` provisions a Grafana contact point for Urbex's alerts - one short message per alert and machine, its summary, severity, project, service and host, a link to Grafana, and a resolved message; repeated at most every 4 hours. The bot token and the webhooks' URLs are credentials, encrypted in the observability Stack. `urbex doctor` checks them, and `urbex doctor --test-alerts` sends a test message through each channel.
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,
