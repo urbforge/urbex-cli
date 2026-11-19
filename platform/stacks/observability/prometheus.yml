@@ -6,6 +6,28 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+  # The Proxmox node, through pve-exporter (urbforge/urbex-cli#94). Found
+  # by name in the Stack's network: without the node's token the exporter
+  # doesn't run, the name doesn't resolve, and there is no target.
+  - job_name: pve
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    metrics_path: /pve
+    params:
+      target: [pve-node]
+      cluster: ["1"]
+      node: ["1"]
+    dns_sd_configs:
+      - names: [pve-exporter]
+        type: A
+        port: 9221
+        refresh_interval: 60s
+    # The token sees the whole node: keep the node and its storages, never
+    # the guests (urbex's own LXCs report through their agents).
+    metric_relabel_configs:
+      - source_labels: [id]
+        regex: "(node|storage)/.+"
+        action: keep
 # The LXCs' resource metrics are pushed by their telemetry agents (remote
 # write), labelled kind/service/host (and project/env for apps). Scraping
 # the services' own metrics (urbex.yaml's observability.metrics) is not

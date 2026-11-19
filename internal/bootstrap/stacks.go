@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -34,6 +36,9 @@ type PlatformStack struct {
 	Name, Dir string
 	Config    map[string]string
 	Secrets   map[string]string
+	// Environment is the Stack's .env, for compose itself (profiles,
+	// interpolation), set in Komodo; "" leaves it empty.
+	Environment string
 }
 
 // ComposeWrapper is the command every Stack deployed from the GitOps repo
@@ -52,7 +57,7 @@ const PlatformStacksDir = "platform"
 // platformStacks are the platform services deployed from the GitOps
 // repo: Keycloak, the observability stack and, with Cloudflare, the
 // tunnel, whose connector token is tunnelToken.
-func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
+func (o *Orchestrator) platformStacks(tunnelToken string) ([]PlatformStack, error) {
 	// Keycloak runs in production mode on its own PostgreSQL, in the same
 	// Stack (urbex-cli#36). Both containers read config.env and the
 	// secrets: KC_* configure Keycloak, POSTGRES_* the database.
@@ -89,14 +94,74 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 				"KC_DB_PASSWORD":              o.Credentials.KeycloakDBPassword,
 				"POSTGRES_PASSWORD":           o.Credentials.KeycloakDBPassword,
 			}},
-		{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
-			Secrets: map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword}},
 	}
+	observability, err := o.observabilityStack()
+	if err != nil {
+		return nil, err
+	}
+	stacks = append(stacks, observability)
 	if o.Config.Cloudflare.Enabled() {
 		stacks = append(stacks, PlatformStack{Name: Hostname(TunnelService.Name), Dir: "tunnel", Config: map[string]string{},
 			Secrets: map[string]string{"TUNNEL_TOKEN": tunnelToken}})
 	}
-	return stacks
+	return stacks, nil
+}
+
+// observabilityStack is Prometheus, Loki and Grafana; with the node's
+// read-only token, also pve-exporter for the node's metrics
+// (urbforge/urbex-cli#94).
+func (o *Orchestrator) observabilityStack() (PlatformStack, error) {
+	st := PlatformStack{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
+		Secrets: map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword},
+		// Written even without the token, so that removing it turns the
+		// exporter off.
+		Environment: "COMPOSE_PROFILES=\nURBEX_PVE_NODE_IP=\n"}
+	if o.Credentials.ProxmoxMonitorToken == "" {
+		return st, nil
+	}
+	user, name, value, err := SplitProxmoxToken(o.Credentials.ProxmoxMonitorToken)
+	if err != nil {
+		return st, fmt.Errorf("proxmoxMonitorToken: %w", err)
+	}
+	ip, err := nodeIP(o.Config.Proxmox.APIURL)
+	if err != nil {
+		return st, err
+	}
+	st.Secrets["PVE_USER"], st.Secrets["PVE_TOKEN_NAME"], st.Secrets["PVE_TOKEN_VALUE"] = user, name, value
+	// The exporter reaches the node as pve-node, so its certificate's name
+	// never matches; the node's is self-signed anyway, and the token only
+	// reads.
+	st.Config["PVE_VERIFY_SSL"] = "false"
+	st.Environment = "COMPOSE_PROFILES=pve\nURBEX_PVE_NODE_IP=" + ip + "\n"
+	return st, nil
+}
+
+// SplitProxmoxToken splits an API token, "user@realm!name=secret", into
+// the user, the token's name and its secret.
+func SplitProxmoxToken(token string) (user, name, value string, err error) {
+	id, value, ok := strings.Cut(token, "=")
+	user, name, ok2 := strings.Cut(id, "!")
+	if !ok || !ok2 || user == "" || name == "" || value == "" || strings.Index(user, "@") < 1 {
+		return "", "", "", fmt.Errorf("not a Proxmox API token: expected user@realm!name=secret")
+	}
+	return user, name, value, nil
+}
+
+// nodeIP is the address of the Proxmox API's host, resolved if it is a
+// name.
+func nodeIP(apiURL string) (string, error) {
+	u, err := url.Parse(apiURL)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("proxmox.apiUrl %q has no host", apiURL)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		return ip.String(), nil
+	}
+	ips, err := net.LookupIP(u.Hostname())
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("resolving the Proxmox node %s: %v", u.Hostname(), err)
+	}
+	return ips[0].String(), nil
 }
 
 // Keycloak's database and its owner, in the Keycloak Stack's PostgreSQL.
@@ -208,6 +273,7 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 				{Path: "secrets.sops.env", Requires: "Redeploy"},
 			},
 			ComposeCmdWrapper: ComposeWrapper,
+			Environment:       st.Environment,
 		}})
 	}
 	return deploys, nil

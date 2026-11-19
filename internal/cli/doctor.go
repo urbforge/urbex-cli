@@ -31,7 +31,8 @@ func newDoctorCmd() *cobra.Command {
 ansible-playbook, sops, age); the workspace (the credentials, the SSH key,
 the GitOps repo and its urbex.platform.yaml); with a platform config and a
 Proxmox token, the node (the API answers, the node, pool, storage, LXC
-template and bridge exist, the token has the privileges urbex needs); and,
+template and bridge exist, the token has the privileges urbex needs, and the optional
+read-only token for the node's metrics); and,
 with Cloudflare in the config, the token and the zone.
 
 It starts with urbex's own version. Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
@@ -73,6 +74,11 @@ docs/reference/cli.md in urbforge/urbex.`,
 				p = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 			}
 			doctor.ProxmoxChecks(ctx, p, cfg, r)
+			var mon doctor.PermissionsReader
+			if cfg != nil && creds.ProxmoxMonitorToken != "" {
+				mon = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxMonitorToken, cfg.Proxmox.Insecure)
+			}
+			doctor.NodeMetricsChecks(ctx, mon, cfg, r)
 			var cf doctor.CloudflareReader
 			if cfg != nil && creds.CloudflareToken != "" {
 				cf = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)

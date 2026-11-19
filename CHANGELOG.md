@@ -18,6 +18,18 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Added
+
+- **The Proxmox node in Grafana** (#94): with an optional read-only token
+  (`proxmoxMonitorToken`, role `PVEAuditor`), `urbex bootstrap` runs
+  `pve-exporter` in the observability Stack. The *Urbex resources*
+  dashboard then shows the node's CPU, memory (guests outside urbex and
+  ZFS's ARC included, as Proxmox counts it) and each storage's use, and
+  Grafana alerts when the node's memory stays above 90% or a storage
+  passes 85% / 95%. Only the node and storage series are kept, never other
+  guests'. `urbex doctor` checks the token, or says the node metrics are
+  off without it.
+
 ## [0.1.0] - 2026-11-17
 
 The first preview release: urbex as binaries for Linux and macOS (amd64,

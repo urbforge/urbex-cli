@@ -591,6 +591,129 @@
           "legendFormat": "{{kind}} {{service}} {{project}} {{env}} {{container}} ({{host}})"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Proxmox node (with the node's read-only token)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Node CPU",
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "100 * label_replace(pve_cpu_usage_ratio{id=~\"node/.+\"}, \"node\", \"$1\", \"id\", \"node/(.+)\")",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Node memory used",
+      "gridPos": {
+        "x": 8,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "label_replace(pve_memory_usage_bytes{id=~\"node/.+\"}, \"node\", \"$1\", \"id\", \"node/(.+)\")",
+          "legendFormat": "{{node}} used"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "label_replace(pve_memory_size_bytes{id=~\"node/.+\"}, \"node\", \"$1\", \"id\", \"node/(.+)\")",
+          "legendFormat": "{{node}} total"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Storage used",
+      "gridPos": {
+        "x": 16,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "urbex-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "urbex-prometheus"
+          },
+          "expr": "label_replace(100 * pve_disk_usage_bytes{id=~\"storage/.+\"} / (pve_disk_size_bytes{id=~\"storage/.+\"} > 0), \"storage\", \"$1\", \"id\", \"storage/(.+)\")",
+          "legendFormat": "{{storage}}"
+        }
+      ]
     }
   ]
 }
