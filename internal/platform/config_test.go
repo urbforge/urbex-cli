@@ -269,3 +269,17 @@ func TestLoadFile_LegacyGiteaURL(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_AlertsTelegramChatID(t *testing.T) {
+	for chat, ok := range map[string]bool{"-1001234567890": true, "123456": true, "@urbex_alerts": true, "my chat": false, "": false, "@ab": false} {
+		c := Config{Observability: ObservabilityConfig{Alerts: AlertsConfig{Telegram: &TelegramAlerts{ChatID: chat}}}}
+		errs := c.Validate()
+		got := !strings.Contains(strings.Join(errs, "\n"), "observability.alerts.telegram.chatId")
+		if got != ok {
+			t.Errorf("chatId %q: valid=%v, want %v (%v)", chat, got, ok, errs)
+		}
+	}
+	if (AlertsConfig{}).Any() || !(AlertsConfig{Discord: true}).Any() {
+		t.Error("AlertsConfig.Any is wrong")
+	}
+}
