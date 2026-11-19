@@ -22,20 +22,22 @@ workflow refuses a tag whose version has no entry here.
 
 - **The forge is Forgejo 15 LTS** in place of Gitea 1.24 (urbforge/urbex
   ADR-0034, #116). A platform installed with 0.1.0 runs Gitea 1.24, whose
-  database Forgejo can't open: on such a platform `urbex bootstrap` with
-  this release starts Forgejo on Gitea's data, Forgejo exits ("Your
-  database (migration version: 321) is for a newer Forgejo") without
-  changing it, and the forge stays down. Gitea's data is untouched.
+  database Forgejo can't open, so it can't move to this release in place:
+  `urbex bootstrap` sees that its forge is Gitea and refuses, changing
+  nothing (#134).
 
 ### Upgrading
 
-- From 0.1.0: don't run `urbex bootstrap` on the existing platform. Tear
-  it down and bootstrap again (`urbex teardown`, then `urbex bootstrap`;
-  the repositories are pushed again from your clones), or stay on 0.1.0.
-  The workspace needs no change: the credentials and the platform config
-  written by 0.1.0 are still read (`giteaAdminPassword`, `giteaToken`,
-  `git.giteaUrl`); the new names (`forgeAdminPassword`, `forgeToken`,
-  `git.forgeUrl`) win when both are there.
+- From 0.1.0: start the platform again to get this release's platform,
+  the Java4Shell mitigation included. Back up the applications' named
+  volumes, `urbex destroy` every environment, `urbex teardown --yes`, then
+  `urbex bootstrap` with this release, push the projects' repositories
+  again and `urbex apply` their environments (urbforge/urbex
+  `docs/upgrading.md`, *From 0.1.0 to 0.2.0*). Or keep 0.1.0 on that
+  platform. The workspace needs no change: the credentials and the
+  platform config written by 0.1.0 are still read (`giteaAdminPassword`,
+  `giteaToken`, `git.giteaUrl`); the new names (`forgeAdminPassword`,
+  `forgeToken`, `git.forgeUrl`) win when both are there.
 
 ### Added
 
