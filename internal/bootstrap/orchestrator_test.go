@@ -588,3 +588,54 @@ func (k *fakeKomodo) TagResource(ctx context.Context, kind, name string, tags ..
 	k.f.tags[kind+" "+name] = tags
 	return nil
 }
+
+// A platform created by urbex 0.1.0 runs Gitea 1.24, whose database
+// Forgejo can't open (urbforge/urbex-cli#116): bootstrap refuses before
+// it changes anything, and says how to move on.
+func TestRun_RefusesAPlatformStillOnGitea(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"terraform/base/terraform.tfstate", "platform/gitea/compose.yaml"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "terraform/base/terraform.tfstate"), []byte("{}"), 0o644)
+	compose := "services:\n  gitea:\n    image: gitea/gitea:1.24\n    restart: unless-stopped\n"
+	os.WriteFile(filepath.Join(dir, "platform/gitea/compose.yaml"), []byte(compose), 0o644)
+
+	o, runner, _ := newRunOrchestrator(t, &fakeProxmox{hostnames: []string{"urbex-gitea", "urbex-komodo"}})
+	err := o.Run(context.Background(), Options{GitOpsRepoPath: dir})
+	if !errors.Is(err, ErrPlatformRunsGitea) {
+		t.Fatalf("Run: %v, want ErrPlatformRunsGitea", err)
+	}
+	for _, want := range []string{"gitea/gitea:1.24", "urbex 0.1.0", "urbex teardown", "urbex destroy", "back them up", "Upgrading"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error doesn't say %q:\n%v", want, err)
+		}
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("ran %v before refusing", runner.calls)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ansible")); err == nil {
+		t.Error("materialized the assets before refusing")
+	}
+
+	// The same platform on Forgejo goes on.
+	os.WriteFile(filepath.Join(dir, "platform/gitea/compose.yaml"), []byte("services:\n  gitea:\n    image: codeberg.org/forgejo/forgejo:15.0.11@sha256:5d05\n"), 0o644)
+	if err := refuseGiteaPlatform(dir); err != nil {
+		t.Errorf("a Forgejo platform refused: %v", err)
+	}
+	// So does a platform without the copy (a new one).
+	if err := refuseGiteaPlatform(t.TempDir()); err != nil {
+		t.Errorf("no compose copy refused: %v", err)
+	}
+	if err := refuseGiteaPlatform(dir + "/nope"); err != nil {
+		t.Error(err)
+	}
+	for _, img := range []string{"docker.io/gitea/gitea:1.24", "gitea/gitea@sha256:abcd"} {
+		os.WriteFile(filepath.Join(dir, "platform/gitea/compose.yaml"), []byte("services:\n  gitea:\n    image: "+img+"\n"), 0o644)
+		if !errors.Is(refuseGiteaPlatform(dir), ErrPlatformRunsGitea) {
+			t.Errorf("%s not refused", img)
+		}
+	}
+}
