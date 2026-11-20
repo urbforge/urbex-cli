@@ -24,6 +24,14 @@ workflow refuses a tag whose version has no entry here.
   and the Claude Code plugin (it was `~/urbex-workspace`). A workspace
   in `~/urbex-workspace` is still found when `~/urbex-work` doesn't
   exist; `-w` and `URBEX_WORKSPACE` choose any other.
+### Added
+
+- **Komodo's build cache is pruned on a schedule**, so its disk stays
+  bounded: every day the BuildKit cache older than 7 days, then beyond
+  3 GB, and the images no container uses older than 7 days. Change it
+  with `komodo.buildCache` in `urbex.platform.yaml`; each run logs what
+  it freed (Grafana, Loki). It runs as the platform Stack
+  `urbex-build-cache` on Komodo's LXC, created by `urbex bootstrap`.
 
 ## [0.1.0] - 2026-11-17
 
