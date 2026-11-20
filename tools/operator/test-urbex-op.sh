@@ -67,4 +67,25 @@ check "docker: a bare name, missing, is never pulled" docker urbex-operator none
 check "docker: a bare name, present, is run" docker urbex-operator urbex-operator local
 check "docker: a published image, missing, is pulled" docker $published none pull
 
+# The default workspace: ~/urbex-work, or ~/urbex-workspace (urbex 0.1's
+# default) when only that one exists (urbforge/urbex#57).
+default_ws() { # default_ws NAME WANT [DIR...]: the workspace urbex-op picks with these dirs in HOME
+  local name=$1 want=$2 home=$tmp/home-$RANDOM bin
+  shift 2
+  mkdir -p "$home"
+  for d in "$@"; do mkdir -p "$home/$d/home"; done
+  bin=$(fake podman localhost/urbex-operator)
+  : >"$tmp/calls"
+  PATH=$bin:$tools HOME=$home URBEX_OPERATOR_IMAGE=localhost/urbex-operator "$here/urbex-op" true >"$tmp/out" 2>&1
+  if grep -q -- "-v $home/$want:/work" "$tmp/calls" || grep -q "no workspace at $home/$want" "$tmp/out"; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name: want ~/$want"; sed 's/^/     /' "$tmp/out" "$tmp/calls"; fails=$((fails + 1))
+  fi
+}
+default_ws "default workspace: ~/urbex-work" urbex-work urbex-work
+default_ws "default workspace: ~/urbex-workspace when only it exists" urbex-workspace urbex-workspace
+default_ws "default workspace: ~/urbex-work when both exist" urbex-work urbex-work urbex-workspace
+default_ws "default workspace: ~/urbex-work when none exists" urbex-work
+
 [ $fails -eq 0 ] || { echo "$fails failed"; exit 1; }
