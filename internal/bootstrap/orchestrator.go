@@ -203,7 +203,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// The platform services Komodo deploys from the GitOps repo: their
 	// folders go in before setupPlatform pushes it.
 	o.Progress.Begin(PhaseGitOps)
-	stacks := o.platformStacks(tunnelToken)
+	stacks, err := o.platformStacks(tunnelToken)
+	if err != nil {
+		return err
+	}
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
 		return err
 	}
