@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
@@ -102,6 +103,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	fmt.Fprintf(o.Out, "Base services already present on Proxmox: %v\n", alreadyPresent)
 	fmt.Fprintf(o.Out, "Base services to provision: %v\n", toCreate)
+	if slices.Contains(alreadyPresent, Hostname("gitea")) {
+		if err := refuseGiteaPlatform(opts.GitOpsRepoPath); err != nil {
+			return err
+		}
+	}
 
 	ips, prefixLen, err := allocateIPs(o.Config)
 	if err != nil {
