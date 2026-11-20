@@ -40,7 +40,37 @@ type Config struct {
 	// Docker is how the machines' Docker pulls images.
 	Docker DockerConfig `yaml:"docker,omitempty"`
 	Komodo KomodoConfig `yaml:"komodo,omitempty"`
+	// Observability is about the observability stack (Grafana).
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
 }
+
+// ObservabilityConfig is about the observability stack.
+type ObservabilityConfig struct {
+	Alerts AlertsConfig `yaml:"alerts,omitempty"`
+}
+
+// AlertsConfig is where Grafana sends Urbex's alerts besides its own
+// Alerting page (urbforge/urbex-cli#95): none, one or several channels.
+// Their secrets - the bot token, the webhooks' URLs - are credentials
+// (credentials.yaml), never here.
+type AlertsConfig struct {
+	// Telegram sends them to a chat through a bot: ChatID here, the bot's
+	// token as the credential telegramBotToken.
+	Telegram *TelegramAlerts `yaml:"telegram,omitempty"`
+	// Discord sends them to a channel's webhook, the credential
+	// discordWebhookUrl.
+	Discord bool `yaml:"discord,omitempty"`
+	// Webhook posts them as JSON to the credential alertsWebhookUrl.
+	Webhook bool `yaml:"webhook,omitempty"`
+}
+
+// TelegramAlerts is the chat a Telegram bot sends the alerts to.
+type TelegramAlerts struct {
+	ChatID string `yaml:"chatId"`
+}
+
+// Any reports whether a channel is configured.
+func (a AlertsConfig) Any() bool { return a.Telegram != nil || a.Discord || a.Webhook }
 
 // KomodoConfig is about Komodo, the platform's builder and deployer.
 type KomodoConfig struct {
@@ -396,6 +426,9 @@ func (c *Config) Validate() []string {
 			errs = append(errs, "storage.shares."+name+".path: "+p+" is not a folder on the Proxmox node")
 		}
 	}
+	if t := c.Observability.Alerts.Telegram; t != nil && !telegramChat.MatchString(t.ChatID) {
+		errs = append(errs, "observability.alerts.telegram.chatId: "+t.ChatID+" is not a Telegram chat id (a number, negative for a group) or @channel")
+	}
 	bc := c.Komodo.BuildCache
 	if bc.KeepStorage != "" && !storageSize.MatchString(bc.KeepStorage) {
 		errs = append(errs, "komodo.buildCache.keepStorage: "+bc.KeepStorage+" is not a size such as 3GB or 500MB")
@@ -408,6 +441,10 @@ func (c *Config) Validate() []string {
 
 	return errs
 }
+
+// telegramChat is a Telegram chat id: a number (negative for a group) or
+// a public channel's @name.
+var telegramChat = regexp.MustCompile(`^(-?[0-9]+|@[A-Za-z][A-Za-z0-9_]{4,})$`)
 
 // storageSize is a size docker understands: a number and a unit.
 var storageSize = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(B|KB|MB|GB|TB)$`)
