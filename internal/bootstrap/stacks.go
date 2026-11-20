@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/urbforge/urbex-cli/internal/platform"
 	assets "github.com/urbforge/urbex-cli/platform"
 
 	"github.com/urbforge/urbex-cli/internal/komodo"
@@ -38,6 +39,10 @@ type PlatformStack struct {
 	Server  string
 	Config  map[string]string
 	Secrets map[string]string
+	// Generated are files urbex writes besides the embedded ones, by
+	// their path in the Stack's folder; a path mapped to "" is removed,
+	// so that a file no longer wanted doesn't stay behind.
+	Generated map[string]string
 }
 
 // ComposeWrapper is the command every Stack deployed from the GitOps repo
@@ -56,7 +61,7 @@ const PlatformStacksDir = "platform"
 // platformStacks are the platform services deployed from the GitOps
 // repo: Keycloak, the observability stack and, with Cloudflare, the
 // tunnel, whose connector token is tunnelToken.
-func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
+func (o *Orchestrator) platformStacks(tunnelToken string) ([]PlatformStack, error) {
 	// Keycloak runs in production mode on its own PostgreSQL, in the same
 	// Stack (urbex-cli#36). Both containers read config.env and the
 	// secrets: KC_* configure Keycloak, POSTGRES_* the database.
@@ -93,9 +98,12 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 				"KC_DB_PASSWORD":              o.Credentials.KeycloakDBPassword,
 				"POSTGRES_PASSWORD":           o.Credentials.KeycloakDBPassword,
 			}},
-		{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
-			Secrets: map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword}},
 	}
+	observability, err := o.observabilityStack()
+	if err != nil {
+		return nil, err
+	}
+	stacks = append(stacks, observability)
 	if o.Config.Cloudflare.Enabled() {
 		stacks = append(stacks, PlatformStack{Name: Hostname(TunnelService.Name), Dir: "tunnel", Config: map[string]string{},
 			Secrets: map[string]string{"TUNNEL_TOKEN": tunnelToken}})
@@ -109,7 +117,35 @@ func (o *Orchestrator) platformStacks(tunnelToken string) []PlatformStack {
 			"KEEP_FOR":     bc.KeepFor,
 			"KEEP_EVERY":   fmt.Sprint(int(every.Seconds())),
 		}})
-	return stacks
+	return stacks, nil
+}
+
+// observabilityStack is Prometheus, Loki and Grafana; with
+// observability.alerts, Grafana also sends Urbex's alerts to its channels
+// (urbforge/urbex-cli#95), and its links point to its own address.
+func (o *Orchestrator) observabilityStack() (PlatformStack, error) {
+	st := PlatformStack{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
+		Secrets:   map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword},
+		Generated: map[string]string{AlertsProvisioningFile: ""}}
+	file, secrets, err := AlertsProvisioning(o.Config.Observability.Alerts, o.Credentials)
+	if err != nil || file == "" {
+		return st, err
+	}
+	st.Generated[AlertsProvisioningFile] = file
+	for k, v := range secrets {
+		st.Secrets[k] = v
+	}
+	st.Config["GF_SERVER_ROOT_URL"] = GrafanaURL(o.Config)
+	return st, nil
+}
+
+// GrafanaURL is the address the alerts link to: Grafana behind Access with
+// Cloudflare, else its internal name, on the LAN or the VPN.
+func GrafanaURL(cfg *platform.Config) string {
+	if host := PublicEndpointsFor(cfg).Grafana; host != "" {
+		return "https://" + host + "/"
+	}
+	return "http://" + cfg.InternalName("grafana") + ":3000/"
 }
 
 // Keycloak's database and its owner, in the Keycloak Stack's PostgreSQL.
@@ -156,6 +192,29 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 		})
 		if err != nil {
 			return fmt.Errorf("writing the %s stack: %w", st.Dir, err)
+		}
+		generated := make([]string, 0, len(st.Generated))
+		for p := range st.Generated {
+			generated = append(generated, p)
+		}
+		sort.Strings(generated)
+		for _, p := range generated {
+			dest := filepath.Join(dir, filepath.FromSlash(p))
+			data := st.Generated[p]
+			if data == "" {
+				if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return err
+				}
+				continue
+			}
+			fmt.Fprintf(files, "%s %d\n", p, len(data))
+			files.Write([]byte(data))
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(dest, []byte(data), 0o644); err != nil {
+				return err
+			}
 		}
 		// The files' hash in config.env, which the containers that read
 		// the files also read: compose recreates them when a file

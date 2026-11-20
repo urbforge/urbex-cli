@@ -32,6 +32,9 @@ workflow refuses a tag whose version has no entry here.
   with `komodo.buildCache` in `urbex.platform.yaml`; each run logs what
   it freed (Grafana, Loki). It runs as the platform Stack
   `urbex-build-cache` on Komodo's LXC, created by `urbex bootstrap`.
+### Added
+
+- **Alerts to Telegram, Discord or a webhook** (urbforge/urbex-cli#95): `observability.alerts` in `urbex.platform.yaml` provisions a Grafana contact point for Urbex's alerts - one short message per alert and machine, its summary, severity, project, service and host, a link to Grafana, and a resolved message; repeated at most every 4 hours. The bot token and the webhooks' URLs are credentials, encrypted in the observability Stack. `urbex doctor` checks them, and `urbex doctor --test-alerts` sends a test message through each channel.
 
 ## [0.1.0] - 2026-11-17
 
