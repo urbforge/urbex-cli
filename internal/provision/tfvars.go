@@ -74,34 +74,34 @@ func writeTFVars(tfDir string, cfg *platform.Config, project, env string, servic
 	svcVars := make(map[string]serviceVars, len(services))
 	vmVars := map[string]serviceVars{}
 	graph := &manifest.Manifest{Services: services}
-	for _, svc := range services {
-		hostname := Hostname(project, svc.Name, env)
+	// One machine per group (ADR-0037): its applications' resources added
+	// up, started once the last of them may start.
+	for _, g := range graph.Groups() {
+		hostname := Hostname(project, g.Name, env)
 		entry := allocations[hostname]
-		resources := svc.ResourcesOrDefault()
-
-		memMB, err := sizeparse.MB(resources.Memory)
-		if err != nil {
-			return err
+		v := serviceVars{VMID: entry.VMID, IPAddress: entry.IP}
+		for _, svc := range g.Services {
+			resources := svc.ResourcesOrDefault()
+			memMB, err := sizeparse.MB(resources.Memory)
+			if err != nil {
+				return err
+			}
+			diskGB, err := sizeparse.GB(resources.Disk)
+			if err != nil {
+				return err
+			}
+			order, upDelay := startupOrder(graph, svc)
+			v.Cores += resources.CPU
+			v.MemoryMB += memMB
+			v.DiskGB += diskGB
+			v.StartupOrder = max(v.StartupOrder, order)
+			v.StartupUpDelay = max(v.StartupUpDelay, upDelay)
 		}
-		diskGB, err := sizeparse.GB(resources.Disk)
-		if err != nil {
-			return err
-		}
-
-		order, upDelay := startupOrder(graph, svc)
 		target := svcVars
-		if svc.IsVM() {
+		if g.IsVM() {
 			target = vmVars
 		}
-		target[hostname] = serviceVars{
-			VMID:           entry.VMID,
-			IPAddress:      entry.IP,
-			Cores:          resources.CPU,
-			MemoryMB:       memMB,
-			DiskGB:         diskGB,
-			StartupOrder:   order,
-			StartupUpDelay: upDelay,
-		}
+		target[hostname] = v
 	}
 
 	vars := tfVars{

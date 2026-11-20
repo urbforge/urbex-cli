@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"fmt"
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
@@ -94,21 +95,28 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 	}
 
 	var publicHosts map[string]any
-	for _, svc := range services {
-		hostname := Hostname(project, svc.Name, env)
-		hv := hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: svc.Name, Env: env}
-		for _, v := range svc.NamedVolumes() {
-			hv.VolumePaths = append(hv.VolumePaths, svc.LXCPath(v))
-			if svc.IsVM() {
-				hv.VMVolumes = append(hv.VMVolumes, vmVolume{Serial: svc.DiskSerial(v), Path: svc.LXCPath(v)})
+	// One host per machine: an application's, or its LXC group's
+	// (ADR-0037), labelled with the group's name.
+	for _, g := range (&manifest.Manifest{Services: services}).Groups() {
+		hostname := Hostname(project, g.Name, env)
+		hv := hostVars{AnsibleHost: allocations[hostname].IP, Project: project, Service: g.Name, Env: env}
+		for _, svc := range g.Services {
+			for _, v := range svc.NamedVolumes() {
+				hv.VolumePaths = append(hv.VolumePaths, svc.LXCPath(v))
+				if svc.IsVM() {
+					hv.VMVolumes = append(hv.VMVolumes, vmVolume{Serial: svc.DiskSerial(v), Path: svc.LXCPath(v)})
+				}
 			}
-		}
-		if quickTunnel && svc.Public {
-			hv.AppPort = strconv.Itoa(svc.Port)
-			if publicHosts == nil {
-				publicHosts = map[string]any{}
+			if quickTunnel && svc.Public {
+				if hv.AppPort != "" {
+					return fmt.Errorf("lxc %s: a Quick Tunnel publishes one application per machine, and %s is the second public one", g.Name, svc.Name)
+				}
+				hv.AppPort = strconv.Itoa(svc.Port)
+				if publicHosts == nil {
+					publicHosts = map[string]any{}
+				}
+				publicHosts[hostname] = nil
 			}
-			publicHosts[hostname] = nil
 		}
 		root.All.Hosts[hostname] = hv
 	}

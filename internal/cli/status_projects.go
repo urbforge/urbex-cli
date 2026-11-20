@@ -100,7 +100,7 @@ func projectsStatus(ctx context.Context, warn func(string), cfg *platform.Config
 				if host := o.PublicHostname(d.Env, svc); host != "" {
 					v.Public = "https://" + host
 				}
-			} else if entry, ok := ledger.Lookup(provision.Hostname(d.Project, svc.Name, d.Env)); ok {
+			} else if entry, ok := ledger.Lookup(provision.MachineHostname(d.Project, svc, d.Env)); ok {
 				v.LAN = provision.LANAddress(entry.IP, repo.Port(d.Env, d.Project, svc.Name))
 				v.DNS = dns.Lookup(ctx, o.InternalHostname(d.Env, svc), entry.IP)
 				// Routes go to the service's internal name (ADR-0027);

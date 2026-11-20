@@ -845,3 +845,25 @@ func TestRuns(t *testing.T) {
 		}
 	}
 }
+
+// An LXC group is one Komodo Server and one telemetry agent; each of its
+// applications keeps its own Stack, on the group's Server (ADR-0037).
+func TestGroupSharesAServer(t *testing.T) {
+	tg := Target{Project: "media", Env: "prod", Services: []manifest.Service{
+		{Name: "sonarr", Image: "sonarr", Version: "4", LXC: "arr"},
+		{Name: "radarr", Image: "radarr", Version: "5", LXC: "arr"},
+		{Name: "jellyfin", Image: "jellyfin", Version: "10"},
+	}}
+	if got := strings.Join(tg.TelemetryHosts(), ","); got != "media-arr-prod,media-jellyfin-prod" {
+		t.Errorf("telemetry hosts = %s", got)
+	}
+	r := newRollout(&fakeGitea{}, &fakeKomodo{}, &fakeGit{})
+	for _, svc := range tg.Services {
+		name := ResourceName(tg.Project, svc.Name, tg.Env)
+		cfg := r.stackConfig(name, tg, svc)
+		want := map[string]string{"sonarr": "media-arr-prod", "radarr": "media-arr-prod", "jellyfin": "media-jellyfin-prod"}[svc.Name]
+		if cfg.ServerID != want {
+			t.Errorf("stack %s on server %s, want %s", name, cfg.ServerID, want)
+		}
+	}
+}

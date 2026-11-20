@@ -64,3 +64,36 @@ func TestWriteTFVars_VMsApart(t *testing.T) {
 		t.Errorf("clone_vm_id = %d, vm_clone_vm_id = %d", got.CloneVMID, got.VMCloneVMID)
 	}
 }
+
+// An LXC group is one machine (ADR-0037): its applications' resources
+// added up, its start after the latest of them.
+func TestWriteTFVars_GroupIsOneMachine(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &platform.Config{Proxmox: platform.ProxmoxConfig{Node: "pve", StoragePool: "local-zfs"}}
+	services := []manifest.Service{
+		{Name: "sonarr", Port: 8989, LXC: "arr", Resources: &manifest.Resources{CPU: 2, Memory: "2Gi", Disk: "6Gi"}},
+		{Name: "radarr", Port: 7878, LXC: "arr"},
+		{Name: "jellyfin", Port: 8096},
+	}
+	allocations := map[string]allocation.Entry{
+		"media-arr-prod":      {VMID: 9100, IP: "192.168.1.210"},
+		"media-jellyfin-prod": {VMID: 9101, IP: "192.168.1.211"},
+	}
+	if err := writeTFVars(dir, cfg, "media", "prod", services, allocations, 24, nil, 9090, 9080); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "terraform.auto.tfvars.json"))
+	var got tfVars
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Services) != 2 {
+		t.Fatalf("services = %v, want the group and jellyfin", got.Services)
+	}
+	if arr := got.Services["media-arr-prod"]; arr.VMID != 9100 || arr.Cores != 3 || arr.MemoryMB != 3072 || arr.DiskGB != 11 {
+		t.Errorf("arr = %+v, want 3 cores, 3072 MB, 11 GB", arr)
+	}
+	if jf := got.Services["media-jellyfin-prod"]; jf.Cores != 1 || jf.DiskGB != 5 {
+		t.Errorf("jellyfin = %+v", jf)
+	}
+}
