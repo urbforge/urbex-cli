@@ -217,6 +217,9 @@ step "bootstrap: base services and platform setup" '
   [ "$(komodo_stack_state urbex-build-cache)" = running ] || fail "build-cache stack: $(komodo_stack_state urbex-build-cache)"
   grep -q "^KEEP_STORAGE=3GB$" /work/gitops/platform/build-cache/config.env || fail "build-cache config.env: $(cat /work/gitops/platform/build-cache/config.env)"
   [ ! -e /work/gitops/platform/build-cache/secrets.sops.env ] || fail "build-cache should have no secrets file"
+  # Java4Shell (urbforge/urbex-cli#130): Keycloak'"'"'s JVM runs without
+  # the Base64 intrinsic (its processes, as the host sees them).
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.203 "docker ps -q --filter label=urbex.service=keycloak | xargs -n1 docker top" | grep -q -- "-XX:-UseBASE64Intrinsics" || fail "keycloak runs its JVM with the Base64 intrinsic"
   for svc in keycloak observability; do
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done
