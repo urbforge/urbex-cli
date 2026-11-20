@@ -152,20 +152,22 @@ type Target struct {
 	Links map[string]*envrepo.Links
 }
 
-// lxcs are the target's services that run on an LXC of their own - all
-// but a web frontend, whose Stack runs on the builder - and their LXCs.
-func (t Target) lxcs() (services []manifest.Service, hosts []string) {
+// lxcs are the target's machines - all its services but a web frontend,
+// whose Stack runs on the builder, one machine per LXC group (ADR-0037) -
+// and, for each, its group's name: the service's own for one alone.
+func (t Target) lxcs() (groups []string, hosts []string) {
 	seen := map[string]bool{}
 	for _, svc := range t.Services {
-		if !svc.IsWeb() {
-			services = append(services, svc)
-			if host := MachineName(t.Project, svc, t.Env); !seen[host] {
-				seen[host] = true
-				hosts = append(hosts, host)
-			}
+		if svc.IsWeb() {
+			continue
+		}
+		if host := MachineName(t.Project, svc, t.Env); !seen[host] {
+			seen[host] = true
+			groups = append(groups, svc.Group())
+			hosts = append(hosts, host)
 		}
 	}
-	return services, hosts
+	return groups, hosts
 }
 
 // TelemetryHosts are the LXCs whose telemetry agents the target has.
@@ -317,9 +319,9 @@ func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 		}
 	}
 	// Each LXC's telemetry agent, a Stack of its own (ADR-0027).
-	services, hosts := t.lxcs()
-	for i, svc := range services {
-		agent := bootstrap.TelemetryAgent{Host: hosts[i], Kind: bootstrap.AppTag, Service: svc.Name, Project: t.Project, Env: t.Env, Logs: t.Logs}
+	groups, hosts := t.lxcs()
+	for i, group := range groups {
+		agent := bootstrap.TelemetryAgent{Host: hosts[i], Kind: bootstrap.AppTag, Service: group, Project: t.Project, Env: t.Env, Logs: t.Logs}
 		if err := bootstrap.WriteTelemetryAgent(repo.Path, agent, r.Internal); err != nil {
 			return err
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -857,6 +858,9 @@ func TestGroupSharesAServer(t *testing.T) {
 	if got := strings.Join(tg.TelemetryHosts(), ","); got != "media-arr-prod,media-jellyfin-prod" {
 		t.Errorf("telemetry hosts = %s", got)
 	}
+	if groups, _ := tg.lxcs(); strings.Join(groups, ",") != "arr,jellyfin" {
+		t.Errorf("machines' groups = %v", groups)
+	}
 	r := newRollout(&fakeGitea{}, &fakeKomodo{}, &fakeGit{})
 	for _, svc := range tg.Services {
 		name := ResourceName(tg.Project, svc.Name, tg.Env)
@@ -865,5 +869,36 @@ func TestGroupSharesAServer(t *testing.T) {
 		if cfg.ServerID != want {
 			t.Errorf("stack %s on server %s, want %s", name, cfg.ServerID, want)
 		}
+	}
+}
+
+// WriteEnv writes every application's folder and one telemetry agent per
+// machine, labelled with its group (ADR-0037): three applications, two
+// machines.
+func TestWriteEnv_Groups(t *testing.T) {
+	repo := envrepo.Repo{Path: t.TempDir()}
+	tg := Target{Project: "media", Env: "prod", Services: []manifest.Service{
+		{Name: "sonarr", Image: "sonarr", Version: "4", Port: 8989, LXC: "arr"},
+		{Name: "radarr", Image: "radarr", Version: "5", Port: 7878, LXC: "arr"},
+		{Name: "jellyfin", Image: "jellyfin", Version: "10", Port: 8096},
+	}}
+	if err := newRollout(&fakeGitea{}, &fakeKomodo{}, &fakeGit{}).WriteEnv(tg, repo); err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range []string{"sonarr", "radarr", "jellyfin"} {
+		if _, err := os.Stat(filepath.Join(repo.Path, envrepo.ServiceDir("prod", "media", svc), "compose.yaml")); err != nil {
+			t.Errorf("no compose for %s: %v", svc, err)
+		}
+	}
+	var agents []string
+	filepath.WalkDir(repo.Path, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, "config.alloy") {
+			data, _ := os.ReadFile(p)
+			agents = append(agents, filepath.Base(filepath.Dir(p))+":"+map[bool]string{true: "arr", false: "other"}[strings.Contains(string(data), `"arr"`)])
+		}
+		return nil
+	})
+	if len(agents) != 2 {
+		t.Errorf("telemetry agents = %v, want one per machine", agents)
 	}
 }
