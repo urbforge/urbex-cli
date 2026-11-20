@@ -476,6 +476,59 @@ func TestBaseServicesAreInTheCatalog(t *testing.T) {
 	}
 }
 
+// The node's metrics (urbforge/urbex-cli#94): with the read-only token,
+// pve-exporter's profile is on, reaching the node by its address, the
+// token's parts in the Stack's secrets; without it, the profile is
+// explicitly off.
+func TestRun_NodeMetricsWithTheMonitoringToken(t *testing.T) {
+	dir := t.TempDir()
+	o, _, fp := newRunOrchestrator(t, &fakeProxmox{})
+	o.Config.Proxmox.APIURL = "https://192.0.2.10:8006/api2/json"
+	o.Credentials.ProxmoxMonitorToken = "urbex-monitor@pve!metrics=00000000-1111-2222-3333-444444444444"
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if env := fp.stacks["urbex-observability"].Environment; env != "COMPOSE_PROFILES=pve\nURBEX_PVE_NODE_IP=192.0.2.10\n" {
+		t.Errorf("observability environment = %q", env)
+	}
+	secrets, _ := os.ReadFile(filepath.Join(dir, "platform/observability/secrets.sops.env"))
+	for _, want := range []string{"PVE_USER=urbex-monitor@pve", "PVE_TOKEN_NAME=metrics", "PVE_TOKEN_VALUE=00000000-1111-2222-3333-444444444444"} {
+		if !strings.Contains(string(secrets), want) {
+			t.Errorf("secrets lack %s:\n%s", want, secrets)
+		}
+	}
+	config, _ := os.ReadFile(filepath.Join(dir, "platform/observability/config.env"))
+	if strings.Contains(string(config), "00000000-1111") || !strings.Contains(string(config), "PVE_VERIFY_SSL=false") {
+		t.Errorf("config.env:\n%s", config)
+	}
+
+	o2, _, fp2 := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o2.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}); err != nil {
+		t.Fatalf("Run without the token: %v", err)
+	}
+	if env := fp2.stacks["urbex-observability"].Environment; env != "COMPOSE_PROFILES=\nURBEX_PVE_NODE_IP=\n" {
+		t.Errorf("without the token, environment = %q", env)
+	}
+
+	o3, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	o3.Credentials.ProxmoxMonitorToken = "not-a-token"
+	if err := o3.Run(context.Background(), Options{GitOpsRepoPath: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "proxmoxMonitorToken") {
+		t.Errorf("a malformed token: %v", err)
+	}
+}
+
+func TestSplitProxmoxToken(t *testing.T) {
+	u, n, v, err := SplitProxmoxToken("urbex@pve!urbex=a-b=c")
+	if err != nil || u != "urbex@pve" || n != "urbex" || v != "a-b=c" {
+		t.Errorf("got %q %q %q %v", u, n, v, err)
+	}
+	for _, bad := range []string{"", "urbex@pve!urbex", "urbex!x=y", "@pve!x=y", "u@pve!=y", "u@pve!x="} {
+		if _, _, _, err := SplitProxmoxToken(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 // Java4Shell (urbforge/urbex-cli#130): Keycloak's JVM starts without
 // the Base64 intrinsic, from the Stack's config.env.
 func TestRun_KeycloakWithoutBase64Intrinsics(t *testing.T) {
