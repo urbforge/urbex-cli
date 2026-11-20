@@ -12,11 +12,22 @@ The Claude Code plugin and the docs have their own changelog, in
 [urbforge/urbex](https://github.com/urbforge/urbex/blob/main/CHANGELOG.md).
 Every release also lists its commits, generated from their titles.
 
-A pull request that changes what users see adds a line under
-*Unreleased*; a release moves them under its version - the release
-workflow refuses a tag whose version has no entry here.
+Feature and fix pull requests don't touch this file: what users see is
+written here in one pull request when a release is prepared (see
+`docs/development.md` in urbforge/redemptor), under the release's
+version - the release workflow refuses a tag whose version has no entry
+here.
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-11-20
+
+The forge is Forgejo 15 LTS in place of Gitea: a platform created by
+0.1.0 is started again rather than upgraded (see Breaking and
+Upgrading), and `urbex bootstrap` refuses it until then. Also the
+Java4Shell mitigation in Keycloak and the `runtime: java` images, alerts
+to Telegram, Discord or a webhook, the build cache pruned on Komodo,
+and `urbex updates`.
 
 ### Breaking
 
