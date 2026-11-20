@@ -9,8 +9,10 @@ import (
 	"maps"
 	"net"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +26,75 @@ type Config struct {
 	DNS        DNSConfig        `yaml:"dns"`
 	Keycloak   KeycloakConfig   `yaml:"keycloak"`
 	Storage    StorageConfig    `yaml:"storage,omitempty"`
+	Komodo     KomodoConfig     `yaml:"komodo,omitempty"`
+	// Observability is about the observability stack (Grafana).
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
 }
+
+// ObservabilityConfig is about the observability stack.
+type ObservabilityConfig struct {
+	Alerts AlertsConfig `yaml:"alerts,omitempty"`
+}
+
+// AlertsConfig is where Grafana sends Urbex's alerts besides its own
+// Alerting page (urbforge/urbex-cli#95): none, one or several channels.
+// Their secrets - the bot token, the webhooks' URLs - are credentials
+// (credentials.yaml), never here.
+type AlertsConfig struct {
+	// Telegram sends them to a chat through a bot: ChatID here, the bot's
+	// token as the credential telegramBotToken.
+	Telegram *TelegramAlerts `yaml:"telegram,omitempty"`
+	// Discord sends them to a channel's webhook, the credential
+	// discordWebhookUrl.
+	Discord bool `yaml:"discord,omitempty"`
+	// Webhook posts them as JSON to the credential alertsWebhookUrl.
+	Webhook bool `yaml:"webhook,omitempty"`
+}
+
+// TelegramAlerts is the chat a Telegram bot sends the alerts to.
+type TelegramAlerts struct {
+	ChatID string `yaml:"chatId"`
+}
+
+// Any reports whether a channel is configured.
+func (a AlertsConfig) Any() bool { return a.Telegram != nil || a.Discord || a.Webhook }
+
+// KomodoConfig is about Komodo, the platform's builder and deployer.
+type KomodoConfig struct {
+	BuildCache BuildCacheConfig `yaml:"buildCache,omitempty"`
+}
+
+// BuildCacheConfig bounds what builds leave on Komodo's disk
+// (urbforge/urbex-cli#92): every Every, BuildKit's cache is pruned beyond
+// KeepStorage or older than KeepFor, and so are images no container uses
+// older than KeepFor.
+type BuildCacheConfig struct {
+	KeepStorage string `yaml:"keepStorage,omitempty"` // e.g. 3GB
+	KeepFor     string `yaml:"keepFor,omitempty"`     // a duration, e.g. 168h
+	Every       string `yaml:"every,omitempty"`       // a duration, e.g. 24h
+}
+
+// WithDefaults is b with the defaults where it sets nothing.
+func (b BuildCacheConfig) WithDefaults() BuildCacheConfig {
+	if b.KeepStorage == "" {
+		b.KeepStorage = DefaultBuildCacheKeepStorage
+	}
+	if b.KeepFor == "" {
+		b.KeepFor = DefaultBuildCacheKeepFor
+	}
+	if b.Every == "" {
+		b.Every = DefaultBuildCacheEvery
+	}
+	return b
+}
+
+// The build cache's defaults: for Komodo's 10 GiB disk, about 6 GiB of
+// which the platform and a first build use.
+const (
+	DefaultBuildCacheKeepStorage = "3GB"
+	DefaultBuildCacheKeepFor     = "168h"
+	DefaultBuildCacheEvery       = "24h"
+)
 
 // StorageConfig is storage that exists outside Urbex (ADR-0028).
 type StorageConfig struct {
@@ -259,6 +329,7 @@ func LoadFile(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	cfg.Komodo.BuildCache = cfg.Komodo.BuildCache.WithDefaults()
 	if cfg.Git.ForgeURL == "" {
 		cfg.Git.ForgeURL = cfg.Git.LegacyGiteaURL
 	}
@@ -337,6 +408,25 @@ func (c *Config) Validate() []string {
 			errs = append(errs, "storage.shares."+name+".path: "+p+" is not a folder on the Proxmox node")
 		}
 	}
+	if t := c.Observability.Alerts.Telegram; t != nil && !telegramChat.MatchString(t.ChatID) {
+		errs = append(errs, "observability.alerts.telegram.chatId: "+t.ChatID+" is not a Telegram chat id (a number, negative for a group) or @channel")
+	}
+	bc := c.Komodo.BuildCache
+	if bc.KeepStorage != "" && !storageSize.MatchString(bc.KeepStorage) {
+		errs = append(errs, "komodo.buildCache.keepStorage: "+bc.KeepStorage+" is not a size such as 3GB or 500MB")
+	}
+	for field, v := range map[string]string{"keepFor": bc.KeepFor, "every": bc.Every} {
+		if d, err := time.ParseDuration(v); v != "" && (err != nil || d < time.Hour) {
+			errs = append(errs, "komodo.buildCache."+field+": "+v+" is not a duration of an hour or more, such as 24h")
+		}
+	}
 
 	return errs
 }
+
+// telegramChat is a Telegram chat id: a number (negative for a group) or
+// a public channel's @name.
+var telegramChat = regexp.MustCompile(`^(-?[0-9]+|@[A-Za-z][A-Za-z0-9_]{4,})$`)
+
+// storageSize is a size docker understands: a number and a unit.
+var storageSize = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(B|KB|MB|GB|TB)$`)

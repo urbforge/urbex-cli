@@ -25,7 +25,7 @@ const (
 
 // Check is one line of the report.
 type Check struct {
-	Group  string `json:"group"` // tools, workspace, proxmox, cloudflare
+	Group  string `json:"group"` // tools, workspace, proxmox, cloudflare, alerts
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`

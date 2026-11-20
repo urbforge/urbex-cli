@@ -129,7 +129,7 @@ See *Find every endpoint* in the cookbook
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `URBEX_WORKSPACE` | `~/urbex-workspace` | The workspace, if `-w` isn't given. |
+| `URBEX_WORKSPACE` | `~/urbex-work` (`~/urbex-workspace`, urbex 0.1's default, if only that exists) | The workspace, if `-w` isn't given. |
 | `URBEX_OPERATOR_IMAGE` | a release's `urbex-op`: `ghcr.io/urbforge/urbex-op:<its version>`; from a checkout: `urbex-operator` | The image runs use (and `build` creates). |
 | `URBEX_PROXMOX_TOKEN`, `URBEX_CLOUDFLARE_TOKEN`, `URBEX_AGE_KEY` | - | Passed to the container when set; otherwise the credentials file is used. |
 

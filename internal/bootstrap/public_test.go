@@ -346,7 +346,19 @@ func TestRun_PlatformStacksFromTheGitOpsRepo(t *testing.T) {
 			t.Errorf("stack %s tags = %v", name, fp.tags["Stack "+name])
 		}
 	}
-	want := "urbex-keycloak,urbex-observability,urbex-tunnel," +
+	// The builder's cache is pruned by a Stack on Komodo's Server, with
+	// the defaults (urbforge/urbex-cli#92).
+	bc := fp.stacks["urbex-build-cache"]
+	if bc.ServerID != KomodoServerName || bc.RunDirectory != "platform/build-cache" || bc.ComposeCmdWrapper != "" || len(bc.ConfigFiles) != 1 {
+		t.Errorf("build-cache stack = %+v", bc)
+	}
+	bcEnv, _ := os.ReadFile(filepath.Join(dir, "platform/build-cache/config.env"))
+	for _, want := range []string{"KEEP_STORAGE=3GB", "KEEP_FOR=168h", "KEEP_EVERY=86400"} {
+		if !strings.Contains(string(bcEnv), want) {
+			t.Errorf("build-cache config.env lacks %s:\n%s", want, bcEnv)
+		}
+	}
+	want := "urbex-build-cache,urbex-keycloak,urbex-observability,urbex-tunnel," +
 		"urbex-telemetry-urbex-gitea,urbex-telemetry-urbex-komodo,urbex-telemetry-urbex-technitium," +
 		"urbex-telemetry-urbex-keycloak,urbex-telemetry-urbex-observability,urbex-telemetry-urbex-tunnel"
 	// All at once (urbforge/urbex-cli#30): in any order.
@@ -461,5 +473,22 @@ func TestBaseServicesAreInTheCatalog(t *testing.T) {
 		if !found {
 			t.Errorf("base service %s has no entry in the service catalog (internal/platform/catalog.go)", svc.Name)
 		}
+	}
+}
+
+// Java4Shell (urbforge/urbex-cli#130): Keycloak's JVM starts without
+// the Base64 intrinsic, from the Stack's config.env.
+func TestRun_KeycloakWithoutBase64Intrinsics(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _ := newRunOrchestrator(t, &fakeProxmox{})
+	if err := o.Run(context.Background(), Options{GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	env, err := os.ReadFile(filepath.Join(dir, "platform/keycloak/config.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "\nJAVA_OPTS_APPEND=-XX:-UseBASE64Intrinsics\n") {
+		t.Errorf("keycloak config.env has no JAVA_OPTS_APPEND:\n%s", env)
 	}
 }
