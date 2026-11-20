@@ -27,6 +27,11 @@ type Credentials struct {
 	ProxmoxToken    string `yaml:"proxmoxToken,omitempty"`
 	CloudflareToken string `yaml:"cloudflareToken,omitempty"`
 	AgeKey          string `yaml:"ageKey,omitempty"`
+	// Where Grafana sends the alerts (observability.alerts in the
+	// platform config, urbforge/urbex-cli#95): provided by the user.
+	TelegramBotToken  string `yaml:"telegramBotToken,omitempty"`
+	DiscordWebhookURL string `yaml:"discordWebhookUrl,omitempty"`
+	AlertsWebhookURL  string `yaml:"alertsWebhookUrl,omitempty"`
 	// ProxmoxMonitorToken is a read-only (PVEAuditor) token of the whole
 	// node, "user@realm!name=secret", for the node's metrics in Grafana
 	// (urbforge/urbex-cli#94); optional, provided by the user.
@@ -62,6 +67,9 @@ func (c *Credentials) fields() []struct {
 		{"URBEX_PROXMOX_TOKEN", &c.ProxmoxToken},
 		{"URBEX_CLOUDFLARE_TOKEN", &c.CloudflareToken},
 		{"URBEX_AGE_KEY", &c.AgeKey},
+		{"URBEX_TELEGRAM_BOT_TOKEN", &c.TelegramBotToken},
+		{"URBEX_DISCORD_WEBHOOK_URL", &c.DiscordWebhookURL},
+		{"URBEX_ALERTS_WEBHOOK_URL", &c.AlertsWebhookURL},
 		{"URBEX_PROXMOX_MONITOR_TOKEN", &c.ProxmoxMonitorToken},
 		{"URBEX_FORGE_ADMIN_PASSWORD", &c.ForgeAdminPassword},
 		{"URBEX_FORGE_TOKEN", &c.ForgeToken},
@@ -314,6 +322,10 @@ var provided = map[string]bool{
 	"URBEX_PROXMOX_TOKEN":    true,
 	"URBEX_CLOUDFLARE_TOKEN": true,
 	"URBEX_AGE_KEY":          true,
+	// The alerts' channels.
+	"URBEX_TELEGRAM_BOT_TOKEN":  true,
+	"URBEX_DISCORD_WEBHOOK_URL": true,
+	"URBEX_ALERTS_WEBHOOK_URL":  true,
 	// The node's metrics.
 	"URBEX_PROXMOX_MONITOR_TOKEN": true,
 }

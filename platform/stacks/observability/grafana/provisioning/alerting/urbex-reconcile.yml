@@ -40,7 +40,7 @@ groups:
         noDataState: Alerting
         execErrState: Error
         for: 0s
-        labels: { kind: platform, service: komodo }
+        labels: { kind: platform, service: komodo, severity: critical }
         annotations:
           summary: The Komodo Action urbex-reconcile has not run for five minutes.
           description: Is it scheduled, and is Komodo Core up? Until it runs, an application that uses another and goes down stays down.
@@ -70,7 +70,7 @@ groups:
         noDataState: OK
         execErrState: Error
         for: 0s
-        labels: { kind: platform, service: komodo }
+        labels: { kind: platform, service: komodo, severity: warning }
         annotations:
           summary: The reconciler holds applications back.
           description: 'Its error lines in Grafana ({source="urbex-reconcile", level="error"}) and urbex status <env> say which: a circuit open, a provider restarting.'
