@@ -289,3 +289,17 @@ func TestBuildCacheConfig(t *testing.T) {
 		t.Errorf("errors = %v", got)
 	}
 }
+
+// docker.registryMirrors are registries' addresses (urbforge/urbex-cli#150).
+func TestValidate_RegistryMirrors(t *testing.T) {
+	for mirror, ok := range map[string]bool{
+		"http://192.168.1.50:5000": true, "https://mirror.example.com": true, "https://mirror.example.com/": true,
+		"192.168.1.50:5000": false, "ftp://x": false, "http://": false, "https://mirror.example.com/v2": false,
+	} {
+		c := Config{Docker: DockerConfig{RegistryMirrors: []string{mirror}}}
+		got := !strings.Contains(strings.Join(c.Validate(), "\n"), "docker.registryMirrors")
+		if got != ok {
+			t.Errorf("%q: valid=%v, want %v", mirror, got, ok)
+		}
+	}
+}

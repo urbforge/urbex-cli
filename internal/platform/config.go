@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -16,6 +17,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// DockerConfig is about the machines' Docker.
+type DockerConfig struct {
+	// RegistryMirrors are pull-through caches of Docker Hub, as Docker's
+	// registry-mirrors, e.g. "http://192.168.1.50:5000": Docker Hub's
+	// images are pulled through them, not counted against its anonymous
+	// limit (urbforge/urbex-cli#150). An http:// mirror is also trusted
+	// as an insecure registry.
+	RegistryMirrors []string `yaml:"registryMirrors,omitempty"`
+}
 
 // Config is the parsed content of urbex.platform.yaml.
 type Config struct {
@@ -26,7 +37,9 @@ type Config struct {
 	DNS        DNSConfig        `yaml:"dns"`
 	Keycloak   KeycloakConfig   `yaml:"keycloak"`
 	Storage    StorageConfig    `yaml:"storage,omitempty"`
-	Komodo     KomodoConfig     `yaml:"komodo,omitempty"`
+	// Docker is how the machines' Docker pulls images.
+	Docker DockerConfig `yaml:"docker,omitempty"`
+	Komodo KomodoConfig `yaml:"komodo,omitempty"`
 }
 
 // KomodoConfig is about Komodo, the platform's builder and deployer.
@@ -372,6 +385,11 @@ func (c *Config) Validate() []string {
 	}
 	if cf.QuickTunnel && cf.Enabled() {
 		errs = append(errs, "cloudflare.quickTunnel and cloudflare.accountId/zoneId are alternatives: set one, not both")
+	}
+	for _, m := range c.Docker.RegistryMirrors {
+		if u, err := url.Parse(m); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Trim(u.Path, "/") != "" {
+			errs = append(errs, "docker.registryMirrors: "+m+" is not a registry's address, such as http://192.168.1.50:5000")
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Storage.Shares)) {
 		if p := c.Storage.Shares[name].Path; !strings.HasPrefix(p, "/") || p == "/" || strings.ContainsAny(p, ", \t") {

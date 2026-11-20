@@ -97,6 +97,9 @@ type Endpoints struct {
 	TechnitiumURL string
 	// TechnitiumIP is Technitium's address: every LXC's first nameserver.
 	TechnitiumIP string
+	// RegistryMirrors are the machines' Docker Hub mirrors
+	// (docker.registryMirrors), for their daemon.json.
+	RegistryMirrors []string
 }
 
 // InternalEndpointsFor computes the base services' endpoints by internal
@@ -120,6 +123,7 @@ func InternalEndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		KeycloakURL:        "http://" + name("auth") + ":8080",
 		TechnitiumURL:      "http://" + name("dns") + ":5380",
 		TechnitiumIP:       ep.TechnitiumIP,
+		RegistryMirrors:    ep.RegistryMirrors,
 	}, nil
 }
 
@@ -139,6 +143,7 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
 		TechnitiumURL:      "http://" + ips[Hostname("technitium")] + ":5380",
 		TechnitiumIP:       ips[Hostname("technitium")],
+		RegistryMirrors:    cfg.Docker.RegistryMirrors,
 	}, nil
 }
 
