@@ -18,6 +18,20 @@ workflow refuses a tag whose version has no entry here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`urbex-op`'s default workspace is `~/urbex-work`**, as in the docs
+  and the Claude Code plugin (it was `~/urbex-workspace`). A workspace
+  in `~/urbex-workspace` is still found when `~/urbex-work` doesn't
+  exist; `-w` and `URBEX_WORKSPACE` choose any other.
+### Added
+
+- **Komodo's build cache is pruned on a schedule**, so its disk stays
+  bounded: every day the BuildKit cache older than 7 days, then beyond
+  3 GB, and the images no container uses older than 7 days. Change it
+  with `komodo.buildCache` in `urbex.platform.yaml`; each run logs what
+  it freed (Grafana, Loki). It runs as the platform Stack
+  `urbex-build-cache` on Komodo's LXC, created by `urbex bootstrap`.
 ### Added
 
 - **Alerts to Telegram, Discord or a webhook** (urbforge/urbex-cli#95): `observability.alerts` in `urbex.platform.yaml` provisions a Grafana contact point for Urbex's alerts - one short message per alert and machine, its summary, severity, project, service and host, a link to Grafana, and a resolved message; repeated at most every 4 hours. The bot token and the webhooks' URLs are credentials, encrypted in the observability Stack. `urbex doctor` checks them, and `urbex doctor --test-alerts` sends a test message through each channel.

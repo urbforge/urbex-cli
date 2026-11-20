@@ -283,3 +283,23 @@ func TestValidate_AlertsTelegramChatID(t *testing.T) {
 		t.Error("AlertsConfig.Any is wrong")
 	}
 }
+
+// komodo.buildCache: defaults, and what isn't a size or an hour or more
+// is refused (urbforge/urbex-cli#92).
+func TestBuildCacheConfig(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if bc := cfg.Komodo.BuildCache; bc.KeepStorage != "3GB" || bc.KeepFor != "168h" || bc.Every != "24h" {
+		t.Errorf("defaults = %+v", bc)
+	}
+	cfg.Komodo.BuildCache = BuildCacheConfig{KeepStorage: "lots", KeepFor: "10m", Every: "daily"}
+	var got []string
+	for _, e := range cfg.Validate() {
+		if strings.HasPrefix(e, "komodo.buildCache.") {
+			got = append(got, e)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("errors = %v", got)
+	}
+}

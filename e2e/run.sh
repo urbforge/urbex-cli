@@ -212,6 +212,11 @@ step "bootstrap: base services and platform setup" '
     [ "$(komodo_stack_state urbex-telemetry-$host)" = running ] || fail "telemetry stack of $host: $(komodo_stack_state urbex-telemetry-$host)"
     [ "$(komodo_tags Stack urbex-telemetry-$host)" = agent ] || fail "telemetry stack of $host tags: $(komodo_tags Stack urbex-telemetry-$host)"
   done
+  # The builder'"'"'s cache is pruned by a Stack on Komodo'"'"'s LXC
+  # (urbforge/urbex-cli#92), with no secrets.
+  [ "$(komodo_stack_state urbex-build-cache)" = running ] || fail "build-cache stack: $(komodo_stack_state urbex-build-cache)"
+  grep -q "^KEEP_STORAGE=3GB$" /work/gitops/platform/build-cache/config.env || fail "build-cache config.env: $(cat /work/gitops/platform/build-cache/config.env)"
+  [ ! -e /work/gitops/platform/build-cache/secrets.sops.env ] || fail "build-cache should have no secrets file"
   for svc in keycloak observability; do
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done
@@ -407,7 +412,7 @@ step "rollback: deploying an older release" '
 
 step "destroy staging: prod and the project Builds untouched" '
   urbex destroy staging
-  [ "$(komodo_names Stacks)" = "hello-api-prod urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium urbex-telemetry-hello-api-prod urbex-telemetry-urbex-gitea urbex-telemetry-urbex-keycloak urbex-telemetry-urbex-komodo urbex-telemetry-urbex-observability urbex-telemetry-urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
+  [ "$(komodo_names Stacks)" = "hello-api-prod urbex-build-cache urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium urbex-telemetry-hello-api-prod urbex-telemetry-urbex-gitea urbex-telemetry-urbex-keycloak urbex-telemetry-urbex-komodo urbex-telemetry-urbex-observability urbex-telemetry-urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
   test ! -e /work/gitops/environments/staging/hello || fail "the staging folder is still in the gitops repo"
   expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)"

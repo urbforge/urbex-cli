@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/urbforge/urbex-cli/internal/platform"
 	assets "github.com/urbforge/urbex-cli/platform"
@@ -33,8 +34,11 @@ type SecretWriter interface {
 // secrets.sops.env; the Stack Name runs on the Server of the same name.
 type PlatformStack struct {
 	Name, Dir string
-	Config    map[string]string
-	Secrets   map[string]string
+	// Server is the Komodo Server it runs on; "" is the Server of the
+	// same name as the Stack (its own LXC).
+	Server  string
+	Config  map[string]string
+	Secrets map[string]string
 	// Generated are files urbex writes besides the embedded ones, by
 	// their path in the Stack's folder; a path mapped to "" is removed,
 	// so that a file no longer wanted doesn't stay behind.
@@ -104,6 +108,15 @@ func (o *Orchestrator) platformStacks(tunnelToken string) ([]PlatformStack, erro
 		stacks = append(stacks, PlatformStack{Name: Hostname(TunnelService.Name), Dir: "tunnel", Config: map[string]string{},
 			Secrets: map[string]string{"TUNNEL_TOKEN": tunnelToken}})
 	}
+	// The builder's cache, pruned on Komodo's LXC (urbforge/urbex-cli#92).
+	bc := o.Config.Komodo.BuildCache.WithDefaults()
+	every, _ := time.ParseDuration(bc.Every) // validated
+	stacks = append(stacks, PlatformStack{Name: Hostname("build-cache"), Dir: "build-cache", Server: KomodoServerName,
+		Config: map[string]string{
+			"KEEP_STORAGE": bc.KeepStorage,
+			"KEEP_FOR":     bc.KeepFor,
+			"KEEP_EVERY":   fmt.Sprint(int(every.Seconds())),
+		}})
 	return stacks, nil
 }
 
@@ -214,6 +227,9 @@ func (o *Orchestrator) writePlatformStacks(ctx context.Context, gitopsRepoPath s
 		if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte(renderEnv(config)), 0o644); err != nil {
 			return err
 		}
+		if len(st.Secrets) == 0 {
+			continue // no secrets file, and no wrapper to decrypt it (platformStackDeploys)
+		}
 		if err := store.Write(ctx, filepath.Join(dir, "secrets.sops.env"), st.Secrets); err != nil {
 			return fmt.Errorf("encrypting the %s stack's secrets: %w", st.Dir, err)
 		}
@@ -254,8 +270,12 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 	}
 	var deploys []stackDeploy
 	for _, st := range stacks {
-		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: komodo.StackConfig{
-			ServerID:     st.Name,
+		server := st.Server
+		if server == "" {
+			server = st.Name
+		}
+		cfg := komodo.StackConfig{
+			ServerID:     server,
 			GitProvider:  internal.Registry,
 			GitAccount:   GiteaAdminUser,
 			Repo:         o.Config.Git.Org + "/" + GitOpsRepoName,
@@ -264,10 +284,16 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 			ProjectName:  "urbex",
 			ConfigFiles: []komodo.ConfigFile{
 				{Path: "config.env", Requires: "Redeploy"},
-				{Path: "secrets.sops.env", Requires: "Redeploy"},
 			},
-			ComposeCmdWrapper: ComposeWrapper,
-		}})
+		}
+		// Secrets are decrypted by the compose wrapper (sops-tools); a
+		// Stack without them needs neither - the wrapper isn't on
+		// Komodo's own LXC, where the build cache's Stack runs.
+		if len(st.Secrets) > 0 {
+			cfg.ConfigFiles = append(cfg.ConfigFiles, komodo.ConfigFile{Path: "secrets.sops.env", Requires: "Redeploy"})
+			cfg.ComposeCmdWrapper = ComposeWrapper
+		}
+		deploys = append(deploys, stackDeploy{name: st.Name, tag: PlatformTag, cfg: cfg})
 	}
 	return deploys, nil
 }

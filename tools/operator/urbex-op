@@ -9,7 +9,8 @@
 #   urbex-op [-w DIR] shell          a shell in the container, ready to run urbex
 #   urbex-op [-w DIR] 'COMMANDS'     run COMMANDS (bash) in the container
 #
-# DIR defaults to $URBEX_WORKSPACE, then ~/urbex-workspace. Tokens come from
+# DIR defaults to $URBEX_WORKSPACE, then ~/urbex-work (~/urbex-workspace,
+# urbex 0.1's default, if only that one exists). Tokens come from
 # the environment if set (URBEX_PROXMOX_TOKEN, URBEX_CLOUDFLARE_TOKEN), else
 # from the workspace's credentials file - 'set proxmoxToken' puts them there.
 #
@@ -21,7 +22,13 @@ set -euo pipefail
 # The release workflow sets this in the copy attached to a release.
 URBEX_OP_VERSION=dev
 
-WS=${URBEX_WORKSPACE:-$HOME/urbex-workspace}
+if [ -n "${URBEX_WORKSPACE:-}" ]; then
+  WS=$URBEX_WORKSPACE
+elif [ ! -d "$HOME/urbex-work" ] && [ -d "$HOME/urbex-workspace/home" ]; then
+  WS=$HOME/urbex-workspace
+else
+  WS=$HOME/urbex-work
+fi
 if [ "${1:-}" = "-w" ]; then WS=$2; shift 2; fi
 if [ "$URBEX_OP_VERSION" = dev ]; then
   IMAGE=${URBEX_OPERATOR_IMAGE:-urbex-operator}
