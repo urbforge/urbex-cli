@@ -99,6 +99,9 @@ type Endpoints struct {
 	TechnitiumIP string
 	// Grafana is the observability stack's Grafana (http://host:3000).
 	Grafana string
+	// RegistryMirrors are the machines' Docker Hub mirrors
+	// (docker.registryMirrors), for their daemon.json.
+	RegistryMirrors []string
 }
 
 // InternalEndpointsFor computes the base services' endpoints by internal
@@ -123,6 +126,7 @@ func InternalEndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		KeycloakURL:        "http://" + name("auth") + ":8080",
 		TechnitiumURL:      "http://" + name("dns") + ":5380",
 		TechnitiumIP:       ep.TechnitiumIP,
+		RegistryMirrors:    ep.RegistryMirrors,
 	}, nil
 }
 
@@ -143,6 +147,7 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
 		TechnitiumURL:      "http://" + ips[Hostname("technitium")] + ":5380",
 		TechnitiumIP:       ips[Hostname("technitium")],
+		RegistryMirrors:    cfg.Docker.RegistryMirrors,
 	}, nil
 }
 

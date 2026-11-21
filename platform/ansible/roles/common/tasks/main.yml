@@ -57,14 +57,21 @@
 
 # Gitea's container registry is plain HTTP until ingress/TLS exists
 # (docs/decisions/0018-image-build-komodo-gitea-registry.md in
-# urbforge/urbex), so Docker must be told to trust it explicitly.
-- name: Trust the Gitea container registry over HTTP
+# urbforge/urbex), so Docker must be told to trust it explicitly. Docker
+# Hub's images come through the platform's mirrors, if any
+# (docker.registryMirrors, urbforge/urbex-cli#150); an http:// one is
+# trusted too.
+- name: Configure Docker's registries
+  vars:
+    mirrors: "{{ (docker_registry_mirrors | default('')).split(',') | select | list }}"
+    insecure: "{{ ([gitea_registry] if gitea_registry | default('') | length > 0 else []) + (mirrors | select('match', '^http://') | map('regex_replace', '^http://([^/]+).*$', '\\1') | list) }}"
+    daemon: "{{ {'insecure-registries': insecure} | combine({'registry-mirrors': mirrors} if mirrors else {}) }}"
   copy:
     dest: /etc/docker/daemon.json
-    content: "{{ {'insecure-registries': [gitea_registry]} | to_nice_json }}\n"
+    content: "{{ daemon | to_nice_json }}\n"
     mode: "0644"
   register: docker_daemon_json
-  when: gitea_registry | default('') | length > 0
+  when: gitea_registry | default('') | length > 0 or (docker_registry_mirrors | default('') | length > 0)
 
 - name: Restart Docker to pick up the registry configuration
   systemd:

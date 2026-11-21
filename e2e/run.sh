@@ -70,6 +70,13 @@ step() {
   else
     echo "--- step failed; last lines of $logfile:"
     tail -n 60 "$logfile"
+    # Docker Hub refusing pulls is no verdict on the change: say so, and
+    # exit with a code of its own.
+    if grep -q "429 Too Many Requests\|toomanyrequests" "$logfile" "$WORK"/logs/*.log 2>/dev/null; then
+      echo "--- RATE-LIMITED: Docker Hub answered 429 Too Many Requests; this run is inconclusive, not a failure of the change. Run again later, or set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN."
+      $KEEP || teardown
+      exit 3
+    fi
     $KEEP || teardown
     exit 1
   fi
@@ -97,6 +104,21 @@ podman build -q -t urbex-e2e-machine --build-arg "PUBKEY=$(cat "$WORK/id_e2e.pub
 podman build -q -t urbex-e2e-runner --build-arg "MISE_VERSION=$(pinned min_version)" \
   -f e2e/runner/Containerfile "$REPO" >/dev/null 2>&1
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
+
+# Docker Hub's images through a pull-through cache, as a platform's
+# docker.registryMirrors (urbforge/urbex-cli#150): its volume outlives
+# the run, so later runs pull from it instead of counting against Docker
+# Hub's anonymous limit (100 an hour). With DOCKERHUB_USERNAME and
+# DOCKERHUB_TOKEN in the environment (never in the repo) its own pulls
+# are authenticated.
+HUB_CACHE=$NET.190
+hub_auth=()
+if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  hub_auth=(-e REGISTRY_PROXY_USERNAME="$DOCKERHUB_USERNAME" -e REGISTRY_PROXY_PASSWORD="$DOCKERHUB_TOKEN")
+fi
+podman run -d --name e2e-hub-cache --network "$NETWORK" --ip "$HUB_CACHE" \
+  -e REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io ${hub_auth[@]+"${hub_auth[@]}"} \
+  -v urbex-e2e-hub-cache:/var/lib/registry docker.io/library/registry:3.1.2 >/dev/null
 podman run --rm -v "$WORK:/work:z" urbex-e2e-runner age-keygen -o /work/age.key 2>/dev/null
 
 # The app repo, as a developer has it locally: one commit on main.
@@ -151,6 +173,8 @@ proxmox:
     cidr: $NET.0/24
     gateway: $NET.1
     baseHostOffset: 200
+docker:
+  registryMirrors: ["http://$HUB_CACHE:5000"]
 EOF
 # On macOS the gateway's DNS is gvproxy's, which answers NXDOMAIN when
 # the Mac's resolver fails for a moment: Technitium caches that for five
@@ -229,6 +253,9 @@ step "bootstrap: base services and platform setup" '
     [ -n "$value" ] || fail "no $name in the credentials"
     ! grep -rqF "$value" /work/gitops/platform || fail "$name in plaintext in the gitops repo: $(grep -rlF "$value" /work/gitops/platform)"
   done
+  # Docker Hub through the cache (docker.registryMirrors, urbex-cli#150).
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.201 cat /etc/docker/daemon.json | grep -q "\"http://$NET.190:5000\"" || fail "the machines should use the Docker Hub mirror"
+  curl -s http://$NET.190:5000/v2/_catalog | grep -q "library/" || fail "nothing came through the Docker Hub cache: $(curl -s http://$NET.190:5000/v2/_catalog)"
   echo "ok: platform is up"'
 
 # From here on Proxmox "has" the base services, as after a real apply.
