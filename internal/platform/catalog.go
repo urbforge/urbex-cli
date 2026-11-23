@@ -118,6 +118,12 @@ var Catalog = []Service{
 			{Label: "prometheus", Port: 9090, Exposure: ExposureAccess},
 			{Label: "prometheus", Port: 9090, Path: "^/api/v1/(write|otlp)", Exposure: ExposureInternal},
 		}},
+	// The Proxmox node's CPU, memory and storages, read from its API with a
+	// read-only token (urbforge/urbex-cli#94), only when the token is in
+	// the credentials. Prometheus scrapes it inside the Stack's network:
+	// it publishes nothing on the LXC, and calls only the node.
+	{Name: "pve-exporter", Kind: KindPlatform, LXC: "observability", Deploy: DeployGitOps, Provides: []string{"node-metrics"},
+		OutboundOnly: true},
 	{Name: "loki", Kind: KindPlatform, LXC: "observability", Deploy: DeployGitOps, Provides: []string{"logs"},
 		Endpoints: []Endpoint{
 			{Label: "loki", Port: 3100, Exposure: ExposureAccess},

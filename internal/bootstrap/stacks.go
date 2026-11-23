@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -43,6 +45,9 @@ type PlatformStack struct {
 	// their path in the Stack's folder; a path mapped to "" is removed,
 	// so that a file no longer wanted doesn't stay behind.
 	Generated map[string]string
+	// Environment is the Stack's .env, for compose itself (profiles,
+	// interpolation), set in Komodo; "" leaves it empty.
+	Environment string
 }
 
 // ComposeWrapper is the command every Stack deployed from the GitOps repo
@@ -125,22 +130,75 @@ func (o *Orchestrator) platformStacks(tunnelToken string) ([]PlatformStack, erro
 	return stacks, nil
 }
 
+// SplitProxmoxToken splits an API token, "user@realm!name=secret", into
+// the user, the token's name and its secret.
+func SplitProxmoxToken(token string) (user, name, value string, err error) {
+	id, value, ok := strings.Cut(token, "=")
+	user, name, ok2 := strings.Cut(id, "!")
+	if !ok || !ok2 || user == "" || name == "" || value == "" || strings.Index(user, "@") < 1 {
+		return "", "", "", fmt.Errorf("not a Proxmox API token: expected user@realm!name=secret")
+	}
+	return user, name, value, nil
+}
+
+// nodeIP is the address of the Proxmox API's host, resolved if it is a
+// name.
+func nodeIP(apiURL string) (string, error) {
+	u, err := url.Parse(apiURL)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("proxmox.apiUrl %q has no host", apiURL)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		return ip.String(), nil
+	}
+	ips, err := net.LookupIP(u.Hostname())
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("resolving the Proxmox node %s: %v", u.Hostname(), err)
+	}
+	return ips[0].String(), nil
+}
+
 // observabilityStack is Prometheus, Loki and Grafana; with
 // observability.alerts, Grafana also sends Urbex's alerts to its channels
-// (urbforge/urbex-cli#95), and its links point to its own address.
+// (urbforge/urbex-cli#95), and its links point to its own address; with
+// the node's read-only token, pve-exporter reads the node's metrics
+// (urbforge/urbex-cli#94).
 func (o *Orchestrator) observabilityStack() (PlatformStack, error) {
 	st := PlatformStack{Name: Hostname("observability"), Dir: "observability", Config: map[string]string{},
 		Secrets:   map[string]string{"GF_SECURITY_ADMIN_PASSWORD": o.Credentials.GrafanaAdminPassword},
-		Generated: map[string]string{AlertsProvisioningFile: ""}}
+		Generated: map[string]string{AlertsProvisioningFile: ""},
+		// Written even without the node's token, so that removing it turns
+		// the exporter off.
+		Environment: "COMPOSE_PROFILES=\nURBEX_PVE_NODE_IP=\n"}
 	file, secrets, err := AlertsProvisioning(o.Config.Observability.Alerts, o.Credentials)
-	if err != nil || file == "" {
+	if err != nil {
 		return st, err
 	}
-	st.Generated[AlertsProvisioningFile] = file
-	for k, v := range secrets {
-		st.Secrets[k] = v
+	if file != "" {
+		st.Generated[AlertsProvisioningFile] = file
+		for k, v := range secrets {
+			st.Secrets[k] = v
+		}
+		st.Config["GF_SERVER_ROOT_URL"] = GrafanaURL(o.Config)
 	}
-	st.Config["GF_SERVER_ROOT_URL"] = GrafanaURL(o.Config)
+	// The node's metrics, with its read-only token (urbforge/urbex-cli#94).
+	if o.Credentials.ProxmoxMonitorToken == "" {
+		return st, nil
+	}
+	user, name, value, err := SplitProxmoxToken(o.Credentials.ProxmoxMonitorToken)
+	if err != nil {
+		return st, fmt.Errorf("proxmoxMonitorToken: %w", err)
+	}
+	ip, err := nodeIP(o.Config.Proxmox.APIURL)
+	if err != nil {
+		return st, err
+	}
+	st.Secrets["PVE_USER"], st.Secrets["PVE_TOKEN_NAME"], st.Secrets["PVE_TOKEN_VALUE"] = user, name, value
+	// The exporter reaches the node as pve-node, so its certificate's name
+	// never matches; the node's is self-signed anyway, and the token only
+	// reads.
+	st.Config["PVE_VERIFY_SSL"] = "false"
+	st.Environment = "COMPOSE_PROFILES=pve\nURBEX_PVE_NODE_IP=" + ip + "\n"
 	return st, nil
 }
 
@@ -296,6 +354,7 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 			ConfigFiles: []komodo.ConfigFile{
 				{Path: "config.env", Requires: "Redeploy"},
 			},
+			Environment: st.Environment,
 		}
 		// Secrets are decrypted by the compose wrapper (sops-tools); a
 		// Stack without them needs neither - the wrapper isn't on

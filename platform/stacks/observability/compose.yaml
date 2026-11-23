@@ -23,6 +23,27 @@ services:
     ports:
       - "9090:9090"
 
+  # The Proxmox node's CPU, memory and storages (urbforge/urbex-cli#94),
+  # with a read-only token: only with the profile pve, which urbex turns
+  # on in the Stack's environment when the token is in the credentials.
+  # It reaches the node as pve-node (its address, from the same
+  # environment), and Prometheus finds it by name in the Stack's network.
+  pve-exporter:
+    image: docker.io/prompve/prometheus-pve-exporter:3.12.0@sha256:3541b1f79fdf73200f73ce4863658ae7094a417e6827bd6ea90425c89d61ac12
+    profiles: ["pve"]
+    labels:
+      urbex.kind: "platform"
+      urbex.service: "pve-exporter"
+    restart: unless-stopped
+    # PVE_USER, PVE_TOKEN_NAME, PVE_TOKEN_VALUE are secrets; PVE_VERIFY_SSL
+    # is in config.env.
+    env_file:
+      - config.env
+      - path: ${URBEX_SECRETS_FILE:-secrets.env}
+        required: false
+    extra_hosts:
+      - "pve-node:${URBEX_PVE_NODE_IP:-127.0.0.1}"
+
   loki:
     image: docker.io/grafana/loki:3.7.8
     labels:
