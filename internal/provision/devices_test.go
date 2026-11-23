@@ -52,7 +52,7 @@ func TestApply_SkipsApplicationsUntilTheirDevicesAreBound(t *testing.T) {
 	ctx := context.Background()
 
 	err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir})
-	if err == nil || !strings.Contains(err.Error(), "gluetun") {
+	if err == nil || !strings.Contains(err.Error(), "the devices they need: gluetun") {
 		t.Fatalf("expected apply to fail naming gluetun, got %v\n%s", err, out)
 	}
 	vmid := vmidOf(t, o, dir, "gluetun")
@@ -66,8 +66,9 @@ func TestApply_SkipsApplicationsUntilTheirDevicesAreBound(t *testing.T) {
 		t.Errorf("only vault should be deployed, got %v", ro.deployed)
 	}
 
-	// The operator runs the command on the running LXC: Proxmox applies
-	// it on the next restart, which the next apply does, then deploys.
+	// The operator runs the command on the running LXC. Proxmox VE 9
+	// passes it at once (as on the lab); one that leaves it pending gets
+	// it on the restart the next apply does, then the app deploys.
 	devs.devs[vmid] = []proxmoxapi.Device{{Key: "dev0", Path: "/dev/net/tun"}}
 	devs.pending[vmid] = []string{"dev0"}
 	out.Reset()
@@ -112,5 +113,22 @@ func TestApply_DevicesNeedTheProxmoxAPI(t *testing.T) {
 	err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "devices need the Proxmox API") {
 		t.Errorf("expected devices refused without the API, got %v", err)
+	}
+}
+
+// A device Proxmox passed to the running LXC at once, as Proxmox VE 9
+// does, needs no restart.
+func TestApply_NoRestartForADevicePassedAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	o, devs, ro, out := devicesOrchestrator(t)
+	ctx := context.Background()
+	_ = o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir})
+	vmid := vmidOf(t, o, dir, "gluetun")
+	devs.devs[vmid] = []proxmoxapi.Device{{Key: "dev0", Path: "/dev/net/tun"}}
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply: %v\n%s", err, out)
+	}
+	if len(devs.reboots) != 0 || !slices.Contains(ro.deployed, "gluetun") {
+		t.Errorf("reboots %v, deployed %v", devs.reboots, ro.deployed)
 	}
 }

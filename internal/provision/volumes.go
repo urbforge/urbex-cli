@@ -589,6 +589,9 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	}
 	sort.Strings(names)
 	fmt.Fprintf(o.Out, "Then run 'urbex apply %s' again.\n", env)
+	if devices {
+		return fmt.Errorf("not deployed until their LXC has what they keep and the devices they need: %s", strings.Join(names, ", "))
+	}
 	return fmt.Errorf("not deployed until what they keep is mounted: %s", strings.Join(names, ", "))
 }
 
