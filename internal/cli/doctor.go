@@ -14,6 +14,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/doctor"
 	"github.com/urbforge/urbex-cli/internal/grafana"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/projectrepo"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 	"github.com/urbforge/urbex-cli/internal/version"
 )
@@ -23,7 +24,7 @@ import (
 var errDoctorFailed = fmt.Errorf("some checks failed")
 
 func newDoctorCmd() *cobra.Command {
-	var gitopsRepoPath string
+	var gitopsRepoPath, manifestPath, repoDir string
 	var testAlerts bool
 	var output outputFlag
 
@@ -37,7 +38,8 @@ Proxmox token, the node (the API answers, the node, pool, storage, LXC
 template and bridge exist, the token has the privileges urbex needs, and the optional
 read-only token for the node's metrics); and,
 with Cloudflare in the config, the token and the zone; with
-observability.alerts, the channels' credentials.
+observability.alerts, the channels' credentials; and, run in a project's
+folder, that its urbex.yaml is committed in a git repository.
 
 It starts with urbex's own version. Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
 exits non-zero when a check failed. It changes nothing, and prints no
@@ -98,6 +100,9 @@ docs/reference/cli.md in urbforge/urbex.`,
 				at = grafana.New(ep.Grafana, "admin", creds.GrafanaAdminPassword)
 			}
 			doctor.AlertsChecks(ctx, at, cfg, creds, r)
+			if _, err := os.Stat(manifestPath); err == nil {
+				doctor.ProjectChecks(manifestPath, true, projectrepo.Check(ctx, repoDir, manifestPath), r)
+			}
 
 			r.OK = !r.Failed()
 			out := cmd.OutOrStdout()
@@ -115,6 +120,8 @@ docs/reference/cli.md in urbforge/urbex.`,
 		},
 	}
 	cmd.Flags().BoolVar(&testAlerts, "test-alerts", false, "send a test message through each channel of observability.alerts")
+	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest, when run in a project (skipped when there is none)")
+	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, which urbex.yaml must be committed in")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	output.Register(cmd)
 	return cmd

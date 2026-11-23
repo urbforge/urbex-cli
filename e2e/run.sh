@@ -463,6 +463,12 @@ machine site-web-prod 212
 echo site-web-prod >>"$WORK/pve-containers.txt"
 step "an application from a published image: pinned to a digest, updated, one environment" '
   cd /work/site
+  # A new project whose urbex.yaml is in no git repository is refused
+  # before anything is created (urbforge/urbex-cli#129).
+  rm -rf /tmp/nogit && mkdir /tmp/nogit && sed "s/^project: site/project: nogit/" urbex.yaml >/tmp/nogit/urbex.yaml
+  (cd /tmp/nogit && urbex apply prod) >/tmp/nogit.log 2>&1 && fail "apply without a git repository should be refused"
+  grep -q "urbex.yaml isn.t in a git repository" /tmp/nogit.log || { cat /tmp/nogit.log; fail "the refusal should say urbex.yaml is in no git repository"; }
+  grep -q nogit /work/gitops/state/allocations.json && fail "a refused apply should allocate nothing"
   urbex apply staging >/tmp/staging.log 2>&1 && fail "a prod-only stack has no staging"
   grep -q "has no staging environment" /tmp/staging.log || { cat /tmp/staging.log; fail "unexpected apply staging error"; }
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
