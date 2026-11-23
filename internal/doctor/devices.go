@@ -76,6 +76,6 @@ func DevicesChecks(ctx context.Context, d DevicesReader, node string, machines [
 			continue
 		}
 		add(Fail, "LXC "+fmt.Sprint(m.VMID)+" doesn't have "+strings.Join(missing, ", "),
-			"on the node, as root: "+strings.Join(commands, "; ")+"; then 'urbex apply "+m.Env+"' restarts the LXC and deploys the application")
+			"on the node, as root: "+strings.Join(commands, "; ")+"; then 'urbex apply "+m.Env+"' deploys the application")
 	}
 }
