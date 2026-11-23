@@ -331,7 +331,7 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 	}
 	if svc.Healthcheck != "" && svc.Port != 0 {
 		b.WriteString("    healthcheck:\n")
-		fmt.Fprintf(&b, "      test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://localhost:%d%s\"]\n", svc.Port, svc.Healthcheck)
+		fmt.Fprintf(&b, "      test: [\"CMD-SHELL\", %q]\n", HealthProbe(fmt.Sprintf("http://localhost:%d%s", svc.Port, svc.Healthcheck)))
 		b.WriteString("      interval: 30s\n")
 		b.WriteString("      timeout: 5s\n")
 		b.WriteString("      retries: 3\n")
@@ -361,6 +361,23 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 		}
 	}
 	return b.String()
+}
+
+// HealthProbe is the shell command an application's healthcheck runs:
+// a GET of url with wget, or with curl when the image has no wget (as
+// Vaultwarden's, Jellyfin's and nginx's don't), and a failure that says
+// so when it has neither. An image without a shell (distroless) can't
+// run it: Docker reports that /bin/sh is missing.
+func HealthProbe(url string) string {
+	u := shellQuote(url)
+	return "if command -v wget >/dev/null 2>&1; then wget -q --spider " + u +
+		"; elif command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null " + u +
+		"; else echo 'urbex healthcheck: the image has neither wget nor curl' >&2; exit 1; fi"
+}
+
+// shellQuote is s as one word for sh, in single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func renderConfig(vars map[string]string) string {

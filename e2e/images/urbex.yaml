@@ -9,3 +9,6 @@ services:
     image: docker.io/library/nginx
     version: "1.29"
     port: 80
+    # nginx's image has curl and no wget: the healthcheck falls back to it
+    # (urbforge/urbex-cli#128).
+    healthcheck: /
