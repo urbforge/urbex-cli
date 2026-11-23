@@ -7,8 +7,47 @@ lifecycle and checks the result at every step. It needs only `podman`
 ```sh
 e2e/run.sh          # run, then remove everything
 e2e/run.sh --keep   # leave the machines running afterwards, to poke at them
-E2E_STOP_AFTER=4 e2e/run.sh   # stop after step 4, machines running: a platform to experiment on
+E2E_STOP_AFTER=4 e2e/run.sh   # stop after step 4 (or a step's name), machines running
+E2E_ONLY=site,volumes e2e/run.sh   # only these steps, on the platform an earlier run left
 ```
+
+## Which test to run
+
+The team's rule ([`docs/development.md`](https://github.com/urbforge/redemptor/blob/main/docs/development.md)
+in urbforge/redemptor):
+
+- **A PR** runs the unit tests, lint and CI, then **its feature's
+  steps** on a platform that stays up: `E2E_ONLY=<steps>`.
+- **The whole test** on a PR only when it changes bootstrap, the
+  platform's services, or the flow every project goes through (apply,
+  deploy, the reconciler).
+- **Every night**, the whole test on `main` (`e2e/nightly.sh`, below).
+- Before a release, a run from scratch on a real Proxmox node, and an
+  upgrade from the previous release.
+
+A platform to run steps on, once (about 20 minutes), and then as often
+as you like:
+
+```sh
+E2E_STOP_AFTER=bootstrap-again e2e/run.sh   # the platform, left running
+E2E_ONLY=site,volumes e2e/run.sh            # a change to applications from images and volumes
+E2E_ONLY=site,volumes e2e/run.sh            # again: the steps clean up after themselves
+```
+
+`E2E_ONLY` rebuilds `urbex` and the images from this checkout and keeps
+the machines, the GitOps repo and `e2e/.work`. It refreshes the stacks'
+`urbex.yaml` from `e2e/images` and `e2e/linked`, with a commit when this
+checkout changed them, and leaves the machines running. Steps run in the
+file's order, whatever order you name them in.
+
+| Step | What it needs first |
+|---|---|
+| `scaffold`, `bootstrap`, `bootstrap-again` | nothing: the platform itself |
+| `apply-staging` ... `reapply-staging` (the `hello` project: `push`, `telemetry`, `keycloak`, `release`, `tag`, `apply-prod`, `promote-unreleased`, `secrets`, `config`, `unrelated`, `pin`, `rollback`, `destroy-staging`) | each the ones before it: run them together, or the whole test |
+| `site` | the platform; it destroys a `site` an earlier run left |
+| `volumes` | `site` |
+| `linked` | the platform; it destroys a `site` or `shop` an earlier run left |
+| `reconciler`, `reboot`, `reconciler-destroy` | `linked`, then each the one before it |
 
 ## What is real and what isn't
 
@@ -115,8 +154,8 @@ runner and fails the test on the first assertion that doesn't hold:
 
 ## When a step fails
 
-The output of every step is in `e2e/.work/logs/NN.log`; the last lines of
-the failing one are printed. With `--keep` the machines stay up:
+The output of every step is in `e2e/.work/logs/NN-<step>.log`; the last
+lines of the failing one are printed. With `--keep` the machines stay up:
 
 ```sh
 podman ps --filter name=e2e-
@@ -131,6 +170,19 @@ Gitea is at `http://10.89.77.200:3000` and Komodo at
 
 `E2E_NET` (default `10.89.77`) and `E2E_NETWORK` (default `urbex-e2e`)
 change the /24 and the podman network name if they clash with yours.
+
+## Every night
+
+`e2e/nightly.sh [<clone dir>] [<results dir>]` updates a clone of its
+own to `origin/main`, runs the whole test from scratch, and keeps
+`result` (PASSED, FAILED with the step and its log, or RATE-LIMITED),
+`run.log` and the steps' logs in a folder per run, with `latest`
+pointing to the last one. It exits as `run.sh` does: 0, 1, or 3 when
+Docker Hub refused pulls. The timer that runs it on the team's LXC, and
+tells the sessions, is in urbforge/urbex-community.
+
+`E2E_RESULT=<file> e2e/run.sh` writes the same `result` file for any
+run.
 
 ## Limits
 
