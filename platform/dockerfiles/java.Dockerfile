@@ -16,6 +16,11 @@ FROM docker.io/library/eclipse-temurin:21-jre
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends wget \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app.jar /app/app.jar
+# Java4Shell (CVE-2026-114938, urbforge/urbex-cli#130): OpenJDK's Base64
+# intrinsic corrupts memory on CPUs with AVX-512 VBMI; off until a fixed
+# JRE. The JVM reads JAVA_TOOL_OPTIONS; an app that sets its own replaces
+# it, and should keep this flag.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
 RUN useradd --no-create-home app
 USER app
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

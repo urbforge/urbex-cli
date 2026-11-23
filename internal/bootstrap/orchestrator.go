@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/urbforge/urbex-cli/internal/credentials"
@@ -102,6 +103,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	}
 	fmt.Fprintf(o.Out, "Base services already present on Proxmox: %v\n", alreadyPresent)
 	fmt.Fprintf(o.Out, "Base services to provision: %v\n", toCreate)
+	if slices.Contains(alreadyPresent, Hostname("gitea")) {
+		if err := refuseGiteaPlatform(opts.GitOpsRepoPath); err != nil {
+			return err
+		}
+	}
 
 	ips, prefixLen, err := allocateIPs(o.Config)
 	if err != nil {
@@ -197,7 +203,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// The platform services Komodo deploys from the GitOps repo: their
 	// folders go in before setupPlatform pushes it.
 	o.Progress.Begin(PhaseGitOps)
-	stacks := o.platformStacks(tunnelToken)
+	stacks, err := o.platformStacks(tunnelToken)
+	if err != nil {
+		return err
+	}
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
 		return err
 	}

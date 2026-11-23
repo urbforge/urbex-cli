@@ -8,9 +8,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/urbforge/urbex-cli/internal/bootstrap"
 	"github.com/urbforge/urbex-cli/internal/cloudflare"
 	"github.com/urbforge/urbex-cli/internal/credentials"
 	"github.com/urbforge/urbex-cli/internal/doctor"
+	"github.com/urbforge/urbex-cli/internal/grafana"
 	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 	"github.com/urbforge/urbex-cli/internal/version"
@@ -22,6 +24,7 @@ var errDoctorFailed = fmt.Errorf("some checks failed")
 
 func newDoctorCmd() *cobra.Command {
 	var gitopsRepoPath string
+	var testAlerts bool
 	var output outputFlag
 
 	cmd := &cobra.Command{
@@ -31,12 +34,15 @@ func newDoctorCmd() *cobra.Command {
 ansible-playbook, sops, age); the workspace (the credentials, the SSH key,
 the GitOps repo and its urbex.platform.yaml); with a platform config and a
 Proxmox token, the node (the API answers, the node, pool, storage, LXC
-template and bridge exist, the token has the privileges urbex needs); and,
-with Cloudflare in the config, the token and the zone.
+template and bridge exist, the token has the privileges urbex needs, and the optional
+read-only token for the node's metrics); and,
+with Cloudflare in the config, the token and the zone; with
+observability.alerts, the channels' credentials.
 
 It starts with urbex's own version. Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
 exits non-zero when a check failed. It changes nothing, and prints no
-secret. --output json prints the report as one JSON document. See
+secret. --test-alerts also sends a test message through each alert
+channel, from Grafana. --output json prints the report as one JSON document. See
 docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -73,11 +79,25 @@ docs/reference/cli.md in urbforge/urbex.`,
 				p = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 			}
 			doctor.ProxmoxChecks(ctx, p, cfg, r)
+			var mon doctor.PermissionsReader
+			if cfg != nil && creds.ProxmoxMonitorToken != "" {
+				mon = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxMonitorToken, cfg.Proxmox.Insecure)
+			}
+			doctor.NodeMetricsChecks(ctx, mon, creds.ProxmoxMonitorToken, cfg, r)
 			var cf doctor.CloudflareReader
 			if cfg != nil && creds.CloudflareToken != "" {
 				cf = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)
 			}
 			doctor.CloudflareChecks(ctx, cf, cfg, r)
+			var at doctor.AlertsTester
+			if cfg != nil && testAlerts {
+				ep, err := bootstrap.EndpointsFor(cfg)
+				if err != nil {
+					return err
+				}
+				at = grafana.New(ep.Grafana, "admin", creds.GrafanaAdminPassword)
+			}
+			doctor.AlertsChecks(ctx, at, cfg, creds, r)
 
 			r.OK = !r.Failed()
 			out := cmd.OutOrStdout()
@@ -94,6 +114,7 @@ docs/reference/cli.md in urbforge/urbex.`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&testAlerts, "test-alerts", false, "send a test message through each channel of observability.alerts")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	output.Register(cmd)
 	return cmd

@@ -269,3 +269,51 @@ func TestLoadFile_LegacyGiteaURL(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_AlertsTelegramChatID(t *testing.T) {
+	for chat, ok := range map[string]bool{"-1001234567890": true, "123456": true, "@urbex_alerts": true, "my chat": false, "": false, "@ab": false} {
+		c := Config{Observability: ObservabilityConfig{Alerts: AlertsConfig{Telegram: &TelegramAlerts{ChatID: chat}}}}
+		errs := c.Validate()
+		got := !strings.Contains(strings.Join(errs, "\n"), "observability.alerts.telegram.chatId")
+		if got != ok {
+			t.Errorf("chatId %q: valid=%v, want %v (%v)", chat, got, ok, errs)
+		}
+	}
+	if (AlertsConfig{}).Any() || !(AlertsConfig{Discord: true}).Any() {
+		t.Error("AlertsConfig.Any is wrong")
+	}
+}
+
+// komodo.buildCache: defaults, and what isn't a size or an hour or more
+// is refused (urbforge/urbex-cli#92).
+func TestBuildCacheConfig(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if bc := cfg.Komodo.BuildCache; bc.KeepStorage != "3GB" || bc.KeepFor != "168h" || bc.Every != "24h" {
+		t.Errorf("defaults = %+v", bc)
+	}
+	cfg.Komodo.BuildCache = BuildCacheConfig{KeepStorage: "lots", KeepFor: "10m", Every: "daily"}
+	var got []string
+	for _, e := range cfg.Validate() {
+		if strings.HasPrefix(e, "komodo.buildCache.") {
+			got = append(got, e)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("errors = %v", got)
+	}
+}
+
+// docker.registryMirrors are registries' addresses (urbforge/urbex-cli#150).
+func TestValidate_RegistryMirrors(t *testing.T) {
+	for mirror, ok := range map[string]bool{
+		"http://192.168.1.50:5000": true, "https://mirror.example.com": true, "https://mirror.example.com/": true,
+		"192.168.1.50:5000": false, "ftp://x": false, "http://": false, "https://mirror.example.com/v2": false,
+	} {
+		c := Config{Docker: DockerConfig{RegistryMirrors: []string{mirror}}}
+		got := !strings.Contains(strings.Join(c.Validate(), "\n"), "docker.registryMirrors")
+		if got != ok {
+			t.Errorf("%q: valid=%v, want %v", mirror, got, ok)
+		}
+	}
+}

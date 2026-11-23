@@ -97,6 +97,11 @@ type Endpoints struct {
 	TechnitiumURL string
 	// TechnitiumIP is Technitium's address: every LXC's first nameserver.
 	TechnitiumIP string
+	// Grafana is the observability stack's Grafana (http://host:3000).
+	Grafana string
+	// RegistryMirrors are the machines' Docker Hub mirrors
+	// (docker.registryMirrors), for their daemon.json.
+	RegistryMirrors []string
 }
 
 // InternalEndpointsFor computes the base services' endpoints by internal
@@ -116,10 +121,12 @@ func InternalEndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		Registry:           name("git") + ":3000",
 		KomodoURL:          "http://" + name("komodo") + ":9120",
 		LokiPushURL:        "http://" + name("loki") + ":3100/loki/api/v1/push",
+		Grafana:            "http://" + name("grafana") + ":3000",
 		PrometheusWriteURL: "http://" + name("prometheus") + ":9090/api/v1/write",
 		KeycloakURL:        "http://" + name("auth") + ":8080",
 		TechnitiumURL:      "http://" + name("dns") + ":5380",
 		TechnitiumIP:       ep.TechnitiumIP,
+		RegistryMirrors:    ep.RegistryMirrors,
 	}, nil
 }
 
@@ -135,10 +142,12 @@ func EndpointsFor(cfg *platform.Config) (Endpoints, error) {
 		Registry:           giteaIP + ":3000",
 		KomodoURL:          "http://" + ips[Hostname("komodo")] + ":9120",
 		LokiPushURL:        "http://" + ips[Hostname("observability")] + ":3100/loki/api/v1/push",
+		Grafana:            "http://" + ips[Hostname("observability")] + ":3000",
 		PrometheusWriteURL: "http://" + ips[Hostname("observability")] + ":9090/api/v1/write",
 		KeycloakURL:        "http://" + ips[Hostname("keycloak")] + ":8080",
 		TechnitiumURL:      "http://" + ips[Hostname("technitium")] + ":5380",
 		TechnitiumIP:       ips[Hostname("technitium")],
+		RegistryMirrors:    cfg.Docker.RegistryMirrors,
 	}, nil
 }
 

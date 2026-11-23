@@ -135,3 +135,19 @@ func TestWriteInventory_GroupIsOneHost(t *testing.T) {
 		t.Errorf("two public applications on one Quick Tunnel machine: %v", err)
 	}
 }
+
+// The platform's Docker Hub mirrors reach the machines' daemon.json
+// through the inventory (urbforge/urbex-cli#150).
+func TestWriteInventory_RegistryMirrors(t *testing.T) {
+	repoPath, ansibleDir := t.TempDir(), t.TempDir()
+	services := []manifest.Service{{Name: "web", Image: "nginx", Version: "1"}}
+	allocations := map[string]allocation.Entry{"my-app-web-prod": {IP: "10.0.0.10"}}
+	ep := bootstrap.Endpoints{RegistryMirrors: []string{"http://10.0.0.5:5000", "https://mirror.example.com"}}
+	if err := writeInventory(repoPath, ansibleDir, "my-app", "prod", services, allocations, ep, true, false); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(ansibleDir, "inventory.yml"))
+	if !strings.Contains(string(data), "docker_registry_mirrors: http://10.0.0.5:5000,https://mirror.example.com") {
+		t.Errorf("no mirrors in the inventory:\n%s", data)
+	}
+}

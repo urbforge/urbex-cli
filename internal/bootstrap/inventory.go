@@ -4,6 +4,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/knownhosts"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +30,8 @@ type inventoryVars struct {
 	AnsibleSSHRetries    string `yaml:"ansible_ssh_retries"`
 	UrbexDomain          string `yaml:"urbex_domain"`
 	GiteaRegistry        string `yaml:"gitea_registry"`
+	// DockerRegistryMirrors are Docker Hub's pull-through caches.
+	DockerRegistryMirrors string `yaml:"docker_registry_mirrors,omitempty"`
 	// GiteaURL and KomodoURL are the services' own addresses, by
 	// internal name: Gitea's ROOT_URL, Komodo's KOMODO_HOST.
 	GiteaURL            string `yaml:"gitea_url"`
@@ -74,23 +77,24 @@ func writeInventory(ansibleDir, domain string, ep Endpoints, pub PublicEndpoints
 	root := inventoryRoot{
 		All: inventoryAll{
 			Vars: inventoryVars{
-				AnsibleUser:          "root",
-				AnsibleSSHCommonArgs: sshArgs,
-				AnsibleTimeout:       knownhosts.ConnectTimeout,
-				AnsibleSSHRetries:    knownhosts.ConnectRetries,
-				UrbexDomain:          domain,
-				GiteaRegistry:        ep.Registry,
-				GiteaURL:             ep.GiteaURL,
-				KomodoURL:            ep.KomodoURL,
-				GiteaAdminUsername:   GiteaAdminUser,
-				KomodoAdminUsername:  KomodoAdminUser,
-				KomodoServerName:     KomodoServerName,
-				KomodoVersion:        KomodoVersion,
-				KomodoCoreAddress:    ep.KomodoURL,
-				KeycloakPublicURL:    httpsURL(pub.Keycloak),
-				LokiPushURL:          ep.LokiPushURL,
-				PrometheusWriteURL:   ep.PrometheusWriteURL,
-				Kind:                 "platform",
+				AnsibleUser:           "root",
+				AnsibleSSHCommonArgs:  sshArgs,
+				AnsibleTimeout:        knownhosts.ConnectTimeout,
+				AnsibleSSHRetries:     knownhosts.ConnectRetries,
+				UrbexDomain:           domain,
+				GiteaRegistry:         ep.Registry,
+				DockerRegistryMirrors: strings.Join(ep.RegistryMirrors, ","),
+				GiteaURL:              ep.GiteaURL,
+				KomodoURL:             ep.KomodoURL,
+				GiteaAdminUsername:    GiteaAdminUser,
+				KomodoAdminUsername:   KomodoAdminUser,
+				KomodoServerName:      KomodoServerName,
+				KomodoVersion:         KomodoVersion,
+				KomodoCoreAddress:     ep.KomodoURL,
+				KeycloakPublicURL:     httpsURL(pub.Keycloak),
+				LokiPushURL:           ep.LokiPushURL,
+				PrometheusWriteURL:    ep.PrometheusWriteURL,
+				Kind:                  "platform",
 				// Every base service is a compose project in /opt/urbex.
 			},
 			Children: map[string]inventoryGroup{},

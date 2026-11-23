@@ -70,6 +70,13 @@ step() {
   else
     echo "--- step failed; last lines of $logfile:"
     tail -n 60 "$logfile"
+    # Docker Hub refusing pulls is no verdict on the change: say so, and
+    # exit with a code of its own.
+    if grep -q "429 Too Many Requests\|toomanyrequests" "$logfile" "$WORK"/logs/*.log 2>/dev/null; then
+      echo "--- RATE-LIMITED: Docker Hub answered 429 Too Many Requests; this run is inconclusive, not a failure of the change. Run again later, or set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN."
+      $KEEP || teardown
+      exit 3
+    fi
     $KEEP || teardown
     exit 1
   fi
@@ -97,6 +104,21 @@ podman build -q -t urbex-e2e-machine --build-arg "PUBKEY=$(cat "$WORK/id_e2e.pub
 podman build -q -t urbex-e2e-runner --build-arg "MISE_VERSION=$(pinned min_version)" \
   -f e2e/runner/Containerfile "$REPO" >/dev/null 2>&1
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
+
+# Docker Hub's images through a pull-through cache, as a platform's
+# docker.registryMirrors (urbforge/urbex-cli#150): its volume outlives
+# the run, so later runs pull from it instead of counting against Docker
+# Hub's anonymous limit (100 an hour). With DOCKERHUB_USERNAME and
+# DOCKERHUB_TOKEN in the environment (never in the repo) its own pulls
+# are authenticated.
+HUB_CACHE=$NET.190
+hub_auth=()
+if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  hub_auth=(-e REGISTRY_PROXY_USERNAME="$DOCKERHUB_USERNAME" -e REGISTRY_PROXY_PASSWORD="$DOCKERHUB_TOKEN")
+fi
+podman run -d --name e2e-hub-cache --network "$NETWORK" --ip "$HUB_CACHE" \
+  -e REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io ${hub_auth[@]+"${hub_auth[@]}"} \
+  -v urbex-e2e-hub-cache:/var/lib/registry docker.io/library/registry:3.1.2 >/dev/null
 podman run --rm -v "$WORK:/work:z" urbex-e2e-runner age-keygen -o /work/age.key 2>/dev/null
 
 # The app repo, as a developer has it locally: one commit on main.
@@ -158,6 +180,8 @@ proxmox:
     cidr: $NET.0/24
     gateway: $NET.1
     baseHostOffset: 200
+docker:
+  registryMirrors: ["http://$HUB_CACHE:5000"]
 EOF
 # On macOS the gateway's DNS is gvproxy's, which answers NXDOMAIN when
 # the Mac's resolver fails for a moment: Technitium caches that for five
@@ -219,6 +243,14 @@ step "bootstrap: base services and platform setup" '
     [ "$(komodo_stack_state urbex-telemetry-$host)" = running ] || fail "telemetry stack of $host: $(komodo_stack_state urbex-telemetry-$host)"
     [ "$(komodo_tags Stack urbex-telemetry-$host)" = agent ] || fail "telemetry stack of $host tags: $(komodo_tags Stack urbex-telemetry-$host)"
   done
+  # The builder'"'"'s cache is pruned by a Stack on Komodo'"'"'s LXC
+  # (urbforge/urbex-cli#92), with no secrets.
+  [ "$(komodo_stack_state urbex-build-cache)" = running ] || fail "build-cache stack: $(komodo_stack_state urbex-build-cache)"
+  grep -q "^KEEP_STORAGE=3GB$" /work/gitops/platform/build-cache/config.env || fail "build-cache config.env: $(cat /work/gitops/platform/build-cache/config.env)"
+  [ ! -e /work/gitops/platform/build-cache/secrets.sops.env ] || fail "build-cache should have no secrets file"
+  # Java4Shell (urbforge/urbex-cli#130): Keycloak'"'"'s JVM runs without
+  # the Base64 intrinsic (its processes, as the host sees them).
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.203 "docker ps -q --filter label=urbex.service=keycloak | xargs -n1 docker top" | grep -q -- "-XX:-UseBASE64Intrinsics" || fail "keycloak runs its JVM with the Base64 intrinsic"
   for svc in keycloak observability; do
     grep -q "^sops_" /work/gitops/platform/$svc/secrets.sops.env || fail "platform/$svc/secrets.sops.env is not sops-encrypted"
   done
@@ -228,6 +260,9 @@ step "bootstrap: base services and platform setup" '
     [ -n "$value" ] || fail "no $name in the credentials"
     ! grep -rqF "$value" /work/gitops/platform || fail "$name in plaintext in the gitops repo: $(grep -rlF "$value" /work/gitops/platform)"
   done
+  # Docker Hub through the cache (docker.registryMirrors, urbex-cli#150).
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.201 cat /etc/docker/daemon.json | grep -q "\"http://$NET.190:5000\"" || fail "the machines should use the Docker Hub mirror"
+  curl -s http://$NET.190:5000/v2/_catalog | grep -q "library/" || fail "nothing came through the Docker Hub cache: $(curl -s http://$NET.190:5000/v2/_catalog)"
   echo "ok: platform is up"'
 
 # From here on Proxmox "has" the base services, as after a real apply.
@@ -414,7 +449,7 @@ step "rollback: deploying an older release" '
 
 step "destroy staging: prod and the project Builds untouched" '
   urbex destroy staging
-  [ "$(komodo_names Stacks)" = "hello-api-prod urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium urbex-telemetry-hello-api-prod urbex-telemetry-urbex-gitea urbex-telemetry-urbex-keycloak urbex-telemetry-urbex-komodo urbex-telemetry-urbex-observability urbex-telemetry-urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
+  [ "$(komodo_names Stacks)" = "hello-api-prod urbex-build-cache urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium urbex-telemetry-hello-api-prod urbex-telemetry-urbex-gitea urbex-telemetry-urbex-keycloak urbex-telemetry-urbex-komodo urbex-telemetry-urbex-observability urbex-telemetry-urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
   test ! -e /work/gitops/environments/staging/hello || fail "the staging folder is still in the gitops repo"
   expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)"

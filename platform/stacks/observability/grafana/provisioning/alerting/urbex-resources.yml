@@ -101,3 +101,91 @@ groups:
         annotations:
           summary: '{{ $labels.host }} has {{ printf "%.0f" $values.B.Value }}% of its memory available.'
           description: Below 10% for ten minutes. Its services may be killed when it runs out. Give the machine more memory (for an application, resources.memory in urbex.yaml), or find what grows in the Urbex resources dashboard.
+      # The Proxmox node itself (urbforge/urbex-cli#94), from pve-exporter,
+      # only with the node's read-only token: its memory - guests outside
+      # urbex and ZFS's ARC included, as Proxmox's summary counts it - and
+      # each storage. Without the token there is no series, and no alert.
+      - uid: urbex-node-memory-high
+        title: The Proxmox node is running out of memory
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: 'label_replace(100 * pve_memory_usage_bytes{id=~"node/.+"} / pve_memory_size_bytes{id=~"node/.+"}, "node", "$1", "id", "node/(.+)")'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [90] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        labels: { kind: platform, service: proxmox, severity: warning }
+        annotations:
+          summary: 'The Proxmox node {{ $labels.node }} has {{ printf "%.0f" $values.B.Value }}% of its memory used.'
+          description: Above 90% for ten minutes. Proxmox may stop guests when it runs out. Check the node's Summary in Proxmox, give LXCs less memory, or cap ZFS's ARC.
+      - uid: urbex-node-storage-filling
+        title: A Proxmox storage is filling up
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: 'label_replace(label_replace(100 * pve_disk_usage_bytes{id=~"storage/.+"} / (pve_disk_size_bytes{id=~"storage/.+"} > 0), "node", "$1", "id", "storage/([^/]+)/.+"), "storage", "$1", "id", "storage/[^/]+/(.+)")'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [85] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels: { kind: platform, service: proxmox, severity: warning }
+        annotations:
+          summary: 'Storage {{ $labels.storage }} on {{ $labels.node }} is {{ printf "%.0f" $values.B.Value }}% full.'
+          description: Above 85%. New LXCs, volumes and backups need room there. Free space, or move guests to another storage.
+      - uid: urbex-node-storage-full
+        title: A Proxmox storage is nearly full
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: urbex-prometheus
+            model:
+              refId: A
+              instant: true
+              expr: 'label_replace(label_replace(100 * pve_disk_usage_bytes{id=~"storage/.+"} / (pve_disk_size_bytes{id=~"storage/.+"} > 0), "node", "$1", "id", "storage/([^/]+)/.+"), "storage", "$1", "id", "storage/[^/]+/(.+)")'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [95] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels: { kind: platform, service: proxmox, severity: critical }
+        annotations:
+          summary: 'Storage {{ $labels.storage }} on {{ $labels.node }} is {{ printf "%.0f" $values.B.Value }}% full.'
+          description: Above 95%. Guests on it can stop writing. Free space now.

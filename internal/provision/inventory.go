@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -80,6 +81,7 @@ func writeInventory(repoPath, ansibleDir, project, env string, services []manife
 				"ansible_timeout":         knownhosts.ConnectTimeout,
 				"ansible_ssh_retries":     knownhosts.ConnectRetries,
 				"gitea_registry":          ep.Registry,
+				"docker_registry_mirrors": strings.Join(ep.RegistryMirrors, ","),
 				"komodo_core_address":     ep.KomodoURL,
 				"komodo_version":          bootstrap.KomodoVersion,
 				// The services' logs go to the platform's Loki, unless the
