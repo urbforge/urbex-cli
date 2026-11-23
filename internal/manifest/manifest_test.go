@@ -259,6 +259,7 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 			{Share: "media", Path: "/media"},
 			{Share: "media", Path: "/config"},
 		}},
+		{Name: "vpn", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, Devices: []string{"/dev/net/tun", "/dev/../etc/shadow", "/dev/net/tun"}},
 	}}
 	got := m.Unsupported()
 	want := []string{
@@ -266,6 +267,8 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 		"services ui: healthcheck needs a port",
 		"services media: share media is declared twice",
 		"services media: two volumes are mounted at /config",
+		"services vpn: device /dev/../etc/shadow is not a file under /dev",
+		"services vpn: device /dev/net/tun is declared twice",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Unsupported = %v", got)

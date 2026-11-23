@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/urbforge/urbex-cli/internal/sizeparse"
 )
@@ -46,7 +48,12 @@ type Service struct {
 	Uses     []string `yaml:"uses,omitempty"`
 	// Volumes are what the application keeps: named volumes, mount
 	// points of its LXC, and the operator's shares (ADR-0028).
-	Volumes     []Volume `yaml:"volumes,omitempty"`
+	Volumes []Volume `yaml:"volumes,omitempty"`
+	// Devices are device files of the Proxmox node the application's
+	// container gets, e.g. /dev/net/tun for a VPN client: an LXC has
+	// them once the operator binds them with root@pam, as for a share;
+	// a VM has its own.
+	Devices     []string `yaml:"devices,omitempty"`
 	Port        int      `yaml:"port"`
 	Healthcheck string   `yaml:"healthcheck,omitempty"`
 	// ReadyWithin is how long the application may take to be ready after
@@ -355,6 +362,7 @@ func (m *Manifest) Unsupported() []string {
 			}
 			names[key], paths[v.Path] = true, true
 		}
+		out = append(out, svc.deviceErrors()...)
 		if svc.Port == 0 && svc.Public {
 			out = append(out, fmt.Sprintf("services %s: public needs a port", svc.Name))
 		}
@@ -374,6 +382,23 @@ func (m *Manifest) Deployables() []Service {
 	out := append([]Service{}, m.Services...)
 	if m.Frontend != nil && m.Frontend.Type == "web" {
 		out = append(out, Service{Name: WebService, Runtime: WebRuntime, Frontend: m.Frontend})
+	}
+	return out
+}
+
+// deviceErrors is what's wrong with the service's devices: each a file
+// under /dev, named once.
+func (s Service) deviceErrors() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range s.Devices {
+		if !strings.HasPrefix(d, "/dev/") || path.Clean(d) != d || strings.ContainsAny(d, ", \t=") {
+			out = append(out, fmt.Sprintf("services %s: device %s is not a file under /dev", s.Name, d))
+		}
+		if seen[d] {
+			out = append(out, fmt.Sprintf("services %s: device %s is declared twice", s.Name, d))
+		}
+		seen[d] = true
 	}
 	return out
 }
