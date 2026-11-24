@@ -39,7 +39,16 @@ BASE_MACHINES=(urbex-gitea urbex-komodo urbex-technitium urbex-keycloak urbex-ob
 log() { printf '\n== %s\n' "$*"; }
 
 machine() { # machine <hostname> <last-octet>: (re)create a fake LXC
-  local name=e2e-$1
+  local name=e2e-$1 holder
+  # On a kept platform, a machine an earlier run left may hold the
+  # address: an LXC Proxmox has deleted (destroy freed it).
+  for holder in $(podman ps -aq --filter "name=^e2e-" 2>/dev/null); do
+    holder=$(podman inspect -f "{{.Name}} {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" "$holder" 2>/dev/null) || continue
+    if [ "${holder#* }" = "$NET.$2" ] && [ "${holder%% *}" != "$name" ]; then
+      podman rm -f "${holder%% *}" >/dev/null 2>&1 || true
+      podman volume rm -f "${holder%% *}-docker" "${holder%% *}-containerd" >/dev/null 2>&1 || true
+    fi
+  done
   podman rm -f "$name" >/dev/null 2>&1 || true
   podman volume rm -f "$name-docker" "$name-containerd" >/dev/null 2>&1 || true
   # Docker's data lives on volumes: overlayfs can't nest on the
@@ -63,10 +72,17 @@ teardown() {
   podman network rm -f "$NETWORK" >/dev/null 2>&1 || true
 }
 
+RESULT_WRITTEN=false
 result() { # result <outcome> [detail]: for E2E_RESULT
+  RESULT_WRITTEN=true
   [ -n "${E2E_RESULT:-}" ] || return 0
   printf '%s %s\ncommit %s\nlogs %s\n' "$1" "${2:-}" "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)" "$WORK/logs" >"$E2E_RESULT"
 }
+
+# A run that stops outside a step (preparing, or a step's prep) fails
+# too, and says so.
+[ -n "${E2E_RESULT:-}" ] && rm -f "$E2E_RESULT"
+trap 'rc=$?; if [ $rc -ne 0 ] && ! $RESULT_WRITTEN; then result FAILED "outside a step (exit $rc, after step $STEP): see the output"; fi' EXIT
 
 # in_runner <commands>: run commands in the runner container, as a step
 # does, outside any step.
