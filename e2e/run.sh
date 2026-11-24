@@ -141,6 +141,13 @@ git -C "$WORK/shop" init -q -b main
 git -C "$WORK/shop" add -A
 git -C "$WORK/shop" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "shop"
 
+# A fourth stack, two applications grouped on one machine and one alone.
+mkdir -p "$WORK/box"
+cp e2e/groups/urbex.yaml "$WORK/box/"
+git -C "$WORK/box" init -q -b main
+git -C "$WORK/box" add -A
+git -C "$WORK/box" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "box"
+
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
 octet=200
@@ -789,6 +796,33 @@ step "the reconciler: an environment destroyed is no longer looked after, its gr
   echo "$latest" | grep -q "^ok " || fail "the run after the destroy failed: $latest"
   if echo "$latest" | grep -q "shop-"; then fail "the run after the destroy still names shop: $latest"; fi
   echo "ok: the graph went with the environment, and the reconciler found no other"'
+
+# shop prod went with its destroy, and its addresses (.212-.214) with it:
+# the group first, in the manifest's order, then solo.
+for m in shop-db-prod shop-api-prod shop-web-prod; do podman rm -f e2e-$m >/dev/null; podman volume rm -f e2e-$m-docker e2e-$m-containerd >/dev/null 2>&1 || true; done
+machine box-pair-prod 212
+machine box-solo-prod 213
+printf '%s\n' box-pair-prod box-solo-prod >>"$WORK/pve-containers.txt"
+step "an LXC group: two applications on one machine, each with its own Stack, name and port" '
+  cd /work/box
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the grouped stack failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.212/ "Welcome to nginx" 5
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  expect_http http://$NET.213/ "Caddy" 5
+  [ "$(technitium_record web.box.urbex.urbex.test)" = "$NET.212" ] || fail "web should resolve to the group machine"
+  [ "$(technitium_record who.box.urbex.urbex.test)" = "$NET.212" ] || fail "who should resolve to the group machine"
+  [ "$(technitium_record solo.box.urbex.urbex.test)" = "$NET.213" ] || fail "solo should resolve to its own machine"
+  servers=$(komodo_names Servers)
+  echo "$servers" | grep -qw box-pair-prod || fail "no Komodo server for the group: $servers"
+  if echo "$servers" | grep -qE "box-(web|who)-prod"; then fail "the grouped applications should have no server of their own: $servers"; fi
+  for st in box-web-prod box-who-prod box-solo-prod; do
+    [ "$(komodo_stack_state $st)" = running ] || fail "stack $st: $(komodo_stack_state $st)"
+  done
+  [ "$(komodo_stack_state urbex-telemetry-box-pair-prod)" = running ] || fail "the group machine should have one telemetry agent"
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[\"entries\"]; assert \"box-pair-prod\" in d and \"box-web-prod\" not in d, list(d)" /work/gitops/state/allocations.json || fail "the ledger should hold the group machine, not its applications"
+  urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the grouped stack failed"; }
+  echo "ok: the group is one machine, its applications each a Stack and a name"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

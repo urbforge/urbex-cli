@@ -66,9 +66,13 @@ type Service struct {
 	// Machine is what the application runs on: MachineLXC (the default,
 	// "") or MachineVM, for what an unprivileged LXC can't do - keyctl,
 	// mount, fuse (ADR-0033).
-	Machine string                       `yaml:"machine,omitempty"`
-	Env     map[string]map[string]string `yaml:"env,omitempty"`
-	Auth    *Auth                        `yaml:"auth,omitempty"`
+	Machine string `yaml:"machine,omitempty"`
+	// LXC is the group the application runs in: the applications of the
+	// stack with the same LXC share one machine per environment
+	// (ADR-0037). "" is a machine of its own.
+	LXC  string                       `yaml:"lxc,omitempty"`
+	Env  map[string]map[string]string `yaml:"env,omitempty"`
+	Auth *Auth                        `yaml:"auth,omitempty"`
 	// Frontend is set on the service Deployables makes of a web
 	// frontend; never read from urbex.yaml.
 	Frontend *Frontend `yaml:"-"`
@@ -99,6 +103,43 @@ const (
 	// smaller.
 	MinVMDisk = "5Gi"
 )
+
+// Group is the machine the application runs on, within its stack and an
+// environment: its LXC group, or its own name (ADR-0037).
+func (s Service) Group() string {
+	if s.LXC != "" {
+		return s.LXC
+	}
+	return s.Name
+}
+
+// Groups returns the stack's machines, in the order of their first
+// application, each with its applications in the manifest's order.
+func (m *Manifest) Groups() []Group {
+	var out []Group
+	at := map[string]int{}
+	for _, svc := range m.Services {
+		g := svc.Group()
+		i, ok := at[g]
+		if !ok {
+			i = len(out)
+			at[g] = i
+			out = append(out, Group{Name: g})
+		}
+		out[i].Services = append(out[i].Services, svc)
+	}
+	return out
+}
+
+// Group is one machine of a stack and the applications on it.
+type Group struct {
+	Name     string
+	Services []Service
+}
+
+// IsVM reports whether the group's machine is a VM: its applications
+// share one machine type.
+func (g Group) IsVM() bool { return len(g.Services) > 0 && g.Services[0].IsVM() }
 
 // IsVM reports whether the application runs in a VM rather than an LXC.
 func (s Service) IsVM() bool { return s.Machine == MachineVM }
@@ -373,6 +414,7 @@ func (m *Manifest) Unsupported() []string {
 			out = append(out, svc.vmErrors()...)
 		}
 	}
+	out = append(out, m.groupErrors()...)
 	return append(out, m.linkErrors()...)
 }
 
@@ -422,6 +464,46 @@ func (s Service) vmErrors() []string {
 	if len(s.Shares()) > 0 {
 		// The VM mounts a share itself, over NFS or SMB: urbforge/urbex-cli#83.
 		out = append(out, fmt.Sprintf("services %s: shares are not available in a VM yet (urbforge/urbex-cli#83): use machine: lxc", s.Name))
+	}
+	return out
+}
+
+// groupErrors are what ADR-0037 refuses of the LXC groups: a group named
+// after an application that isn't in it (their internal names would
+// collide), LXCs and VMs in one group, and two applications of a group
+// publishing the same port.
+func (m *Manifest) groupErrors() []string {
+	var out []string
+	names := map[string]bool{}
+	for _, svc := range m.Services {
+		names[svc.Name] = true
+	}
+	for _, g := range m.Groups() {
+		if len(g.Services) == 1 && g.Services[0].LXC == "" {
+			continue
+		}
+		if names[g.Name] {
+			in := false
+			for _, svc := range g.Services {
+				in = in || svc.Name == g.Name
+			}
+			if !in {
+				out = append(out, fmt.Sprintf("lxc %s: is the name of application %s, which isn't in it", g.Name, g.Name))
+			}
+		}
+		ports := map[int]string{}
+		for _, svc := range g.Services {
+			if svc.IsVM() != g.IsVM() {
+				out = append(out, fmt.Sprintf("lxc %s: %s and %s run on different machines (lxc, vm); a group is one machine", g.Name, g.Services[0].Name, svc.Name))
+			}
+			if svc.Port == 0 {
+				continue
+			}
+			if other, ok := ports[svc.Port]; ok {
+				out = append(out, fmt.Sprintf("lxc %s: %s and %s both publish port %d on the same machine", g.Name, other, svc.Name, svc.Port))
+			}
+			ports[svc.Port] = svc.Name
+		}
 	}
 	return out
 }
