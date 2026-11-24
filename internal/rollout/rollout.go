@@ -52,6 +52,13 @@ func ResourceName(project, service, env string) string {
 	return project + "-" + service + "-" + env
 }
 
+// MachineName names the LXC (or VM) and the Komodo Server a service runs
+// on in env: its own, ResourceName, or its LXC group's, shared with the
+// other services of the group (ADR-0037). Its Stack keeps ResourceName.
+func MachineName(project string, svc manifest.Service, env string) string {
+	return ResourceName(project, svc.Group(), env)
+}
+
 // BuildName names a service's Komodo Build and its image, e.g.
 // "my-app-api". Builds don't belong to an environment: a release is
 // built once and deployed everywhere.
@@ -145,16 +152,22 @@ type Target struct {
 	Links map[string]*envrepo.Links
 }
 
-// lxcs are the target's services that run on an LXC of their own - all
-// but a web frontend, whose Stack runs on the builder - and their LXCs.
-func (t Target) lxcs() (services []manifest.Service, hosts []string) {
+// lxcs are the target's machines - all its services but a web frontend,
+// whose Stack runs on the builder, one machine per LXC group (ADR-0037) -
+// and, for each, its group's name: the service's own for one alone.
+func (t Target) lxcs() (groups []string, hosts []string) {
+	seen := map[string]bool{}
 	for _, svc := range t.Services {
-		if !svc.IsWeb() {
-			services = append(services, svc)
-			hosts = append(hosts, ResourceName(t.Project, svc.Name, t.Env))
+		if svc.IsWeb() {
+			continue
+		}
+		if host := MachineName(t.Project, svc, t.Env); !seen[host] {
+			seen[host] = true
+			groups = append(groups, svc.Group())
+			hosts = append(hosts, host)
 		}
 	}
-	return services, hosts
+	return groups, hosts
 }
 
 // TelemetryHosts are the LXCs whose telemetry agents the target has.
@@ -314,9 +327,9 @@ func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 		}
 	}
 	// Each LXC's telemetry agent, a Stack of its own (ADR-0027).
-	services, hosts := t.lxcs()
-	for i, svc := range services {
-		agent := bootstrap.TelemetryAgent{Host: hosts[i], Kind: bootstrap.AppTag, Service: svc.Name, Project: t.Project, Env: t.Env, Logs: t.Logs}
+	groups, hosts := t.lxcs()
+	for i, group := range groups {
+		agent := bootstrap.TelemetryAgent{Host: hosts[i], Kind: bootstrap.AppTag, Service: group, Project: t.Project, Env: t.Env, Logs: t.Logs}
 		if err := bootstrap.WriteTelemetryAgent(repo.Path, agent, r.Internal); err != nil {
 			return err
 		}
@@ -329,13 +342,11 @@ func (r *Rollout) WriteEnv(t Target, repo envrepo.Repo) error {
 // Komodo Stack on the service's LXC. It deploys nothing by itself.
 func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) error {
 	names := make([]string, len(t.Services))
-	var servers []string // a web frontend's Stack runs on the builder, not an LXC
 	for i, svc := range t.Services {
 		names[i] = ResourceName(t.Project, svc.Name, t.Env)
-		if !svc.IsWeb() {
-			servers = append(servers, names[i])
-		}
 	}
+	// One Server per machine; a web frontend's Stack runs on the builder.
+	_, servers := t.lxcs()
 	rekeyed, err := r.Komodo.WaitServers(ctx, servers, r.timeout())
 	for _, name := range rekeyed {
 		fmt.Fprintf(r.Out, "Komodo server %s reconnected with a new key (its LXC was recreated): accepted.\n", name)
@@ -776,8 +787,9 @@ func (r *Rollout) RemoveEnv(ctx context.Context, t Target) error {
 // LXCs are gone: a Periphery agent that is still running would simply
 // register itself again with the onboarding key.
 func (r *Rollout) RemoveServers(ctx context.Context, t Target) error {
-	for _, svc := range t.Services {
-		if err := r.Komodo.DeleteResource(ctx, "Server", ResourceName(t.Project, svc.Name, t.Env)); err != nil {
+	_, servers := t.lxcs()
+	for _, server := range servers {
+		if err := r.Komodo.DeleteResource(ctx, "Server", server); err != nil {
 			return err
 		}
 	}
@@ -902,7 +914,7 @@ func (r *Rollout) stackConfig(name string, t Target, svc manifest.Service) komod
 	}
 	return komodo.StackConfig{
 		IgnoreServices:     ignore,
-		ServerID:           name, // the LXC's Periphery registers under its hostname
+		ServerID:           MachineName(t.Project, svc, t.Env), // the machine's Periphery registers under its hostname
 		GitProvider:        r.Internal.Registry,
 		GitHTTPS:           false,
 		GitAccount:         bootstrap.GiteaAdminUser,

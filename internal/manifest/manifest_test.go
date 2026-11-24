@@ -259,6 +259,7 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 			{Share: "media", Path: "/media"},
 			{Share: "media", Path: "/config"},
 		}},
+		{Name: "vpn", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, Devices: []string{"/dev/net/tun", "/dev/../etc/shadow", "/dev/net/tun"}},
 	}}
 	got := m.Unsupported()
 	want := []string{
@@ -266,6 +267,8 @@ func TestUnsupported_RefusesWhatIsNotActedOnYet(t *testing.T) {
 		"services ui: healthcheck needs a port",
 		"services media: share media is declared twice",
 		"services media: two volumes are mounted at /config",
+		"services vpn: device /dev/../etc/shadow is not a file under /dev",
+		"services vpn: device /dev/net/tun is declared twice",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Unsupported = %v", got)
@@ -342,5 +345,39 @@ func TestDiskSerial(t *testing.T) {
 	}
 	if a != long.DiskSerial(Volume{Name: "originals-2026"}) {
 		t.Error("the same volume must keep its serial")
+	}
+}
+
+// ADR-0037's groups: one machine per group name, and what a group refuses.
+func TestGroups(t *testing.T) {
+	m := &Manifest{Services: []Service{
+		{Name: "sonarr", Port: 8989, LXC: "arr"},
+		{Name: "jellyfin", Port: 8096},
+		{Name: "radarr", Port: 7878, LXC: "arr"},
+	}}
+	g := m.Groups()
+	if len(g) != 2 || g[0].Name != "arr" || len(g[0].Services) != 2 || g[0].Services[1].Name != "radarr" || g[1].Name != "jellyfin" {
+		t.Fatalf("groups = %+v", g)
+	}
+	if errs := m.groupErrors(); len(errs) != 0 {
+		t.Errorf("valid groups refused: %v", errs)
+	}
+	bad := &Manifest{Services: []Service{
+		{Name: "a", Port: 80, LXC: "box"},
+		{Name: "b", Port: 80, LXC: "box"},
+		{Name: "c", LXC: "box", Machine: MachineVM},
+		{Name: "jellyfin", Port: 8096, LXC: "media"},
+		{Name: "seerr", Port: 5055, LXC: "jellyfin"},
+	}}
+	errs := strings.Join(bad.groupErrors(), "\n")
+	for _, want := range []string{"a and b both publish port 80", "different machines", "lxc jellyfin: is the name of application jellyfin"} {
+		if !strings.Contains(errs, want) {
+			t.Errorf("errors lack %q:\n%s", want, errs)
+		}
+	}
+	// A group named after one of its own applications is fine.
+	ok := &Manifest{Services: []Service{{Name: "web", Port: 80, LXC: "web"}, {Name: "worker", LXC: "web"}}}
+	if errs := ok.groupErrors(); len(errs) != 0 {
+		t.Errorf("group named after its own application refused: %v", errs)
 	}
 }

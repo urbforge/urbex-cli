@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -233,6 +234,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	if err := o.refuseMovedVolumes(ctx, opts.Env, allocations, existed, opts.DeleteData); err != nil {
+		return err
+	}
 	if err := o.refuseReplacingVolumes(ctx, tfDir, env, opts.Env, volumes, opts.DeleteData); err != nil {
 		return err
 	}
@@ -245,7 +249,7 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	}
 	declared := map[string]bool{}
 	for _, svc := range o.Manifest.Services {
-		declared[Hostname(o.Manifest.Project, svc.Name, opts.Env)] = true
+		declared[MachineHostname(o.Manifest.Project, svc, opts.Env)] = true
 	}
 	if err := o.freeGone(opts, before, after, declared); err != nil {
 		return err
@@ -935,7 +939,7 @@ func (o *Orchestrator) waitAndReportServices(ctx context.Context, opts Options, 
 		if host := o.PublicHostname(opts.Env, svc); host != "" && svc.Public {
 			fmt.Fprintf(o.Out, "  %-16s https://%s\n", "", host)
 		} else if o.QuickTunnel != nil && svc.Public && !svc.IsWeb() {
-			o.reportQuickTunnel(ctx, Hostname(o.Manifest.Project, svc.Name, opts.Env), allocations)
+			o.reportQuickTunnel(ctx, MachineHostname(o.Manifest.Project, svc, opts.Env), allocations)
 		}
 	}
 	return nil
@@ -1030,7 +1034,10 @@ func (o *Orchestrator) lookupAllocations(ledger *allocation.Ledger, env string) 
 	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
 	var missing []string
 	for _, svc := range o.Manifest.Services {
-		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		hostname := MachineHostname(o.Manifest.Project, svc, env)
+		if _, done := allocations[hostname]; done || slices.Contains(missing, hostname) {
+			continue
+		}
 		entry, ok := ledger.Lookup(hostname)
 		if !ok {
 			missing = append(missing, hostname)
@@ -1073,11 +1080,13 @@ func (o *Orchestrator) Destroy(ctx context.Context, opts Options) error {
 	var toDestroy []manifest.Service
 	var hostnames []string
 	for _, svc := range o.Manifest.Services {
-		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
+		hostname := MachineHostname(o.Manifest.Project, svc, opts.Env)
 		if entry, ok := ledger.Lookup(hostname); ok {
+			if _, seen := allocations[hostname]; !seen {
+				hostnames = append(hostnames, hostname)
+			}
 			allocations[hostname] = entry
 			toDestroy = append(toDestroy, svc)
-			hostnames = append(hostnames, hostname)
 		}
 	}
 
@@ -1285,7 +1294,7 @@ func (o *Orchestrator) prepare(ctx context.Context, opts Options) (string, error
 
 	allocations := make(map[string]allocation.Entry, len(o.Manifest.Services))
 	for _, svc := range o.Manifest.Services {
-		hostname := Hostname(o.Manifest.Project, svc.Name, opts.Env)
+		hostname := MachineHostname(o.Manifest.Project, svc, opts.Env)
 		entry, err := ledger.Allocate(hostname, o.Config.Proxmox.Network.CIDR, o.Config.Proxmox.Network.Gateway)
 		if err != nil {
 			return "", fmt.Errorf("allocating resources for %s: %w", hostname, err)
@@ -1340,6 +1349,12 @@ func Hostname(project, service, env string) string {
 	return rollout.ResourceName(project, service, env)
 }
 
+// MachineHostname is the LXC (or VM) svc runs on in env: its own, or its
+// LXC group's (ADR-0037).
+func MachineHostname(project string, svc manifest.Service, env string) string {
+	return rollout.MachineName(project, svc, env)
+}
+
 func tfEnv(creds *credentials.Credentials) []string {
 	return []string{"TF_VAR_proxmox_api_token=" + creds.ProxmoxToken}
 }
@@ -1367,7 +1382,7 @@ func (o *Orchestrator) address(env string, svc manifest.Service, allocations map
 	if svc.IsWeb() {
 		return "https://" + o.PublicHostname(env, svc)
 	}
-	entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
+	entry := allocations[MachineHostname(o.Manifest.Project, svc, env)]
 	return LANAddress(entry.IP, svc.Port)
 }
 

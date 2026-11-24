@@ -34,6 +34,16 @@ type VolumeAPI interface {
 	RebootContainer(ctx context.Context, node string, vmid int) error
 }
 
+// DeviceAPI is the subset of proxmoxapi.Client that reads the device
+// files of the node passed to an LXC: the operator adds them, with
+// root@pam, and urbex waits for them, as for a share.
+type DeviceAPI interface {
+	Devices(ctx context.Context, node string, vmid int) ([]proxmoxapi.Device, error)
+}
+
+// maxDevices is how many device files an LXC can have: dev0 to dev255.
+const maxDevices = 256
+
 // maxMountPoints is how many mount points an LXC can have: mp0 to mp255.
 const maxMountPoints = 256
 
@@ -112,14 +122,24 @@ func (o *Orchestrator) checkVolumes() error {
 // namedVolumes returns, by hostname, the names of the named volumes of
 // the services' LXCs in env: those urbex.yaml declares, and those an
 // existing LXC still has, which urbex.yaml may no longer declare.
+//
+// On a machine of an LXC group (ADR-0037), several applications' volumes
+// are named <application>/<volume>.
 func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []manifest.Service, allocations map[string]allocation.Entry, existing map[int]bool) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, svc := range services {
 		names := map[string]bool{}
-		for _, v := range svc.NamedVolumes() {
-			names[v.Name] = true
+		for _, n := range out[MachineHostname(o.Manifest.Project, svc, env)] {
+			names[n] = true
 		}
-		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		label := func(name string) string { return name }
+		if svc.LXC != "" {
+			label = func(name string) string { return svc.Name + "/" + name }
+		}
+		for _, v := range svc.NamedVolumes() {
+			names[label(v.Name)] = true
+		}
+		hostname := MachineHostname(o.Manifest.Project, svc, env)
 		vmid := allocations[hostname].VMID
 		if svc.IsVM() && o.Volumes != nil && existing[vmid] {
 			// A VM's volumes are disks; an application that has just
@@ -129,7 +149,7 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 				return nil, fmt.Errorf("reading the disks of %s: %w", hostname, err)
 			}
 			for _, n := range vmNames {
-				names[n] = true
+				names[label(n)] = true
 			}
 		} else if o.Volumes != nil && existing[vmid] {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
@@ -138,7 +158,7 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 			}
 			for _, mp := range mps {
 				if name, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/"+svc.Name+"/"); ok {
-					names[name] = true
+					names[label(name)] = true
 				}
 			}
 		}
@@ -311,7 +331,8 @@ func deletedContainers(plan []byte) ([]deletion, error) {
 // the command that does it, or named volumes that stay unmounted.
 type notReady struct {
 	service string
-	command string // the operator's pct set, for a share
+	command string // the operator's pct set, for a share or a device
+	device  bool   // the command binds a device
 	volumes string // the named volumes still unmounted
 }
 
@@ -320,16 +341,19 @@ type notReady struct {
 // point, one smaller than declared grows; a running LXC that can't take
 // a new mount point at once restarts. An application whose volumes are
 // still not mounted after that is not ready, and neither is one with a
-// share the operator hasn't bound: it returns them, with the pct command
-// for each share.
+// share or a device the operator hasn't bound: it returns them, with the
+// pct command for each.
 func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]notReady, error) {
 	node := o.Config.Proxmox.Node
 	var missing []notReady
+	// The devices asked for each machine so far: the applications of a
+	// group share their LXC, and its keys.
+	planned := map[int]map[string]string{}
 	for _, svc := range o.Manifest.Services {
-		if len(svc.Volumes) == 0 {
+		if len(svc.Volumes) == 0 && len(svc.Devices) == 0 {
 			continue
 		}
-		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		hostname := MachineHostname(o.Manifest.Project, svc, env)
 		vmid := allocations[hostname].VMID
 		if svc.IsVM() {
 			if err := o.attachVMDisks(ctx, svc, hostname, vmid); err != nil {
@@ -409,6 +433,15 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 			}
 			missing = append(missing, notReady{service: svc.Name, command: command})
 		}
+		if planned[vmid] == nil {
+			planned[vmid] = map[string]string{}
+		}
+		bound, unbound, err := o.devices(ctx, svc, hostname, vmid, planned[vmid])
+		if err != nil {
+			return nil, err
+		}
+		mounted = append(mounted, bound...)
+		missing = append(missing, unbound...)
 		if len(mounted) == 0 {
 			continue
 		}
@@ -441,6 +474,54 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		}
 	}
 	return missing, nil
+}
+
+// devices returns the keys of the device files svc's LXC has of those
+// it declares, and one notReady for each it doesn't have yet, with the
+// operator's pct set.
+func (o *Orchestrator) devices(ctx context.Context, svc manifest.Service, hostname string, vmid int, planned map[string]string) ([]string, []notReady, error) {
+	if len(svc.Devices) == 0 {
+		return nil, nil, nil
+	}
+	da, ok := o.Volumes.(DeviceAPI)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s: devices need the Proxmox API", svc.Name)
+	}
+	have, err := da.Devices(ctx, o.Config.Proxmox.Node, vmid)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the devices of %s: %w", hostname, err)
+	}
+	at := map[string]string{}
+	taken := map[int]bool{}
+	for _, d := range have {
+		at[path.Clean(d.Path)] = d.Key
+		taken[d.Index()] = true
+	}
+	for _, key := range planned {
+		taken[proxmoxapi.Device{Key: key}.Index()] = true
+	}
+	var bound []string
+	var missing []notReady
+	for _, dev := range svc.Devices {
+		if key, ok := at[dev]; ok {
+			bound = append(bound, key)
+			continue
+		}
+		// Another application of the group asked for it already: the
+		// same command, printed once.
+		key, ok := planned[dev]
+		for i := 0; !ok && i < maxDevices; i++ {
+			if !taken[i] {
+				taken[i], key, ok = true, fmt.Sprintf("dev%d", i), true
+			}
+		}
+		if !ok {
+			return nil, nil, fmt.Errorf("%s has no free device key left", hostname)
+		}
+		planned[dev] = key
+		missing = append(missing, notReady{service: svc.Name, command: fmt.Sprintf("pct set %d -%s %s", vmid, key, dev), device: true})
+	}
+	return bound, missing, nil
 }
 
 // attachVMDisks gives an application's VM a disk per named volume, with
@@ -506,7 +587,8 @@ func (o *Orchestrator) attachVMDisks(ctx context.Context, svc manifest.Service, 
 // complete. An application never starts without what it keeps.
 func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	services := map[string]bool{}
-	first := true
+	first, devices := true, false
+	printed := map[string]bool{}
 	for _, m := range missing {
 		services[m.service] = true
 		if m.command == "" {
@@ -514,10 +596,17 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 			continue
 		}
 		if first {
-			fmt.Fprintf(o.Out, "Some applications need shares their LXC doesn't have yet. Binding a folder of the Proxmox node needs root@pam: on the node, as root, run\n")
+			fmt.Fprintf(o.Out, "Some applications need shares or devices their LXC doesn't have yet. Binding a folder or a device of the Proxmox node to an LXC needs root@pam: on the node, as root, run\n")
 			first = false
 		}
-		fmt.Fprintf(o.Out, "  %s\n", m.command)
+		if !printed[m.command] {
+			fmt.Fprintf(o.Out, "  %s\n", m.command)
+			printed[m.command] = true
+		}
+		devices = devices || m.device
+	}
+	if devices {
+		fmt.Fprintf(o.Out, "An application in a VM (machine: vm) needs no command for /dev/net/tun: the VM has its own.\n")
 	}
 	names := make([]string, 0, len(services))
 	for name := range services {
@@ -525,6 +614,9 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	}
 	sort.Strings(names)
 	fmt.Fprintf(o.Out, "Then run 'urbex apply %s' again.\n", env)
+	if devices {
+		return fmt.Errorf("not deployed until their LXC has what they keep and the devices they need: %s", strings.Join(names, ", "))
+	}
 	return fmt.Errorf("not deployed until what they keep is mounted: %s", strings.Join(names, ", "))
 }
 
@@ -541,9 +633,18 @@ func (o *Orchestrator) checkDeleteData(ctx context.Context, opts Options, servic
 		return err
 	}
 	var keeping []string
+	seen := map[string]bool{}
 	for _, svc := range services {
-		for _, name := range volumes[Hostname(o.Manifest.Project, svc.Name, opts.Env)] {
-			keeping = append(keeping, svc.Name+"/"+name)
+		hostname := MachineHostname(o.Manifest.Project, svc, opts.Env)
+		if seen[hostname] {
+			continue
+		}
+		seen[hostname] = true
+		for _, name := range volumes[hostname] {
+			if svc.LXC == "" {
+				name = svc.Name + "/" + name
+			}
+			keeping = append(keeping, name)
 		}
 	}
 	if len(keeping) == 0 {
@@ -553,5 +654,51 @@ func (o *Orchestrator) checkDeleteData(ctx context.Context, opts Options, servic
 		return fmt.Errorf("%s (%s) has named volumes: %s. Destroying it deletes them with their machines: run 'urbex destroy %s --delete-data' to do so", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "), opts.Env)
 	}
 	fmt.Fprintf(o.Out, "Deleting the named volumes of %s (%s) with their machines: %s.\n", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "))
+	return nil
+}
+
+// refuseMovedVolumes refuses to move an application with named volumes
+// away from a machine that stays - out of an LXC group, into another, or
+// into one from a group (ADR-0037): it would start with empty volumes on
+// its new machine while its data stays on the old one. Moving it off a
+// machine that goes is refuseReplacingVolumes' case. With deleteData it
+// goes ahead, saying that the old volumes stay where they are until their
+// machine is destroyed.
+func (o *Orchestrator) refuseMovedVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry, existing map[int]bool, deleteData bool) error {
+	if o.Volumes == nil {
+		return nil
+	}
+	machineOf := map[string]string{}
+	for _, svc := range o.Manifest.Services {
+		machineOf[svc.Name] = MachineHostname(o.Manifest.Project, svc, env)
+	}
+	var moved []string
+	for _, hostname := range slices.Sorted(maps.Keys(allocations)) {
+		vmid := allocations[hostname].VMID
+		if !existing[vmid] {
+			continue
+		}
+		mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
+		if err != nil {
+			return fmt.Errorf("reading the mount points of %s: %w", hostname, err)
+		}
+		for _, mp := range mps {
+			rest, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/")
+			if !ok {
+				continue
+			}
+			app, volume, _ := strings.Cut(rest, "/")
+			if now, declared := machineOf[app]; declared && now != hostname {
+				moved = append(moved, fmt.Sprintf("%s/%s (on %s, the application now on %s)", app, volume, hostname, now))
+			}
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	if !deleteData {
+		return fmt.Errorf("moving an application to another machine leaves its named volumes behind: %s. Move the data first (back it up, apply, restore), or run 'urbex apply %s --delete-data' to start it with empty volumes", strings.Join(moved, "; "), env)
+	}
+	fmt.Fprintf(o.Out, "Starting moved applications with empty volumes; the old ones stay on their machine until it is destroyed: %s.\n", strings.Join(moved, "; "))
 	return nil
 }

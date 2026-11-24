@@ -6,8 +6,19 @@
 #
 # usage: e2e/run.sh [--keep]    (--keep leaves the machines running)
 #
-# E2E_STOP_AFTER=N stops after step N and leaves the machines running -
-# a platform to experiment on, or to look at the state a step left.
+# E2E_STOP_AFTER=N (a number or a step's name) stops after that step and
+# leaves the machines running - a platform to experiment on, or to look
+# at the state a step left.
+#
+# E2E_ONLY="site,volumes" runs only the steps named (names or numbers),
+# on the platform an earlier run left with --keep or E2E_STOP_AFTER: it
+# rebuilds urbex and the images, keeps the machines, the GitOps repo and
+# the work dir, and refreshes the stacks' urbex.yaml from e2e/. A step
+# that needs an earlier one's state says so in e2e/README.md; a project's
+# step destroys what an earlier run of it left first.
+#
+# E2E_RESULT=<file> writes the outcome there, for the nightly run:
+# PASSED, FAILED with the step, or RATE-LIMITED, and the log's path.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,6 +28,9 @@ NETWORK=${E2E_NETWORK:-urbex-e2e}
 NET=${E2E_NET:-10.89.77} # first three octets of the /24 the machines live in
 KEEP=false
 [ "${1:-}" = "--keep" ] && KEEP=true
+ONLY=${E2E_ONLY:-}
+# Steps run on an existing platform leave it running.
+[ -n "$ONLY" ] && KEEP=true
 
 command -v podman >/dev/null || { echo "e2e/run.sh needs podman" >&2; exit 1; }
 
@@ -25,7 +39,16 @@ BASE_MACHINES=(urbex-gitea urbex-komodo urbex-technitium urbex-keycloak urbex-ob
 log() { printf '\n== %s\n' "$*"; }
 
 machine() { # machine <hostname> <last-octet>: (re)create a fake LXC
-  local name=e2e-$1
+  local name=e2e-$1 holder
+  # On a kept platform, a machine an earlier run left may hold the
+  # address: an LXC Proxmox has deleted (destroy freed it).
+  for holder in $(podman ps -aq --filter "name=^e2e-" 2>/dev/null); do
+    holder=$(podman inspect -f "{{.Name}} {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" "$holder" 2>/dev/null) || continue
+    if [ "${holder#* }" = "$NET.$2" ] && [ "${holder%% *}" != "$name" ]; then
+      podman rm -f "${holder%% *}" >/dev/null 2>&1 || true
+      podman volume rm -f "${holder%% *}-docker" "${holder%% *}-containerd" >/dev/null 2>&1 || true
+    fi
+  done
   podman rm -f "$name" >/dev/null 2>&1 || true
   podman volume rm -f "$name-docker" "$name-containerd" >/dev/null 2>&1 || true
   # Docker's data lives on volumes: overlayfs can't nest on the
@@ -49,22 +72,83 @@ teardown() {
   podman network rm -f "$NETWORK" >/dev/null 2>&1 || true
 }
 
-# step <title> <commands>: run commands in the runner container, keeping
-# the (long) output in a log that is only shown if the step fails.
+RESULT_WRITTEN=false
+result() { # result <outcome> [detail]: for E2E_RESULT
+  RESULT_WRITTEN=true
+  [ -n "${E2E_RESULT:-}" ] || return 0
+  printf '%s %s\ncommit %s\nlogs %s\n' "$1" "${2:-}" "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)" "$WORK/logs" >"$E2E_RESULT"
+}
+
+# A run that stops outside a step (preparing, or a step's prep) fails
+# too, and says so.
+[ -n "${E2E_RESULT:-}" ] && rm -f "$E2E_RESULT"
+trap 'rc=$?; if [ $rc -ne 0 ] && ! $RESULT_WRITTEN; then result FAILED "outside a step (exit $rc, after step $STEP): see the output"; fi' EXIT
+
+# in_runner <commands>: run commands in the runner container, as a step
+# does, outside any step.
+in_runner() {
+  podman run --rm --network "$NETWORK" -e NET="$NET" \
+    -v "$WORK:/work:z" -v "$REPO/e2e:/e2e:ro,z" \
+    urbex-e2e-runner sh /e2e/inside.sh "$1"
+}
+
+# forget_project <project> <machines...>: what an earlier run of the
+# project's steps left - its prod environment destroyed with its
+# volumes, its machines removed - so that they run again from scratch.
+# Nothing to do in a full run, where the project is new.
+forget_project() {
+  local project=$1
+  shift
+  if grep -q "\"$project-" "$WORK/gitops/state/allocations.json" 2>/dev/null; then
+    log "Destroying $project prod, left by an earlier run"
+    in_runner "cd /work/$project && urbex destroy prod --delete-data" >"$WORK/logs/forget-$project.log" 2>&1 \
+      || { echo "--- destroying $project failed: $WORK/logs/forget-$project.log"; tail -n 20 "$WORK/logs/forget-$project.log"; exit 1; }
+    local m
+    for m in "$@"; do
+      sed -i "/^$m\$/d" "$WORK/pve-containers.txt"
+    done
+  fi
+  local m
+  for m in "$@"; do
+    podman rm -f "e2e-$m" >/dev/null 2>&1 || true
+    podman volume rm -f "e2e-$m-docker" "e2e-$m-containerd" >/dev/null 2>&1 || true
+  done
+}
+
+# selected <number> <name>: whether E2E_ONLY asks for the step (every
+# step without it).
+selected() {
+  [ -z "$ONLY" ] && return 0
+  local want
+  for want in ${ONLY//,/ }; do
+    [ "$want" = "$1" ] || [ "$want" = "$2" ] && return 0
+  done
+  return 1
+}
+
+# step <name> <title> <commands>: run commands in the runner container,
+# keeping the (long) output in a log that is only shown if the step
+# fails. prep_<name>, if defined, runs first, on the host: the machines
+# the step needs. With E2E_ONLY, a step not named is skipped, with its
+# prep.
 STEP=0
+RAN=0
 step() {
   STEP=$((STEP + 1))
+  local name=$1 title=$2 commands=$3
+  selected "$STEP" "$name" || return 0
+  RAN=$((RAN + 1))
   local logfile
-  logfile=$WORK/logs/$(printf '%02d' $STEP).log
-  log "$1"
-  if podman run --rm --network "$NETWORK" -e NET="$NET" \
-    -v "$WORK:/work:z" -v "$REPO/e2e:/e2e:ro,z" \
-    urbex-e2e-runner sh /e2e/inside.sh "$2" >"$logfile" 2>&1; then
+  logfile=$WORK/logs/$(printf '%02d' $STEP)-$name.log
+  log "$STEP $name: $title"
+  if declare -F "prep_$name" >/dev/null; then "prep_$name"; fi
+  if in_runner "$commands" >"$logfile" 2>&1; then
     # The lines worth seeing: assertions and urbex's own summaries, not
     # Ansible's per-task "ok: [host]".
     grep -E '^(ok: [^[]|pushed |merged |Deployed |Released |Releasing |  [a-z]+ +(http|[0-9])|[a-z]+: .* -> |Nothing|Komodo server|Destroyed|Created |Set |Removed |staging )' "$logfile" || true
-    if [ "${E2E_STOP_AFTER:-}" = "$STEP" ]; then
-      log "Stopped after step $STEP as asked; machines left running (podman ps --filter name=e2e-)"
+    if [ "${E2E_STOP_AFTER:-}" = "$STEP" ] || [ "${E2E_STOP_AFTER:-}" = "$name" ]; then
+      log "Stopped after step $STEP ($name) as asked; machines left running (podman ps --filter name=e2e-)"
+      result STOPPED "after step $STEP $name"
       exit 0
     fi
   else
@@ -74,21 +158,31 @@ step() {
     # exit with a code of its own.
     if grep -q "429 Too Many Requests\|toomanyrequests" "$logfile" "$WORK"/logs/*.log 2>/dev/null; then
       echo "--- RATE-LIMITED: Docker Hub answered 429 Too Many Requests; this run is inconclusive, not a failure of the change. Run again later, or set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN."
+      result RATE-LIMITED "at step $STEP $name"
       $KEEP || teardown
       exit 3
     fi
+    result FAILED "step $STEP $name: $title (log $logfile)"
     $KEEP || teardown
     exit 1
   fi
 }
 
 # ---------------------------------------------------------------- setup
-log "Preparing (work dir: $WORK)"
-teardown
-rm -rf "$WORK"
-mkdir -p "$WORK/bin" "$WORK/home" "$WORK/gitops" "$WORK/logs"
-
-ssh-keygen -q -t ed25519 -N "" -C urbex-e2e -f "$WORK/id_e2e"
+if [ -n "$ONLY" ]; then
+  log "Running $ONLY on the platform in $WORK"
+  if [ ! -d "$WORK/gitops" ] || ! podman container exists e2e-urbex-komodo; then
+    echo "E2E_ONLY runs steps on the platform an earlier run left: run e2e/run.sh --keep, or E2E_STOP_AFTER=bootstrap-again e2e/run.sh, first" >&2
+    exit 1
+  fi
+  mkdir -p "$WORK/logs"
+else
+  log "Preparing (work dir: $WORK)"
+  teardown
+  rm -rf "$WORK"
+  mkdir -p "$WORK/bin" "$WORK/home" "$WORK/gitops" "$WORK/logs"
+  ssh-keygen -q -t ed25519 -N "" -C urbex-e2e -f "$WORK/id_e2e"
+fi
 
 # Versions come from mise.toml, like the developer's and the operator's.
 pinned() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$REPO/mise.toml"; }
@@ -103,6 +197,26 @@ fi
 podman build -q -t urbex-e2e-machine --build-arg "PUBKEY=$(cat "$WORK/id_e2e.pub")" e2e/machine >/dev/null 2>&1
 podman build -q -t urbex-e2e-runner --build-arg "MISE_VERSION=$(pinned min_version)" \
   -f e2e/runner/Containerfile "$REPO" >/dev/null 2>&1
+HUB_CACHE=$NET.190
+
+# commit_stack <dir> <fixture>: a stack's repo as a developer has it,
+# urbex.yaml from e2e/ committed; on an existing platform, a fixture this
+# checkout changed gets a commit of its own.
+commit_stack() {
+  mkdir -p "$WORK/$1"
+  cp "$2" "$WORK/$1/urbex.yaml"
+  [ -d "$WORK/$1/.git" ] || git -C "$WORK/$1" init -q -b main
+  git -C "$WORK/$1" add -A
+  git -C "$WORK/$1" diff --cached --quiet || git -C "$WORK/$1" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "$1"
+}
+
+if [ -n "$ONLY" ]; then
+  # What the steps named need of their stacks; the rest stays as the
+  # earlier run left it.
+  commit_stack site e2e/images/urbex.yaml
+  commit_stack shop e2e/linked/urbex.yaml
+  commit_stack box e2e/groups/urbex.yaml
+else
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
 
 # Docker Hub's images through a pull-through cache, as a platform's
@@ -111,7 +225,6 @@ podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
 # Hub's anonymous limit (100 an hour). With DOCKERHUB_USERNAME and
 # DOCKERHUB_TOKEN in the environment (never in the repo) its own pulls
 # are authenticated.
-HUB_CACHE=$NET.190
 hub_auth=()
 if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
   hub_auth=(-e REGISTRY_PROXY_USERNAME="$DOCKERHUB_USERNAME" -e REGISTRY_PROXY_PASSWORD="$DOCKERHUB_TOKEN")
@@ -127,19 +240,13 @@ git -C "$WORK/app" init -q -b main
 git -C "$WORK/app" add -A
 git -C "$WORK/app" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "hello v1"
 
-# A second stack, of a published image only, in a repo of its own.
-mkdir -p "$WORK/site"
-cp e2e/images/urbex.yaml "$WORK/site/"
-git -C "$WORK/site" init -q -b main
-git -C "$WORK/site" add -A
-git -C "$WORK/site" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "site"
+# A second stack, of a published image only, in a repo of its own; a
+# third, of applications linked together.
+commit_stack site e2e/images/urbex.yaml
+commit_stack shop e2e/linked/urbex.yaml
 
-# A third stack, of applications linked together, in a repo of its own.
-mkdir -p "$WORK/shop"
-cp e2e/linked/urbex.yaml "$WORK/shop/"
-git -C "$WORK/shop" init -q -b main
-git -C "$WORK/shop" add -A
-git -C "$WORK/shop" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "shop"
+# A fourth stack, two applications grouped on one machine and one alone.
+commit_stack box e2e/groups/urbex.yaml
 
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
@@ -150,12 +257,14 @@ for m in "${BASE_MACHINES[@]}"; do
 done
 machine hello-api-staging 210
 machine hello-api-prod 211
+fi
 
 # ------------------------------------------------------------- scenario
-step "bootstrap: scaffold urbex.platform.yaml" '
+step scaffold "bootstrap: scaffold urbex.platform.yaml" '
   urbex bootstrap
   test -f /work/gitops/urbex.platform.yaml'
 
+prep_bootstrap() {
 cat >"$WORK/gitops/urbex.platform.yaml" <<EOF
 domain: urbex.test
 git:
@@ -182,8 +291,9 @@ EOF
 if [ "$(uname -s)" = Darwin ]; then
   printf 'dns:\n  forwarders: [1.1.1.1, 9.9.9.9]\n' >>"$WORK/gitops/urbex.platform.yaml"
 fi
+}
 
-step "bootstrap: base services and platform setup" '
+step bootstrap "bootstrap: base services and platform setup" '
   urbex bootstrap
   expect_status $GITEA/api/v1/version 200
   expect_status $KOMODO/ 200
@@ -259,8 +369,8 @@ step "bootstrap: base services and platform setup" '
   echo "ok: platform is up"'
 
 # From here on Proxmox "has" the base services, as after a real apply.
-printf '%s\n' "${BASE_MACHINES[@]}" >"$WORK/pve-containers.txt"
-step "bootstrap again: idempotent" '
+prep_bootstrap-again() { printf '%s\n' "${BASE_MACHINES[@]}" >"$WORK/pve-containers.txt"; }
+step bootstrap-again "bootstrap again: idempotent" '
   urbex bootstrap >/tmp/again.log 2>&1 || { cat /tmp/again.log; fail "second bootstrap failed"; }
   cat /tmp/again.log
   if grep -E "changed=[1-9]" /tmp/again.log; then fail "a second bootstrap changed something"; fi
@@ -272,8 +382,8 @@ step "bootstrap again: idempotent" '
   grep -q "skipped: no Cloudflare" /tmp/progress.txt || fail "status --progress should show Cloudflare skipped"
   echo "ok: second bootstrap changed nothing"'
 
-echo hello-api-staging >>"$WORK/pve-containers.txt"
-step "apply staging: it follows main, and runs main's head right away" '
+prep_apply-staging() { echo hello-api-staging >>"$WORK/pve-containers.txt"; }
+step apply-staging "apply staging: it follows main, and runs main's head right away" '
   urbex apply staging >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply staging failed"; }
   cat /tmp/apply.log
   grep -q "staging follows main" /tmp/apply.log || fail "apply should say staging follows main"
@@ -298,13 +408,13 @@ step "apply staging: it follows main, and runs main's head right away" '
   urbex status | grep -F "Forgejo" | grep -F "http://git.urbex.urbex.test:3000" | grep -F "http://$NET.200:3000" | grep -qv "(missing)\|(points to" || fail "status should show gitea by internal name and LAN address, with its record"
   echo "ok: staging follows main"'
 
-step "a push to main is deployed to staging, with no command" '
+step push "a push to main is deployed to staging, with no command" '
   push_main v2
   expect_http http://$NET.210:8080/ "hello v2 from urbex (staging)" 240
   git -C /work/gitops pull -q "$(gitops_remote)" main 2>/dev/null
   git -C /work/gitops log -1 --format=%s | grep -q "hello main@" || fail "the deploy is not a commit to the gitops repo"'
 
-step "logs and resource metrics reach the observability stack, tagged platform, app or agent" '
+step telemetry "logs and resource metrics reach the observability stack, tagged platform, app or agent" '
   for _ in $(seq 1 30); do
     curl -s -o /dev/null http://$NET.210:8080/
     found=$(loki_lines "{kind=\"app\", project=\"hello\", service=\"api\", env=\"staging\"}" hello-app)
@@ -339,7 +449,7 @@ step "logs and resource metrics reach the observability stack, tagged platform, 
   done
   echo "ok: $found app log lines, $agents agent lines, platform logs and metrics of $platform base LXCs, per-container metrics; Grafana has both dashboards"'
 
-step "Keycloak: a realm per environment, a test user per role, an endpoint for members only" '
+step keycloak "Keycloak: a realm per environment, a test user per role, an endpoint for members only" '
   urbex users staging | tee /tmp/users.log
   pass=$(awk "\$1 == \"test-member\" {print \$2; exit}" /tmp/users.log)
   [ -n "$pass" ] || fail "no password for test-member"
@@ -355,7 +465,7 @@ step "Keycloak: a realm per environment, a test user per role, an endpoint for m
   [ "$code" = 401 ] || fail "/member with a forged token: $code, want 401"
   echo "ok: 401 without a token or with a forged one, 200 for test-member"'
 
-step "release: the commit staging runs, tagged - nothing rebuilt" '
+step release "release: the commit staging runs, tagged - nothing rebuilt" '
   runs=$(komodo_api read/ListUpdates "{}" | python3 -c "import sys,json;print(sum(1 for u in json.load(sys.stdin)[\"updates\"] if u[\"operation\"]==\"RunBuild\"))")
   urbex release >/tmp/release.log 2>&1 || { cat /tmp/release.log; fail "release failed"; }
   cat /tmp/release.log
@@ -365,14 +475,14 @@ step "release: the commit staging runs, tagged - nothing rebuilt" '
   [ "$runs" = "$after" ] || fail "a release must not rebuild ($runs builds before, $after after)"
   echo "ok: 0.1.0 is the image staging runs, retagged"'
 
-step "a tag pushed by hand is a release too" '
+step tag "a tag pushed by hand is a release too" '
   push_main v3
   expect_http http://$NET.210:8080/ "hello v3 from urbex (staging)" 240
   push_tag v0.2.0
   expect_image hello-api 0.2.0'
 
-echo hello-api-prod >>"$WORK/pve-containers.txt"
-step "apply prod: empty until promoted; promote: the release staging runs" '
+prep_apply-prod() { echo hello-api-prod >>"$WORK/pve-containers.txt"; }
+step apply-prod "apply prod: empty until promoted; promote: the release staging runs" '
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
   grep -q "no version to run yet" /tmp/apply.log || fail "a new prod must start empty"
   urbex promote
@@ -384,14 +494,14 @@ step "apply prod: empty until promoted; promote: the release staging runs" '
   urbex users prod | grep -q "No test users in prod" || fail "prod must have no test users"
   urbex promote | grep "Nothing to promote" || fail "promote did not notice there is nothing left to promote"'
 
-step "promote refuses what was never released" '
+step promote-unreleased "promote refuses what was never released" '
   push_main v4
   expect_http http://$NET.210:8080/ "hello v4 from urbex (staging)" 240
   urbex promote >/tmp/promote.log 2>&1 && fail "promoting an unreleased commit should fail"
   grep -q "not a release" /tmp/promote.log || { cat /tmp/promote.log; fail "unexpected promote error"; }
   expect_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 5'
 
-step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
+step secrets "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
   # Set from inside the GitOps repo: sops must not trip on its .sops.yaml.
   (cd /work/gitops && printf %s "s3cr3t-e2e" | urbex secret set --file /work/app/urbex.yaml staging api API_TOKEN)
   expect_http http://$NET.210:8080/secret "token=s3cr3t-e2e" 90
@@ -408,7 +518,7 @@ step "secrets: encrypted in the GitOps repo, decrypted only on the LXC" '
 # seconds after pulling it, and a push landing in that window is only
 # picked up by the next one or by the 15-minute reconcile. The urbex
 # commands deal with this themselves.
-step "configuration edited by hand in the GitOps repo; an unrelated commit restarts nothing" '
+step config "configuration edited by hand in the GitOps repo; an unrelated commit restarts nothing" '
   sleep 6
   cd /work/gitops
   git pull -q "$(gitops_remote)" main 2>/dev/null
@@ -418,13 +528,13 @@ step "configuration edited by hand in the GitOps repo; an unrelated commit resta
   sleep 6
   echo "# note" >>README.md && git add README.md && git commit -qm "Unrelated" && git push -q "$(gitops_remote)" HEAD:main 2>/dev/null
   unchanged_http http://$NET.211:8080/ "hello v3 from urbex (prod)" 20'
-step "the unrelated commit did not restart staging either" '
+step unrelated "the unrelated commit did not restart staging either" '
   started() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.210 "docker inspect -f {{.State.StartedAt}} hello-api-staging-app-1"; }
   before=$(started); sleep 20; after=$(started)
   [ -n "$before" ] && [ "$before" = "$after" ] || fail "staging was restarted ($before -> $after)"
   echo "ok: staging untouched since $before"'
 
-step "pin staging to a release: main no longer moves it; --follow-main resumes" '
+step pin "pin staging to a release: main no longer moves it; --follow-main resumes" '
   urbex deploy staging --version 0.1.0 | tee /tmp/pin.log
   grep -q "no longer follows main" /tmp/pin.log || fail "deploy should say staging stopped following main"
   expect_http http://$NET.210:8080/ "hello v2 from urbex" 5
@@ -433,14 +543,14 @@ step "pin staging to a release: main no longer moves it; --follow-main resumes" 
   urbex deploy staging --follow-main
   expect_http http://$NET.210:8080/ "hello v5 from urbex" 5'
 
-step "rollback: deploying an older release" '
+step rollback "rollback: deploying an older release" '
   urbex deploy prod --version 0.1.0
   expect_http http://$NET.211:8080/ "hello v2 from urbex (prod)" 5
   urbex deploy prod --version 9.9.9 >/tmp/bad.log 2>&1 && fail "deploying a release that does not exist should fail"
   grep -q "has no image" /tmp/bad.log || { cat /tmp/bad.log; fail "unexpected error for a missing release"; }
   echo "ok: a missing release is refused"'
 
-step "destroy staging: prod and the project Builds untouched" '
+step destroy-staging "destroy staging: prod and the project Builds untouched" '
   urbex destroy staging
   [ "$(komodo_names Stacks)" = "hello-api-prod urbex-build-cache urbex-gitea urbex-keycloak urbex-komodo urbex-observability urbex-technitium urbex-telemetry-hello-api-prod urbex-telemetry-urbex-gitea urbex-telemetry-urbex-keycloak urbex-telemetry-urbex-komodo urbex-telemetry-urbex-observability urbex-telemetry-urbex-technitium" ] || fail "unexpected stacks left (prod and the platform'"'"'s expected): $(komodo_names Stacks)"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "the project build should stay while prod exists: $(komodo_names Builds)"
@@ -452,16 +562,25 @@ step "destroy staging: prod and the project Builds untouched" '
 # What terraform does for real: the destroyed LXC is gone, and the next
 # apply creates a new one - at the address destroy freed, the lowest free
 # one - with a Periphery identity Komodo has never seen under that name.
-podman rm -f e2e-hello-api-staging >/dev/null
-machine hello-api-staging 210
-step "apply staging again on a new machine: it rejoins Komodo and follows main" '
+prep_reapply-staging() {
+  podman rm -f e2e-hello-api-staging >/dev/null
+  machine hello-api-staging 210
+}
+step reapply-staging "apply staging again on a new machine: it rejoins Komodo and follows main" '
   urbex apply staging
   expect_http http://$NET.210:8080/ "hello v5 from urbex (staging)" 5
   [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "internal dns record was not re-created"'
 
-machine site-web-prod 212
-echo site-web-prod >>"$WORK/pve-containers.txt"
-step "an application from a published image: pinned to a digest, updated, one environment" '
+prep_site() {
+  # The project steps take the addresses from .212 in their order: what
+  # an earlier run of any of them left goes first.
+  forget_project box box-pair-prod box-solo-prod
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
+  forget_project site site-web-prod
+  machine site-web-prod 212
+  echo site-web-prod >>"$WORK/pve-containers.txt"
+}
+step site "an application from a published image: pinned to a digest, updated, one environment" '
   cd /work/site
   # A new project whose urbex.yaml is in no git repository is refused
   # before anything is created (urbforge/urbex-cli#129).
@@ -492,8 +611,10 @@ step "an application from a published image: pinned to a digest, updated, one en
 
 # What Proxmox does for a mount point, on the machine standing in for the
 # LXC: a folder that is a mount point, with the lost+found of an ext4 one.
-podman exec e2e-site-web-prod sh -c 'mkdir -p /srv/volumes/web/data/lost+found && mount --bind /srv/volumes/web/data /srv/volumes/web/data'
-step "volumes: a named volume is a mount point, kept across redeploys; destroy asks for --delete-data" '
+prep_volumes() {
+  podman exec e2e-site-web-prod sh -c 'mkdir -p /srv/volumes/web/data/lost+found && mount --bind /srv/volumes/web/data /srv/volumes/web/data'
+}
+step volumes "volumes: a named volume is a mount point, kept across redeploys; destroy asks for --delete-data" '
   cd /work/site
   site_volume() { # site_volume <size>: the site stack, with a volume of that size
     cat >urbex.yaml <<YAML
@@ -546,16 +667,19 @@ YAML
 # site's LXC went with destroy --delete-data, and its address (.212) with
 # it. One machine per application, at the addresses apply allocates in
 # the manifest's order, the lowest free first.
-podman rm -f e2e-site-web-prod >/dev/null
-podman volume rm -f e2e-site-web-prod-docker e2e-site-web-prod-containerd >/dev/null 2>&1 || true
-machine shop-db-prod 212
-machine shop-api-prod 213
-machine shop-web-prod 214
-printf '%s\n' shop-db-prod shop-api-prod shop-web-prod >>"$WORK/pve-containers.txt"
-# The PostgreSQL's volume, a mount point as Proxmox makes it (see the
-# volumes step).
-podman exec e2e-shop-db-prod sh -c 'mkdir -p /srv/volumes/db/data/lost+found && mount --bind /srv/volumes/db/data /srv/volumes/db/data'
-step "linked applications: each starts once what it uses is ready, with what it needs to reach it" '
+prep_linked() {
+  forget_project box box-pair-prod box-solo-prod
+  forget_project site site-web-prod
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
+  machine shop-db-prod 212
+  machine shop-api-prod 213
+  machine shop-web-prod 214
+  printf '%s\n' shop-db-prod shop-api-prod shop-web-prod >>"$WORK/pve-containers.txt"
+  # The PostgreSQL's volume, a mount point as Proxmox makes it (see the
+  # volumes step).
+  podman exec e2e-shop-db-prod sh -c 'mkdir -p /srv/volumes/db/data/lost+found && mount --bind /srv/volumes/db/data /srv/volumes/db/data'
+}
+step linked "linked applications: each starts once what it uses is ready, with what it needs to reach it" '
   cd /work/shop
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the linked stack failed"; }
   cat /tmp/apply.log
@@ -654,7 +778,7 @@ step "linked applications: each starts once what it uses is ready, with what it 
   [ "$healthy" = 2 ] || fail "db and api should be healthy in Prometheus, $healthy are"
   echo "ok: db, then api, then web, each once what it uses was ready, with no restart; a provider without a healthcheck is refused"'
 
-step "the reconciler: a change waits for what it needs, a late provider is handled" '
+step reconciler "the reconciler: a change waits for what it needs, a late provider is handled" '
   on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.$1 "$2"; }
   app() { on $1 "docker inspect -f {{.State.Status}}/{{.Id}}/{{.RestartCount}} shop-$2-prod-app-1" 2>/dev/null; }
   expect_running() { # expect_running <octet> <service> <timeout-seconds>
@@ -723,15 +847,17 @@ step "the reconciler: a change waits for what it needs, a late provider is handl
 # for the reconciler to run twice without reaching their Periphery - then
 # start again, with Docker, Periphery and the applications. One restart
 # is no crash loop, and a Stack on an unreachable server is left alone.
-podman stop -t 10 e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
-sleep 150
-podman start e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
-for m in db api web; do
-  podman exec e2e-shop-$m-prod sh -c "printf 'nameserver $NET.202\nnameserver $NET.1\n' >/etc/resolv.conf"
-done
-podman exec e2e-shop-db-prod sh -c 'mount --bind /srv/volumes/db/data /srv/volumes/db/data'
+prep_reboot() {
+  podman stop -t 10 e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
+  sleep 150
+  podman start e2e-shop-db-prod e2e-shop-api-prod e2e-shop-web-prod >/dev/null
+  for m in db api web; do
+    podman exec e2e-shop-$m-prod sh -c "printf 'nameserver $NET.202\nnameserver $NET.1\n' >/etc/resolv.conf"
+  done
+  podman exec e2e-shop-db-prod sh -c 'mount --bind /srv/volumes/db/data /srv/volumes/db/data'
+}
 
-step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
+step reboot "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.$1 "$2"; }
   app() { on $1 "docker inspect -f {{.State.Status}}/{{.Id}}/{{.RestartCount}} shop-$2-prod-app-1" 2>/dev/null; }
   expect_running() { # expect_running <octet> <service> <timeout-seconds>
@@ -779,7 +905,7 @@ step "the reconciler: a reboot of the node is no crash loop, a crash loop is" '
   expect_running 214 web 480
   echo "ok: a reboot of the node alerted and deployed nothing; a crash-looping api held web back and failed the runs"'
 
-step "the reconciler: an environment destroyed is no longer looked after, its graph read by name" '
+step reconciler-destroy "the reconciler: an environment destroyed is no longer looked after, its graph read by name" '
   cd /work/shop
   [ -n "$(komodo_variable URBEX_GRAPH_SHOP_PROD)" ] || fail "the graph of shop prod should be in Komodo"
   urbex destroy prod --delete-data >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy prod of the linked stack failed"; }
@@ -796,7 +922,45 @@ step "the reconciler: an environment destroyed is no longer looked after, its gr
   if echo "$latest" | grep -q "shop-"; then fail "the run after the destroy still names shop: $latest"; fi
   echo "ok: the graph went with the environment, and the reconciler found no other"'
 
-log "PASSED ($STEP steps)"
+# shop prod went with its destroy, and its addresses (.212-.214) with it:
+# the group first, in the manifest's order, then solo.
+prep_group() {
+  forget_project site site-web-prod
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
+  forget_project box box-pair-prod box-solo-prod
+  machine box-pair-prod 212
+  machine box-solo-prod 213
+  printf '%s\n' box-pair-prod box-solo-prod >>"$WORK/pve-containers.txt"
+}
+step group "an LXC group: two applications on one machine, each with its own Stack, name and port" '
+  cd /work/box
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the grouped stack failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.212/ "Welcome to nginx" 5
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  expect_http http://$NET.213/ "Caddy" 5
+  [ "$(technitium_record web.box.urbex.urbex.test)" = "$NET.212" ] || fail "web should resolve to the group machine"
+  [ "$(technitium_record who.box.urbex.urbex.test)" = "$NET.212" ] || fail "who should resolve to the group machine"
+  [ "$(technitium_record solo.box.urbex.urbex.test)" = "$NET.213" ] || fail "solo should resolve to its own machine"
+  servers=$(komodo_names Servers)
+  echo "$servers" | grep -qw box-pair-prod || fail "no Komodo server for the group: $servers"
+  if echo "$servers" | grep -qE "box-(web|who)-prod"; then fail "the grouped applications should have no server of their own: $servers"; fi
+  for st in box-web-prod box-who-prod box-solo-prod; do
+    [ "$(komodo_stack_state $st)" = running ] || fail "stack $st: $(komodo_stack_state $st)"
+  done
+  [ "$(komodo_stack_state urbex-telemetry-box-pair-prod)" = running ] || fail "the group machine should have one telemetry agent"
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[\"entries\"]; assert \"box-pair-prod\" in d and \"box-web-prod\" not in d, list(d)" /work/gitops/state/allocations.json || fail "the ledger should hold the group machine, not its applications"
+  urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the grouped stack failed"; }
+  echo "ok: the group is one machine, its applications each a Stack and a name"'
+
+if [ -n "$ONLY" ]; then
+  [ "$RAN" -gt 0 ] || { echo "E2E_ONLY=$ONLY names no step: see e2e/README.md for their names" >&2; exit 1; }
+  log "PASSED ($RAN of $STEP steps: $ONLY)"
+  result PASSED "$RAN of $STEP steps: $ONLY"
+else
+  log "PASSED ($STEP steps)"
+  result PASSED "$STEP steps"
+fi
 if $KEEP; then
   echo "Machines left running (podman ps --filter name=e2e-); the next run removes them."
 else
