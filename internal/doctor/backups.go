@@ -18,10 +18,11 @@ type BackupReader interface {
 }
 
 // The backup token's privileges (ADR-0036): on the pool, to see its
-// machines and back them up; on the storage, to write the backups and
+// machines - Proxmox names a machine's pool only to who has Pool.Audit on
+// it - and back them up; on the storage, to write the backups and
 // list them. Nothing else.
 var (
-	backupPoolPrivileges    = []string{"VM.Audit", "VM.Backup"}
+	backupPoolPrivileges    = []string{"Pool.Audit", "VM.Audit", "VM.Backup"}
 	backupStoragePrivileges = []string{"Datastore.AllocateSpace", "Datastore.Audit"}
 )
 
@@ -102,7 +103,7 @@ func BackupChecks(ctx context.Context, b BackupReader, token string, cfg *platfo
 		add("backup token", Fail, strings.Join(problems, "; "), "on the node, as root: "+strings.Join(fixes, "; ")+" - see "+backupTokenDoc)
 		return
 	}
-	add("backup token", OK, "VM.Audit and VM.Backup on "+pool+", Datastore.AllocateSpace and Datastore.Audit on "+storage, "")
+	add("backup token", OK, "Pool.Audit, VM.Audit and VM.Backup on "+pool+", Datastore.AllocateSpace and Datastore.Audit on "+storage, "")
 
 	s, err := b.StorageStatus(ctx, cfg.Proxmox.Node, p.Storage)
 	switch {

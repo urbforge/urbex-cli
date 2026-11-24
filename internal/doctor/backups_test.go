@@ -38,7 +38,7 @@ func TestBackupChecks(t *testing.T) {
 		return r.Checks
 	}
 	full := map[string]map[string]bool{
-		"/pool/urbex":  {"VM.Audit": true, "VM.Backup": true},
+		"/pool/urbex":  {"Pool.Audit": true, "VM.Audit": true, "VM.Backup": true},
 		"/storage/pbs": {"Datastore.AllocateSpace": true, "Datastore.Audit": true},
 	}
 	goodStorage := proxmoxapi.Storage{Name: "pbs", Type: "pbs", Content: []string{"backup"}, Active: true, AvailGB: 900, TotalGB: 1000}
@@ -61,14 +61,14 @@ func TestBackupChecks(t *testing.T) {
 		t.Errorf("all good: %+v", c)
 	}
 	// Granted on / to the user and the token: propagates down.
-	root := map[string]map[string]bool{"/": {"VM.Audit": true, "VM.Backup": true, "Datastore.AllocateSpace": true, "Datastore.Audit": true}}
+	root := map[string]map[string]bool{"/": {"Pool.Audit": true, "VM.Audit": true, "VM.Backup": true, "Datastore.AllocateSpace": true, "Datastore.Audit": true}}
 	if c := run(fakeBackup{perms: root, userPerms: root, storage: goodStorage}, token, cfg); c[0].Status != OK {
 		t.Errorf("granted on /: %+v", c)
 	}
 
 	// The lab's twice-seen case: the user has the storage, the
 	// privilege-separated token doesn't.
-	tokenOnlyPool := map[string]map[string]bool{"/pool/urbex": {"VM.Audit": true, "VM.Backup": true}}
+	tokenOnlyPool := map[string]map[string]bool{"/pool/urbex": full["/pool/urbex"]}
 	c = run(fakeBackup{perms: tokenOnlyPool, userPerms: full, storage: goodStorage}, token, cfg)
 	if len(c) != 1 || c[0].Status != Fail ||
 		!strings.Contains(c[0].Detail, "the token lacks Datastore.AllocateSpace, Datastore.Audit on /storage/pbs, which its user urbex-backup@pve has") ||
@@ -76,7 +76,7 @@ func TestBackupChecks(t *testing.T) {
 		t.Errorf("token lacks what its user has: %+v", c)
 	}
 	// Both lack VM.Backup.
-	noBackup := map[string]map[string]bool{"/pool/urbex": {"VM.Audit": true}, "/storage/pbs": full["/storage/pbs"]}
+	noBackup := map[string]map[string]bool{"/pool/urbex": {"Pool.Audit": true, "VM.Audit": true}, "/storage/pbs": full["/storage/pbs"]}
 	c = run(fakeBackup{perms: noBackup, userPerms: noBackup, storage: goodStorage}, token, cfg)
 	if c[0].Status != Fail || !strings.Contains(c[0].Detail, "the token and its user urbex-backup@pve lack VM.Backup on /pool/urbex") ||
 		!strings.Contains(c[0].Fix, "--users urbex-backup@pve") {

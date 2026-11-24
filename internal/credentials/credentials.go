@@ -37,8 +37,8 @@ type Credentials struct {
 	// (urbforge/urbex-cli#94); optional, provided by the user.
 	ProxmoxMonitorToken string `yaml:"proxmoxMonitorToken,omitempty"`
 	// ProxmoxBackupToken is the token the platform backs its machines up
-	// with (ADR-0036's Proxmox layer, urbforge/urbex-cli#121): VM.Audit
-	// and VM.Backup on the pool, Datastore.AllocateSpace and
+	// with (ADR-0036's Proxmox layer, urbforge/urbex-cli#121): Pool.Audit,
+	// VM.Audit and VM.Backup on the pool, Datastore.AllocateSpace and
 	// Datastore.Audit on backups.proxmox.storage, nothing else. It is the
 	// one Proxmox token kept on the platform, in Komodo; optional,
 	// provided by the user.

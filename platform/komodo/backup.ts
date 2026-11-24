@@ -168,7 +168,7 @@ async function dumpDatabases(log: (line: string) => void): Promise<string[]> {
 async function backUpMachines(log: (line: string) => void): Promise<string[]> {
   const resources: Resource[] = await pve("GET", "/cluster/resources?type=vm");
   const machines = selectMachines(resources, CONFIG);
-  if (machines.length === 0) return [`no machine of pool ${CONFIG.pool} on ${CONFIG.node} to back up: does the backup token have VM.Audit on the pool?`];
+  if (machines.length === 0) return [`no machine of pool ${CONFIG.pool} on ${CONFIG.node} to back up: does the backup token have Pool.Audit and VM.Audit on the pool? Proxmox names a machine's pool only with Pool.Audit`];
   const storage = await pve("GET", `/nodes/${CONFIG.node}/storage/${encodeURIComponent(CONFIG.storage)}/status`);
   const failures: string[] = [];
   for (const run of runs(machines, CONFIG)) {

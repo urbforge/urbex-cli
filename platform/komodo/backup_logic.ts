@@ -35,7 +35,11 @@ export interface Resource {
   type?: string;
 }
 
-/** The machines of the pool on the node that the configuration backs up, by VMID. */
+/**
+ * The machines of the pool on the node that the configuration backs up,
+ * by VMID. A machine whose pool isn't named - Proxmox names it only to a
+ * token with Pool.Audit on the pool - is never backed up.
+ */
 export function selectMachines(resources: Resource[], cfg: BackupConfig): Resource[] {
   const platform = new Set(cfg.platform_hosts);
   return resources
