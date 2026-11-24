@@ -300,9 +300,24 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 	for _, k := range keys {
 		fmt.Fprintf(&b, "      %s: %q\n", k, vars[k])
 	}
-	if svc.Port != 0 {
+	// A network others join belongs to the net service of the
+	// application they join, which publishes every port on it: the
+	// application and the ones that join it have none of their own, and
+	// the application can be recreated without the others losing it.
+	switch {
+	case svc.Network != "":
+		fmt.Fprintf(&b, "    network_mode: \"container:%s\"\n", NetContainer(project, svc.Network, env))
+	case len(svc.Joiners) > 0:
+		b.WriteString("    network_mode: \"service:net\"\n")
+	case svc.Port != 0:
 		b.WriteString("    ports:\n")
 		fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
+	}
+	if len(svc.Capabilities) > 0 {
+		b.WriteString("    cap_add:\n")
+		for _, c := range svc.Capabilities {
+			fmt.Fprintf(&b, "      - %s\n", c)
+		}
 	}
 	if svc.Provides == manifest.InterfacePostgres {
 		b.WriteString("    ports:\n")
@@ -357,6 +372,9 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 	if links != nil && len(links.Waits) > 0 {
 		writeWait(&b, links)
 	}
+	if len(svc.Joiners) > 0 {
+		writeNet(&b, project, env, svc)
+	}
 	if named := svc.NamedVolumes(); len(named) > 0 {
 		b.WriteString("volumes:\n")
 		for _, v := range named {
@@ -369,6 +387,100 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 		}
 	}
 	return b.String()
+}
+
+// AppContainer is the name Docker gives an application's container: its
+// Stack's compose project (the Stack's name), service app.
+func AppContainer(project, service, env string) string {
+	return project + "-" + service + "-" + env + "-app-1"
+}
+
+// NetContainer is the container that holds the network of an application
+// others join: its Stack's net service.
+func NetContainer(project, service, env string) string {
+	return project + "-" + service + "-" + env + "-net-1"
+}
+
+// NetImage holds the network: it only sleeps. RejoinImage runs the
+// rejoin service: the Docker CLI.
+const (
+	NetImage    = "docker.io/library/busybox:1.37.0"
+	RejoinImage = "docker.io/library/docker:28.5.1-cli"
+)
+
+// rejoinScript is what the rejoin service runs, with NET and MEMBERS
+// set: once when it starts, and each time the net container starts, a
+// member that is stopped, or started before the net container's last
+// start, is restarted and joins the network anew. One started after it
+// is left alone. A member joined the net container by its ID, which
+// stays across a restart of the machine: they come back in any order,
+// and this puts them on the network again.
+const rejoinScript = `started() { docker inspect -f '{{.State.StartedAt}}' "$$1" 2>/dev/null | cut -c1-19; }
+before() { [ "$$1" != "$$2" ] && [ "$$(printf '%s\n%s\n' "$$1" "$$2" | sort | head -n 1)" = "$$1" ]; }
+rejoin() {
+  [ "$$(docker inspect -f '{{.State.Running}}' "$$NET" 2>/dev/null)" = true ] || return 0
+  since=$$(started "$$NET")
+  for m in $$MEMBERS; do
+    docker inspect "$$m" >/dev/null 2>&1 || continue
+    if [ "$$(docker inspect -f '{{.State.Running}}' "$$m")" != true ] || before "$$(started "$$m")" "$$since"; then
+      echo "$$m: joining $$NET's network again"
+      docker restart "$$m" >/dev/null || echo "$$m: could not restart it"
+    fi
+  done
+}
+rejoin
+docker events --filter "container=$$NET" --filter event=start --format '{{.Status}}' |
+  while read -r status; do rejoin; done
+`
+
+// writeNet adds the services of an application others join
+// (urbforge/urbex-cli#139): net holds the network they all share and
+// publishes every port on it - the application's and theirs - so that
+// the application can be recreated, with a new version, without the
+// others losing the network; rejoin restarts them all onto it when net
+// itself has started again.
+func writeNet(b *strings.Builder, project, env string, svc manifest.Service) {
+	var ports []int
+	if svc.Port != 0 {
+		ports = append(ports, svc.Port)
+	}
+	members := []string{AppContainer(project, svc.Name, env)}
+	for _, j := range svc.Joiners {
+		if j.Port != 0 {
+			ports = append(ports, j.Port)
+		}
+		members = append(members, AppContainer(project, j.Name, env))
+	}
+	b.WriteString("\n  # Holds the network app and the applications that join it share.\n")
+	b.WriteString("  net:\n")
+	b.WriteString("    image: " + NetImage + "\n")
+	b.WriteString("    restart: unless-stopped\n")
+	writeKindLabels(b, svc.Name+"-net", project, env)
+	b.WriteString("    command: [\"sleep\", \"infinity\"]\n")
+	if len(ports) > 0 {
+		b.WriteString("    ports:\n")
+	}
+	for _, p := range ports {
+		fmt.Fprintf(b, "      - \"%d:%d\"\n", p, p)
+	}
+	b.WriteString("\n  # Puts app and the applications that join it back on net's network\n")
+	b.WriteString("  # when net has started again (a restart of the machine).\n")
+	b.WriteString("  rejoin:\n")
+	b.WriteString("    image: " + RejoinImage + "\n")
+	b.WriteString("    restart: unless-stopped\n")
+	writeKindLabels(b, svc.Name+"-rejoin", project, env)
+	b.WriteString("    environment:\n")
+	fmt.Fprintf(b, "      NET: %q\n", NetContainer(project, svc.Name, env))
+	fmt.Fprintf(b, "      MEMBERS: %q\n", strings.Join(members, " "))
+	b.WriteString("    volumes:\n")
+	b.WriteString("      - /var/run/docker.sock:/var/run/docker.sock\n")
+	b.WriteString("    command:\n")
+	b.WriteString("      - sh\n")
+	b.WriteString("      - -c\n")
+	b.WriteString("      - |\n")
+	for _, line := range strings.Split(strings.TrimSuffix(rejoinScript, "\n"), "\n") {
+		b.WriteString("        " + line + "\n")
+	}
 }
 
 // HealthProbe is the shell command an application's healthcheck runs:

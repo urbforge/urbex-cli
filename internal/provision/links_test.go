@@ -103,3 +103,20 @@ func TestApply_RefusesACycle(t *testing.T) {
 		t.Errorf("expected a cycle refused, got %v", err)
 	}
 }
+
+// An application others join publishes their ports: a deploy of it
+// alone still knows them, from the whole manifest (urbforge/urbex-cli#139).
+func TestTarget_JoinersFromTheWholeManifest(t *testing.T) {
+	o, _, _, _, _ := imagesOrchestrator(&manifest.Manifest{
+		APIVersion: "urbex/v1", Project: "media", Environments: []string{"prod"},
+		Services: []manifest.Service{
+			{Name: "gluetun", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, Healthcheck: "/", LXC: "dl"},
+			{Name: "qbittorrent", Image: "linuxserver/qbittorrent", Version: "5", Port: 8080, LXC: "dl", Network: "gluetun", Uses: []string{"gluetun"}},
+		},
+	})
+	gluetun, _ := o.Manifest.Service("gluetun")
+	t1 := o.targetOf("prod", []manifest.Service{gluetun})
+	if len(t1.Services) != 1 || len(t1.Services[0].Joiners) != 1 || t1.Services[0].Joiners[0].Name != "qbittorrent" {
+		t.Errorf("gluetun alone should still have qbittorrent as a joiner: %+v", t1.Services)
+	}
+}

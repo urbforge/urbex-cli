@@ -216,6 +216,7 @@ if [ -n "$ONLY" ]; then
   commit_stack site e2e/images/urbex.yaml
   commit_stack shop e2e/linked/urbex.yaml
   commit_stack box e2e/groups/urbex.yaml
+  commit_stack vpn e2e/network/urbex.yaml
 else
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
 
@@ -247,6 +248,9 @@ commit_stack shop e2e/linked/urbex.yaml
 
 # A fourth stack, two applications grouped on one machine and one alone.
 commit_stack box e2e/groups/urbex.yaml
+
+# A fifth: an application joining another's network, on one machine.
+commit_stack vpn e2e/network/urbex.yaml
 
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
@@ -961,6 +965,51 @@ step group "an LXC group: two applications on one machine, each with its own Sta
   python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[\"entries\"]; assert \"box-pair-prod\" in d and \"box-web-prod\" not in d, list(d)" /work/gitops/state/allocations.json || fail "the ledger should hold the group machine, not its applications"
   urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the grouped stack failed"; }
   echo "ok: the group is one machine, its applications each a Stack and a name"'
+
+prep_network() {
+  forget_project site site-web-prod
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
+  forget_project box box-pair-prod box-solo-prod
+  forget_project vpn vpn-net-prod
+  machine vpn-net-prod 212
+  echo vpn-net-prod >>"$WORK/pve-containers.txt"
+}
+step network "a shared network: who and gw on net's network, gw recreated without who losing it, back after net restarts" '
+  cd /work/vpn
+  on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "$1"; }
+  started() { on "docker inspect -f {{.State.StartedAt}} $1"; }
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the shared network failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.212/ "Caddy" 5
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  net=$(on "docker inspect -f {{.Id}} vpn-gw-prod-net-1")
+  for c in vpn-gw-prod-app-1 vpn-who-prod-app-1; do
+    [ "$(on "docker inspect -f {{.HostConfig.NetworkMode}} $c")" = "container:$net" ] || fail "$c should be on net'"'"'s network: $(on "docker inspect -f {{.HostConfig.NetworkMode}} $c")"
+  done
+  on "docker inspect -f {{.HostConfig.CapAdd}} vpn-gw-prod-app-1" | grep -q NET_ADMIN || fail "gw should have NET_ADMIN"
+  on "docker port vpn-gw-prod-net-1" | grep -q "^8081/tcp" || fail "net should publish who'"'"'s port: $(on "docker port vpn-gw-prod-net-1")"
+  [ "$(komodo_stack_state vpn-gw-prod)" = running ] && [ "$(komodo_stack_state vpn-who-prod)" = running ] || fail "both stacks should run"
+
+  # gw recreated, as a new version does: who keeps the network, untouched.
+  who=$(started vpn-who-prod-app-1)
+  on "cd /etc/komodo/stacks/vpn-gw-prod/environments/prod/vpn/gw && docker compose -p vpn-gw-prod --env-file version.env up -d --force-recreate --no-deps app" >/dev/null 2>&1 || fail "recreating gw failed"
+  expect_http http://$NET.212/ "Caddy" 60
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  [ "$(started vpn-who-prod-app-1)" = "$who" ] || fail "who should not need a restart when gw is recreated"
+
+  # net restarts, as after a reboot: rejoin puts gw and who back on it.
+  on "docker restart vpn-gw-prod-net-1" >/dev/null
+  _deadline=$(( $(date +%s) + 120 ))
+  until [ "$(started vpn-who-prod-app-1)" != "$who" ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "who was not restarted after net: $(on "docker logs vpn-gw-prod-rejoin-1 2>&1 | tail -n 5")"
+    sleep 5
+  done
+  expect_http http://$NET.212/ "Caddy" 60
+  expect_http http://$NET.212:8081/ "Hostname" 60
+  on "docker logs vpn-gw-prod-rejoin-1 2>&1" | grep -q "vpn-who-prod-app-1: joining vpn-gw-prod-net-1" || fail "rejoin should say what it restarted"
+  urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the shared network failed"; }
+  echo "ok: who and gw share net'"'"'s network, gw is recreated without who noticing, and both are back after net restarts"'
+
 
 if [ -n "$ONLY" ]; then
   [ "$RAN" -gt 0 ] || { echo "E2E_ONLY=$ONLY names no step: see e2e/README.md for their names" >&2; exit 1; }

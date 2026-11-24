@@ -36,7 +36,7 @@ E2E_ONLY=site,volumes e2e/run.sh            # again: the steps clean up after th
 
 `E2E_ONLY` rebuilds `urbex` and the images from this checkout and keeps
 the machines, the GitOps repo and `e2e/.work`. It refreshes the stacks'
-`urbex.yaml` from `e2e/images` and `e2e/linked`, with a commit when this
+`urbex.yaml` from `e2e/images`, `e2e/linked`, `e2e/groups` and `e2e/network`, with a commit when this
 checkout changed them, and leaves the machines running. Steps run in the
 file's order, whatever order you name them in.
 
@@ -49,6 +49,7 @@ file's order, whatever order you name them in.
 | `linked` | the platform; it destroys a `site`, `shop` or `box` an earlier run left |
 | `reconciler`, `reboot`, `reconciler-destroy` | `linked`, then each the one before it |
 | `group` | the platform; it destroys a `site`, `shop` or `box` an earlier run left |
+| `network` | the platform; it destroys a `site`, `shop`, `box` or `vpn` an earlier run left |
 
 ## What is real and what isn't
 
