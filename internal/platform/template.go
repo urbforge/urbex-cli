@@ -53,6 +53,15 @@ keycloak:
 #   shares: # folders of the Proxmox node that applications mount by name
 #     media:
 #       path: /mnt/pve/nas/media
+
+# backups: # nothing is backed up until a target is set (ADR-0036)
+#   schedule: "03:00" # every day; default 03:00
+#   timezone: Europe/Rome # default Etc/UTC
+#   proxmox: # whole machines with vzdump; needs proxmox.pool and the proxmoxBackupToken credential
+#     storage: pbs # a Proxmox Backup Server datastore on another device, or a storage with the backup content
+#     # machines: [platform, projects] # default both
+#     # mode: snapshot # or suspend, stop; per machine in modes: {urbex-gitea: stop}
+#     # keep: {daily: 7, weekly: 4, monthly: 6}
 `
 
 // WriteTemplate writes a starter urbex.platform.yaml to path, to be edited

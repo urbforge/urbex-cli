@@ -362,6 +362,14 @@ func TestSetupEnv_KeepsTheGraphForTheReconciler(t *testing.T) {
 	if !reflect.DeepEqual(g.Stacks, want) || g.Project != "shop" || g.Env != "prod" {
 		t.Errorf("graph = %+v, want %+v", g, want)
 	}
+	// The PostgreSQL server's Stack is marked for the backup's dumps
+	// (ADR-0036); the others aren't.
+	if got := strings.Join(k.tags["Stack shop-db-prod"], ","); got != "app,shop,prod,dump-postgres" {
+		t.Errorf("db's tags = %s", got)
+	}
+	if got := strings.Join(k.tags["Stack shop-api-prod"], ","); got != "app,shop,prod" {
+		t.Errorf("api's tags = %s", got)
+	}
 
 	// No links anymore: the graph goes, and with the environment.
 	target.Links = nil

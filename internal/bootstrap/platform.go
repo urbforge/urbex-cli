@@ -56,21 +56,7 @@ func GraphVariable(project, env string) string {
 // ReconcileScript is the reconciler's code: its logic, without the
 // exports that only its tests need, then what drives it from Komodo.
 func ReconcileScript() (string, error) {
-	logic, err := platformassets.Komodo.ReadFile("komodo/reconcile_logic.ts")
-	if err != nil {
-		return "", err
-	}
-	driver, err := platformassets.Komodo.ReadFile("komodo/reconcile.ts")
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for _, line := range strings.SplitAfter(string(logic), "\n") {
-		b.WriteString(strings.TrimPrefix(line, "export "))
-	}
-	b.WriteString("\n")
-	b.Write(driver)
-	return b.String(), nil
+	return komodoScript("komodo/reconcile_logic.ts", "komodo/reconcile.ts")
 }
 
 // Scopes of the Gitea token bootstrap creates, used by the CLI and by
@@ -189,6 +175,8 @@ type KomodoAPI interface {
 	EnsureAction(ctx context.Context, name string, cfg komodo.ActionConfig) error
 	EnsureVariable(ctx context.Context, name, value string, secret bool) error
 	EnsureProcedure(ctx context.Context, name string, cfg komodo.ProcedureConfig) error
+	DeleteVariable(ctx context.Context, name string) error
+	DeleteResource(ctx context.Context, kind, name string) error
 	WaitServers(ctx context.Context, names []string, timeout time.Duration) ([]string, error)
 	TagResource(ctx context.Context, kind, name string, tags ...string) error
 	EnsureStack(ctx context.Context, name string, cfg komodo.StackConfig) error
@@ -420,6 +408,9 @@ func (o *Orchestrator) setupPlatform(ctx context.Context, clients Clients, gitop
 		},
 	}
 	if err := k.EnsureProcedure(ctx, GitOpsProcedure, gitops); err != nil {
+		return err
+	}
+	if err := o.setupBackups(ctx, k); err != nil {
 		return err
 	}
 	fmt.Fprintf(o.Out, "Komodo ready at %s (builder %s).\n", ep.KomodoURL, KomodoServerName)

@@ -84,6 +84,11 @@ docs/reference/cli.md in urbforge/urbex.`,
 				mon = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxMonitorToken, cfg.Proxmox.Insecure)
 			}
 			doctor.NodeMetricsChecks(ctx, mon, creds.ProxmoxMonitorToken, cfg, r)
+			var bk doctor.BackupReader
+			if cfg != nil && creds.ProxmoxBackupToken != "" {
+				bk = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxBackupToken, cfg.Proxmox.Insecure)
+			}
+			doctor.BackupChecks(ctx, bk, creds.ProxmoxBackupToken, cfg, r)
 			var cf doctor.CloudflareReader
 			if cfg != nil && creds.CloudflareToken != "" {
 				cf = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)

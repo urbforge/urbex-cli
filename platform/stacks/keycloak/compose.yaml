@@ -18,6 +18,9 @@ services:
         required: false
     volumes:
       - keycloak-db:/var/lib/postgresql/data
+      # Where the backup writes its pg_dump, next to the data directory
+      # (ADR-0036, urbforge/urbex-cli#121).
+      - keycloak-dumps:/var/lib/postgresql/urbex-dumps
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
@@ -46,3 +49,4 @@ services:
 
 volumes:
   keycloak-db:
+  keycloak-dumps:

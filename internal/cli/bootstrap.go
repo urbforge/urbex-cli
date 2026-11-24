@@ -107,6 +107,9 @@ func runBootstrap(cmd *cobra.Command, gitopsRepoPath string, dryRun bool, ev *ev
 		}
 		return fmt.Errorf("missing required credentials")
 	}
+	if cfg.Backups.Proxmox.Enabled() && creds.ProxmoxBackupToken == "" {
+		return bootstrap.ErrNoBackupToken
+	}
 
 	proxmoxClient := proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxToken, cfg.Proxmox.Insecure)
 

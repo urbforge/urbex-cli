@@ -317,3 +317,59 @@ func TestValidate_RegistryMirrors(t *testing.T) {
 		}
 	}
 }
+
+// backups: defaults, the schedule as Komodo's cron, and what is refused
+// (ADR-0036, urbforge/urbex-cli#121).
+func TestBackupsConfig(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	b := cfg.Backups
+	if b.Schedule != "03:00" || b.Timezone != "Etc/UTC" || b.Proxmox.Mode != "snapshot" ||
+		strings.Join(b.Proxmox.Machines, ",") != "platform,projects" ||
+		b.Proxmox.Keep != (Retention{Daily: 7, Weekly: 4, Monthly: 6}) {
+		t.Errorf("defaults = %+v", b)
+	}
+	if b.Proxmox.Enabled() || b.Proxmox.Backs(BackupPlatform) {
+		t.Error("the Proxmox layer is on without a storage")
+	}
+	if got := b.Cron(); got != "0 0 3 * * *" {
+		t.Errorf("Cron() = %q", got)
+	}
+	if got := (BackupsConfig{Schedule: "23:45"}).Cron(); got != "0 45 23 * * *" {
+		t.Errorf("Cron(23:45) = %q", got)
+	}
+	on := ProxmoxBackups{Storage: "pbs", Machines: []string{BackupProjects}}
+	if !on.Enabled() || on.Backs(BackupPlatform) || !on.Backs(BackupProjects) {
+		t.Errorf("Backs is wrong for %+v", on)
+	}
+}
+
+func TestValidate_Backups(t *testing.T) {
+	backupErrs := func(c Config) []string {
+		var got []string
+		for _, e := range c.Validate() {
+			if strings.HasPrefix(e, "backups.") {
+				got = append(got, e)
+			}
+		}
+		return got
+	}
+	ok := Config{Proxmox: ProxmoxConfig{Pool: "urbex"}, Backups: BackupsConfig{Schedule: "03:00", Timezone: "Europe/Rome",
+		Proxmox: ProxmoxBackups{Storage: "pbs", Machines: []string{"platform"}, Mode: "stop", Modes: map[string]string{"urbex-gitea": "suspend"}}}}
+	if got := backupErrs(ok); len(got) != 0 {
+		t.Errorf("valid backups refused: %v", got)
+	}
+	bad := Config{Backups: BackupsConfig{Schedule: "3am", Timezone: "Rome Italy",
+		Proxmox: ProxmoxBackups{Storage: "pbs", Machines: []string{"all"}, Mode: "fast", Modes: map[string]string{"x": "later"},
+			Keep: Retention{Daily: -1}}}}
+	got := strings.Join(backupErrs(bad), "\n")
+	for _, want := range []string{"backups.schedule", "backups.timezone", "needs proxmox.pool", "backups.proxmox.machines: all",
+		"backups.proxmox.mode: fast", "backups.proxmox.modes.x", "backups.proxmox.keep.daily"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no error about %s in:\n%s", want, got)
+		}
+	}
+	if got := backupErrs(Config{Proxmox: ProxmoxConfig{Pool: "urbex"}, Backups: BackupsConfig{Proxmox: ProxmoxBackups{Storage: "pbs:x"}}}); len(got) != 1 {
+		t.Errorf("storage name not refused: %v", got)
+	}
+}
