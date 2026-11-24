@@ -44,7 +44,7 @@ file's order, whatever order you name them in.
 |---|---|
 | `scaffold`, `bootstrap`, `bootstrap-again` | nothing: the platform itself |
 | `apply-staging` ... `reapply-staging` (the `hello` project: `push`, `telemetry`, `keycloak`, `release`, `tag`, `apply-prod`, `promote-unreleased`, `secrets`, `config`, `unrelated`, `pin`, `rollback`, `destroy-staging`) | each the ones before it: run them together, or the whole test |
-| `site` | the platform; it destroys a `site` an earlier run left |
+| `site` | the platform; it destroys a `site` or `shop` an earlier run left |
 | `volumes` | `site` |
 | `linked` | the platform; it destroys a `site` or `shop` an earlier run left |
 | `reconciler`, `reboot`, `reconciler-destroy` | `linked`, then each the one before it |

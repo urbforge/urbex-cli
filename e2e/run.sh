@@ -568,6 +568,9 @@ step reapply-staging "apply staging again on a new machine: it rejoins Komodo an
   [ "$(technitium_record api.staging.hello.urbex.urbex.test)" = "$NET.210" ] || fail "internal dns record was not re-created"'
 
 prep_site() {
+  # The project steps take the addresses from .212 in their order: what
+  # an earlier run of any of them left goes first.
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
   forget_project site site-web-prod
   machine site-web-prod 212
   echo site-web-prod >>"$WORK/pve-containers.txt"
