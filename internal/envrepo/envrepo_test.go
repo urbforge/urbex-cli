@@ -294,6 +294,26 @@ func TestCompose_Volumes(t *testing.T) {
 	}
 }
 
+// A device file of the machine is passed to the container as it is.
+func TestCompose_Devices(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc := manifest.Service{Name: "gluetun", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, Devices: []string{"/dev/net/tun"}}
+	if err := repo.WriteService("prod", "media", svc, svc.Image, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	compose := read(t, filepath.Join(repo.Path, "environments/prod/media/gluetun", ComposeFile))
+	if want := "    devices:\n      - /dev/net/tun:/dev/net/tun\n"; !strings.Contains(compose, want) {
+		t.Errorf("expected the device passed:\n%s", compose)
+	}
+	svc.Devices = nil
+	if err := repo.WriteService("prod", "media", svc, svc.Image, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if compose := read(t, filepath.Join(repo.Path, "environments/prod/media/gluetun", ComposeFile)); strings.Contains(compose, "devices:") {
+		t.Errorf("no devices, no devices block:\n%s", compose)
+	}
+}
+
 func TestCompose_NoVolumesNoVolumesBlock(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	svc := manifest.Service{Name: "api", Runtime: "go", Port: 8080}

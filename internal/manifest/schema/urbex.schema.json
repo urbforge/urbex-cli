@@ -148,6 +148,12 @@
             ]
           }
         },
+        "devices": {
+          "type": "array",
+          "description": "Device files of the Proxmox node the application's container gets, e.g. /dev/net/tun for a VPN client. An LXC gets them once the operator binds them as root@pam: urbex apply prints the pct set command and deploys the application only then, as for a share; urbex doctor checks them. A VM (machine: vm) has /dev/net/tun of its own.",
+          "items": { "type": "string", "pattern": "^/dev/[A-Za-z0-9._/-]+$" },
+          "uniqueItems": true
+        },
         "dockerfile": {
           "type": "string",
           "description": "Required when runtime is 'docker'. Path to the Dockerfile, relative to the repo root."

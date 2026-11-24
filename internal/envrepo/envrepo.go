@@ -344,6 +344,14 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 			fmt.Fprintf(&b, "      - %s:%s\n", v.Name, v.Path)
 		}
 	}
+	// A device file of the machine, passed as it is: on an LXC, once the
+	// operator has bound it from the node.
+	if len(svc.Devices) > 0 {
+		b.WriteString("    devices:\n")
+	}
+	for _, d := range svc.Devices {
+		fmt.Fprintf(&b, "      - %s:%s\n", d, d)
+	}
 	if svc.Healthcheck != "" && svc.Port != 0 {
 		b.WriteString("    healthcheck:\n")
 		fmt.Fprintf(&b, "      test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://localhost:%d%s\"]\n", svc.Port, svc.Healthcheck)
