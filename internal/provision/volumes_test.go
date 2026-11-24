@@ -504,3 +504,37 @@ func TestRefuseMovedVolumes(t *testing.T) {
 		t.Errorf("unmoved: %v", err)
 	}
 }
+
+// The applications of a group share their LXC: different shares get
+// different keys, a share two of them name is one command, and it is
+// read-only on the LXC only if both only read it (urbforge/urbex-cli#163).
+func TestApply_SharesOfAGroupShareTheLXCsKeys(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _, out := volumesOrchestrator(t)
+	o.Config.Storage.Shares = map[string]platform.Share{
+		"media":     {Path: "/mnt/pve/nas/media"},
+		"downloads": {Path: "/mnt/pve/nas/downloads"},
+	}
+	o.Manifest.Services = []manifest.Service{
+		{Name: "jellyfin", Image: "jellyfin/jellyfin", Version: "10", Port: 8096, LXC: "media", Volumes: []manifest.Volume{
+			{Share: "media", Path: "/media", ReadOnly: true},
+		}},
+		{Name: "radarr", Image: "linuxserver/radarr", Version: "5", Port: 7878, LXC: "media", Volumes: []manifest.Volume{
+			{Share: "media", Path: "/data/media"},
+			{Share: "downloads", Path: "/downloads"},
+		}},
+	}
+	err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "jellyfin, radarr") {
+		t.Fatalf("expected both applications waiting, got %v\n%s", err, out)
+	}
+	vmid := vmidOf(t, o, dir, "media") // the group's machine
+	media := fmt.Sprintf("pct set %d -mp0 /mnt/pve/nas/media,mp=/srv/shares/media\n", vmid)
+	downloads := fmt.Sprintf("pct set %d -mp1 /mnt/pve/nas/downloads,mp=/srv/shares/downloads\n", vmid)
+	if strings.Count(out.String(), media) != 1 || strings.Count(out.String(), downloads) != 1 {
+		t.Errorf("expected media (read-write: radarr writes) on mp0 once and downloads on mp1 once:\n%s", out)
+	}
+	if strings.Contains(out.String(), "ro=1") {
+		t.Errorf("radarr writes to media: the LXC's mount point can't be read-only:\n%s", out)
+	}
+}

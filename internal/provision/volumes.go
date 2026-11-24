@@ -335,6 +335,22 @@ type notReady struct {
 func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]notReady, error) {
 	node := o.Config.Proxmox.Node
 	var missing []notReady
+	// The applications of a group share their LXC (lxc:): a share is one
+	// mount point of it, read-only only if every application that names
+	// it reads only (each container still binds it as it asks), and the
+	// keys the operator's commands take are planned per machine.
+	readOnly := map[string]map[string]bool{}
+	for _, svc := range o.Manifest.Services {
+		host := MachineHostname(o.Manifest.Project, svc, env)
+		for _, v := range svc.Shares() {
+			if readOnly[host] == nil {
+				readOnly[host] = map[string]bool{}
+			}
+			ro, seen := readOnly[host][v.Share]
+			readOnly[host][v.Share] = v.ReadOnly && (ro || !seen)
+		}
+	}
+	planned := map[int]map[string]string{}
 	for _, svc := range o.Manifest.Services {
 		if len(svc.Volumes) == 0 {
 			continue
@@ -356,6 +372,12 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		for _, mp := range mps {
 			at[mp.Path] = mp
 			taken[mp.Index()] = true
+		}
+		if planned[vmid] == nil {
+			planned[vmid] = map[string]string{}
+		}
+		for _, key := range planned[vmid] {
+			taken[proxmoxapi.MountPoint{Key: key}.Index()] = true
 		}
 		free := func() (string, error) {
 			for i := 0; i < maxMountPoints; i++ {
@@ -402,19 +424,25 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		}
 		for _, v := range svc.Shares() {
 			source := o.Config.Storage.Shares[v.Share].Path
+			ro := readOnly[hostname][v.Share]
 			mp, ok := at[svc.LXCPath(v)]
-			if ok && path.Clean(mp.Volume) == path.Clean(source) && mp.ReadOnly == v.ReadOnly {
+			if ok && path.Clean(mp.Volume) == path.Clean(source) && mp.ReadOnly == ro {
 				mounted = append(mounted, mp.Key)
 				continue
 			}
-			key := mp.Key
-			if !ok {
+			key, isPlanned := planned[vmid][svc.LXCPath(v)]
+			switch {
+			case isPlanned:
+			case ok:
+				key = mp.Key
+			default:
 				if key, err = free(); err != nil {
 					return nil, err
 				}
 			}
+			planned[vmid][svc.LXCPath(v)] = key
 			command := fmt.Sprintf("pct set %d -%s %s,mp=%s", vmid, key, source, svc.LXCPath(v))
-			if v.ReadOnly {
+			if ro {
 				command += ",ro=1"
 			}
 			missing = append(missing, notReady{service: svc.Name, command: command})
@@ -517,6 +545,7 @@ func (o *Orchestrator) attachVMDisks(ctx context.Context, svc manifest.Service, 
 func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	services := map[string]bool{}
 	first := true
+	printed := map[string]bool{}
 	for _, m := range missing {
 		services[m.service] = true
 		if m.command == "" {
@@ -527,7 +556,10 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 			fmt.Fprintf(o.Out, "Some applications need shares their LXC doesn't have yet. Binding a folder of the Proxmox node needs root@pam: on the node, as root, run\n")
 			first = false
 		}
-		fmt.Fprintf(o.Out, "  %s\n", m.command)
+		if !printed[m.command] {
+			fmt.Fprintf(o.Out, "  %s\n", m.command)
+			printed[m.command] = true
+		}
 	}
 	names := make([]string, 0, len(services))
 	for name := range services {
