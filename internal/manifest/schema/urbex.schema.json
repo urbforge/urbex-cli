@@ -148,6 +148,12 @@
             ]
           }
         },
+        "devices": {
+          "type": "array",
+          "description": "Device files of the Proxmox node the application's container gets, e.g. /dev/net/tun for a VPN client. An LXC gets them once the operator binds them as root@pam: urbex apply prints the pct set command and deploys the application only then, as for a share; urbex doctor checks them. A VM (machine: vm) has /dev/net/tun of its own.",
+          "items": { "type": "string", "pattern": "^/dev/[A-Za-z0-9._/-]+$" },
+          "uniqueItems": true
+        },
         "dockerfile": {
           "type": "string",
           "description": "Required when runtime is 'docker'. Path to the Dockerfile, relative to the repo root."
@@ -171,6 +177,11 @@
           "type": "boolean",
           "default": false,
           "description": "Publish the service on the internet, at its environment's hostname, through the platform's Cloudflare Tunnel. Needs Cloudflare configured in urbex.platform.yaml."
+        },
+        "lxc": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$",
+          "description": "The group the application runs in: the applications of the stack with the same lxc share one LXC (or VM) per environment, <project>-<lxc>-<env>, each with its own Stack, internal name and healthcheck. Without it, the application has a machine of its own. Moving an application with named volumes to another group is refused, as any replacement. See ADR-0037."
         },
         "machine": {
           "type": "string",
