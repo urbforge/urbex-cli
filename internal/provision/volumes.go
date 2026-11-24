@@ -112,14 +112,24 @@ func (o *Orchestrator) checkVolumes() error {
 // namedVolumes returns, by hostname, the names of the named volumes of
 // the services' LXCs in env: those urbex.yaml declares, and those an
 // existing LXC still has, which urbex.yaml may no longer declare.
+//
+// On a machine of an LXC group (ADR-0037), several applications' volumes
+// are named <application>/<volume>.
 func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []manifest.Service, allocations map[string]allocation.Entry, existing map[int]bool) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, svc := range services {
 		names := map[string]bool{}
-		for _, v := range svc.NamedVolumes() {
-			names[v.Name] = true
+		for _, n := range out[MachineHostname(o.Manifest.Project, svc, env)] {
+			names[n] = true
 		}
-		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		label := func(name string) string { return name }
+		if svc.LXC != "" {
+			label = func(name string) string { return svc.Name + "/" + name }
+		}
+		for _, v := range svc.NamedVolumes() {
+			names[label(v.Name)] = true
+		}
+		hostname := MachineHostname(o.Manifest.Project, svc, env)
 		vmid := allocations[hostname].VMID
 		if svc.IsVM() && o.Volumes != nil && existing[vmid] {
 			// A VM's volumes are disks; an application that has just
@@ -129,7 +139,7 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 				return nil, fmt.Errorf("reading the disks of %s: %w", hostname, err)
 			}
 			for _, n := range vmNames {
-				names[n] = true
+				names[label(n)] = true
 			}
 		} else if o.Volumes != nil && existing[vmid] {
 			mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
@@ -138,7 +148,7 @@ func (o *Orchestrator) namedVolumes(ctx context.Context, env string, services []
 			}
 			for _, mp := range mps {
 				if name, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/"+svc.Name+"/"); ok {
-					names[name] = true
+					names[label(name)] = true
 				}
 			}
 		}
@@ -329,7 +339,7 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		if len(svc.Volumes) == 0 {
 			continue
 		}
-		hostname := Hostname(o.Manifest.Project, svc.Name, env)
+		hostname := MachineHostname(o.Manifest.Project, svc, env)
 		vmid := allocations[hostname].VMID
 		if svc.IsVM() {
 			if err := o.attachVMDisks(ctx, svc, hostname, vmid); err != nil {
@@ -541,9 +551,18 @@ func (o *Orchestrator) checkDeleteData(ctx context.Context, opts Options, servic
 		return err
 	}
 	var keeping []string
+	seen := map[string]bool{}
 	for _, svc := range services {
-		for _, name := range volumes[Hostname(o.Manifest.Project, svc.Name, opts.Env)] {
-			keeping = append(keeping, svc.Name+"/"+name)
+		hostname := MachineHostname(o.Manifest.Project, svc, opts.Env)
+		if seen[hostname] {
+			continue
+		}
+		seen[hostname] = true
+		for _, name := range volumes[hostname] {
+			if svc.LXC == "" {
+				name = svc.Name + "/" + name
+			}
+			keeping = append(keeping, name)
 		}
 	}
 	if len(keeping) == 0 {
@@ -553,5 +572,51 @@ func (o *Orchestrator) checkDeleteData(ctx context.Context, opts Options, servic
 		return fmt.Errorf("%s (%s) has named volumes: %s. Destroying it deletes them with their machines: run 'urbex destroy %s --delete-data' to do so", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "), opts.Env)
 	}
 	fmt.Fprintf(o.Out, "Deleting the named volumes of %s (%s) with their machines: %s.\n", o.Manifest.Project, opts.Env, strings.Join(keeping, ", "))
+	return nil
+}
+
+// refuseMovedVolumes refuses to move an application with named volumes
+// away from a machine that stays - out of an LXC group, into another, or
+// into one from a group (ADR-0037): it would start with empty volumes on
+// its new machine while its data stays on the old one. Moving it off a
+// machine that goes is refuseReplacingVolumes' case. With deleteData it
+// goes ahead, saying that the old volumes stay where they are until their
+// machine is destroyed.
+func (o *Orchestrator) refuseMovedVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry, existing map[int]bool, deleteData bool) error {
+	if o.Volumes == nil {
+		return nil
+	}
+	machineOf := map[string]string{}
+	for _, svc := range o.Manifest.Services {
+		machineOf[svc.Name] = MachineHostname(o.Manifest.Project, svc, env)
+	}
+	var moved []string
+	for _, hostname := range slices.Sorted(maps.Keys(allocations)) {
+		vmid := allocations[hostname].VMID
+		if !existing[vmid] {
+			continue
+		}
+		mps, err := o.Volumes.MountPoints(ctx, o.Config.Proxmox.Node, vmid)
+		if err != nil {
+			return fmt.Errorf("reading the mount points of %s: %w", hostname, err)
+		}
+		for _, mp := range mps {
+			rest, ok := strings.CutPrefix(mp.Path, manifest.VolumesRoot+"/")
+			if !ok {
+				continue
+			}
+			app, volume, _ := strings.Cut(rest, "/")
+			if now, declared := machineOf[app]; declared && now != hostname {
+				moved = append(moved, fmt.Sprintf("%s/%s (on %s, the application now on %s)", app, volume, hostname, now))
+			}
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	if !deleteData {
+		return fmt.Errorf("moving an application to another machine leaves its named volumes behind: %s. Move the data first (back it up, apply, restore), or run 'urbex apply %s --delete-data' to start it with empty volumes", strings.Join(moved, "; "), env)
+	}
+	fmt.Fprintf(o.Out, "Starting moved applications with empty volumes; the old ones stay on their machine until it is destroyed: %s.\n", strings.Join(moved, "; "))
 	return nil
 }

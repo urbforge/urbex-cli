@@ -68,7 +68,7 @@ func Project(ctx context.Context, proxmox ProxmoxLister, node string, ledger *al
 
 	statuses := make([]ServiceStatus, 0, len(services))
 	for _, svc := range services {
-		hostname := provision.Hostname(project, svc.Name, env)
+		hostname := provision.MachineHostname(project, svc, env)
 		_, allocated := ledger.Lookup(hostname)
 		statuses = append(statuses, ServiceStatus{
 			Service:     svc.Name,

@@ -443,7 +443,7 @@ func projectStatus(ctx context.Context, warn func(string), client status.Proxmox
 	dns := newDNSChecker(cfg, creds)
 	for _, svc := range m.Deployables() {
 		e := envEndpointView{Service: svc.Name}
-		if entry, ok := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env)); ok && !svc.IsWeb() {
+		if entry, ok := ledger.Lookup(provision.MachineHostname(m.Project, svc, env)); ok && !svc.IsWeb() {
 			e.LAN = provision.LANAddress(entry.IP, svc.Port)
 			if svc.Provides == manifest.InterfacePostgres {
 				// tcp, internal (ADR-0030)
