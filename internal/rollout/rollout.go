@@ -290,6 +290,14 @@ func (r *Rollout) deleteLANWebhook(ctx context.Context, project string) error {
 	return r.Gitea.DeleteWebhook(ctx, r.Org, project, lan)
 }
 
+// NeedsLocalTrunk reports whether apply needs the project's local repo:
+// Forgejo doesn't have its main branch yet, which apply creates from
+// the local HEAD. When Forgejo can't be asked, it assumes so.
+func (r *Rollout) NeedsLocalTrunk(ctx context.Context, project string) bool {
+	exists, err := r.Gitea.BranchExists(ctx, r.Org, project, bootstrap.TrunkBranch)
+	return err != nil || !exists
+}
+
 // ensureTrunk creates the project's main branch on Gitea from the local
 // HEAD if Gitea doesn't have it yet. An existing branch is never
 // touched.
