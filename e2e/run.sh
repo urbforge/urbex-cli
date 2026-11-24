@@ -587,6 +587,15 @@ step site "an application from a published image: pinned to a digest, updated, o
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod failed"; }
   cat /tmp/apply.log
   expect_http http://$NET.212/ "Welcome to nginx" 5
+  web() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "$@"; }
+  web "docker exec site-web-prod-app-1 sh -c \"command -v wget\"" && fail "nginx'"'"'s image should have no wget, for the curl fallback to be tested"
+  health=""
+  for i in $(seq 1 20); do
+    health=$(web "docker inspect -f {{.State.Health.Status}} site-web-prod-app-1")
+    [ "$health" = healthy ] && break
+    sleep 5
+  done
+  [ "$health" = healthy ] || fail "the healthcheck should pass with curl only: $health, $(web "docker inspect -f {{json .State.Health.Log}} site-web-prod-app-1" | tail -c 600)"
   grep -qE "^VERSION=1[.]29@sha256:[0-9a-f]{64}$" /work/gitops/environments/prod/site/web/version.env || fail "version.env should pin the tag to its digest"
   grep -q "image: docker.io/library/nginx:\${VERSION}" /work/gitops/environments/prod/site/web/compose.yaml || fail "the stack should pull the published image"
   [ "$(komodo_names Builds)" = "hello-api" ] || fail "an application from an image needs no Build: $(komodo_names Builds)"
@@ -601,7 +610,7 @@ step site "an application from a published image: pinned to a digest, updated, o
   grep -q "only prod" /tmp/promote.log || { cat /tmp/promote.log; fail "unexpected promote error"; }
   urbex release >/tmp/release.log 2>&1 && fail "release should not apply to a prod-only stack"
   grep -q "only prod" /tmp/release.log || { cat /tmp/release.log; fail "unexpected release error"; }
-  echo "ok: site runs nginx from its published image, pinned, updated by tag"'
+  echo "ok: site runs nginx from its published image, pinned, updated by tag, healthy with curl only"'
 
 # What Proxmox does for a mount point, on the machine standing in for the
 # LXC: a folder that is a mount point, with the lost+found of an ext4 one.

@@ -2,12 +2,14 @@ package envrepo
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/secrets"
+	"gopkg.in/yaml.v3"
 )
 
 func service() manifest.Service {
@@ -43,7 +45,7 @@ func TestWriteService_GeneratesComposeAndSeedsConfigOnce(t *testing.T) {
 		"required: false",
 		`PORT: "8080"`,
 		`- "8080:8080"`,
-		`"http://localhost:8080/healthz"`,
+		`'http://localhost:8080/healthz'`,
 	} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("expected %q in compose.yaml:\n%s", want, compose)
@@ -291,6 +293,70 @@ func TestCompose_Volumes(t *testing.T) {
 	}
 	if strings.Contains(compose, "media:\n    driver") {
 		t.Errorf("a share is not a Docker volume:\n%s", compose)
+	}
+}
+
+// The healthcheck probes with wget, or curl when the image has no wget,
+// and says so when it has neither.
+func TestCompose_HealthcheckWgetOrCurl(t *testing.T) {
+	repo := Repo{Path: t.TempDir()}
+	svc := manifest.Service{Name: "vault", Image: "vaultwarden/server", Version: "1", Port: 80, Healthcheck: "/alive"}
+	if err := repo.WriteService("prod", "vault", svc, svc.Image, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	compose := read(t, filepath.Join(repo.Path, "environments/prod/vault/vault", ComposeFile))
+	var c struct {
+		Services map[string]struct {
+			Healthcheck struct {
+				Test []string `yaml:"test"`
+			} `yaml:"healthcheck"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal([]byte(compose), &c); err != nil {
+		t.Fatalf("compose isn't YAML: %v\n%s", err, compose)
+	}
+	test := c.Services["app"].Healthcheck.Test
+	if len(test) != 2 || test[0] != "CMD-SHELL" || test[1] != HealthProbe("http://localhost:80/alive") {
+		t.Fatalf("healthcheck test = %q", test)
+	}
+	for _, want := range []string{"wget -q --spider 'http://localhost:80/alive'", "curl -fsS -o /dev/null 'http://localhost:80/alive'", "neither wget nor curl"} {
+		if !strings.Contains(test[1], want) {
+			t.Errorf("expected %q in %s", want, test[1])
+		}
+	}
+}
+
+// The probe runs in sh, as Docker runs CMD-SHELL: with wget, with curl
+// only, and with neither. A quote in the path stays in the URL.
+func TestHealthProbe_RunsInSh(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	bin := t.TempDir()
+	fake := func(name string) {
+		script := "#!/bin/sh\necho " + name + " \"$@\" >> " + bin + "/calls\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func() (string, error) {
+		os.Remove(bin + "/calls")
+		cmd := exec.Command("/bin/sh", "-c", HealthProbe("http://localhost:80/it's"))
+		cmd.Env = []string{"PATH=" + bin}
+		out, err := cmd.CombinedOutput()
+		calls, _ := os.ReadFile(bin + "/calls")
+		return string(calls) + string(out), err
+	}
+	if out, err := run(); err == nil || !strings.Contains(out, "neither wget nor curl") {
+		t.Errorf("neither: err %v, %s", err, out)
+	}
+	fake("curl")
+	if out, err := run(); err != nil || out != "curl -fsS -o /dev/null http://localhost:80/it's\n" {
+		t.Errorf("curl only: err %v, %q", err, out)
+	}
+	fake("wget")
+	if out, err := run(); err != nil || out != "wget -q --spider http://localhost:80/it's\n" {
+		t.Errorf("wget: err %v, %q", err, out)
 	}
 }
 
