@@ -76,18 +76,37 @@ export function pruneBackups(keep: BackupConfig["keep"]): string {
 /**
  * The form of POST /nodes/{node}/vzdump for a run. A Proxmox Backup
  * Server compresses and deduplicates on its own; any other storage gets
- * zstd.
+ * zstd. No prune-backups: vzdump takes it only with Datastore.Allocate on
+ * the storage - which may create and remove storages - so the retention
+ * is applied after, machine by machine (prunePath), with what the backup
+ * token has.
  */
 export function vzdumpForm(run: Run, cfg: BackupConfig, storageType: string): Record<string, string> {
   const form: Record<string, string> = {
     vmid: run.vmids.join(","),
     storage: cfg.storage,
     mode: run.mode,
-    "prune-backups": pruneBackups(cfg.keep),
     "notes-template": "{{guestname}} - urbex",
   };
   if (storageType !== "pbs") form.compress = "zstd";
   return form;
+}
+
+/**
+ * The path of a machine's prune on the storage: GET lists what the
+ * retention keeps and removes, DELETE removes it. With a vmid, Proxmox
+ * asks only Datastore.AllocateSpace on the storage and VM.Backup on the
+ * machine - the backup token's - and considers only that machine's
+ * backups.
+ */
+export function prunePath(cfg: BackupConfig, vmid: number): string {
+  const q = new URLSearchParams({ vmid: String(vmid), "prune-backups": pruneBackups(cfg.keep) });
+  return `/nodes/${cfg.node}/storage/${encodeURIComponent(cfg.storage)}/prunebackups?${q}`;
+}
+
+/** What a prune's listing removes: the volumes marked "remove". */
+export function pruned(listing: { volid: string; mark: string }[]): string[] {
+  return listing.filter((b) => b.mark === "remove").map((b) => b.volid).sort();
 }
 
 /** Whether a Proxmox task's exit status is a success: OK, or OK with warnings. */

@@ -181,6 +181,26 @@ async function backUpMachines(log: (line: string) => void): Promise<string[]> {
       failures.push(`vzdump ${run.mode} of ${run.names.join(", ")} to ${CONFIG.storage} failed (${message(err)})`);
     }
   }
+  // The retention, machine by machine: only the backed-up machines'
+  // backups, never another guest's.
+  let removed = 0;
+  for (const m of machines) {
+    const path = prunePath(CONFIG, m.vmid);
+    try {
+      const gone = pruned(await pve("GET", path));
+      if (gone.length === 0) continue;
+      const upid = await pve("DELETE", path);
+      if (typeof upid === "string" && upid.startsWith("UPID:")) {
+        const exit = await waitTask(upid);
+        if (!taskSucceeded(exit)) throw new Error(exit);
+      }
+      removed += gone.length;
+      log(`${m.name}: ${gone.length} old backup(s) removed (${gone.join(", ")})`);
+    } catch (err) {
+      failures.push(`${m.name}: old backups not pruned (${message(err)})`);
+    }
+  }
+  if (removed === 0) log(`retention ${pruneBackups(CONFIG.keep)}: nothing to remove`);
   return failures;
 }
 

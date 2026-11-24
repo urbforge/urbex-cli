@@ -6,7 +6,9 @@ import {
   FORGEJO_DUMP,
   POSTGRES_DUMP,
   projectDumps,
+  pruned,
   pruneBackups,
+  prunePath,
   type Resource,
   runs,
   selectMachines,
@@ -71,7 +73,7 @@ Deno.test("vzdump's form: retention, zstd but on a PBS", () => {
   const pbs = vzdumpForm(run, cfg(), "pbs");
   eq(pbs.vmid, "9001,9003", "vmid");
   eq(pbs.storage, "pbs", "storage");
-  eq(pbs["prune-backups"], "keep-daily=7,keep-weekly=4,keep-monthly=6", "prune-backups");
+  eq(pbs["prune-backups"], undefined, "no prune-backups: it needs Datastore.Allocate");
   eq(pbs.compress, undefined, "no compress on a PBS");
   eq(vzdumpForm(run, cfg(), "nfs").compress, "zstd", "compress elsewhere");
 });
@@ -104,4 +106,13 @@ Deno.test("the dump commands fit a terminal's line and fail as a whole", () => {
   }
   eq(dumpCommand({ stack: "urbex-gitea", service: "gitea", kind: "forgejo" }), FORGEJO_DUMP, "forgejo");
   eq(dumpCommand({ stack: "x", service: "app", kind: "postgres" }), POSTGRES_DUMP, "postgres");
+});
+
+Deno.test("the retention, one machine at a time, with what the token has", () => {
+  eq(prunePath(cfg(), 9001), "/nodes/pve/storage/pbs/prunebackups?vmid=9001&prune-backups=keep-daily%3D7%2Ckeep-weekly%3D4%2Ckeep-monthly%3D6", "path");
+  eq(pruned([
+    { volid: "pbs:backup/ct/9001/2026-11-20T01:00:00Z", mark: "remove" },
+    { volid: "pbs:backup/ct/9001/2026-11-24T01:00:00Z", mark: "keep" },
+    { volid: "pbs:backup/ct/9001/2026-11-01T01:00:00Z", mark: "protected" },
+  ]), ["pbs:backup/ct/9001/2026-11-20T01:00:00Z"], "only what is marked remove");
 });
