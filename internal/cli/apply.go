@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/urbforge/urbex-cli/internal/projectrepo"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/runner"
 )
@@ -51,6 +52,10 @@ removing an application that has them from urbex.yaml, unless
 bound by the operator: until an application's are, apply prints the
 pct commands, deploys the rest, and fails.
 
+urbex.yaml must be committed in the git repository at --repo-dir until
+the project has its main branch on Forgejo: apply checks it before
+creating anything.
+
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 		Args: cobra.ExactArgs(1),
@@ -67,6 +72,11 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 
 			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, repoDir, true)
 			if err != nil {
+				return err
+			}
+			// Before anything is created: the project's repo on Forgejo
+			// comes from urbex.yaml's git repository.
+			if err := checkProjectRepo(cmd, o, repoDir, manifestPath); err != nil {
 				return err
 			}
 
@@ -92,4 +102,16 @@ by 'urbex bootstrap'). See docs/reference/cli.md in urbforge/urbex.`,
 	events.Register(cmd)
 
 	return cmd
+}
+
+// checkProjectRepo refuses a project whose urbex.yaml isn't committed in
+// the git repository at repoDir, unless Forgejo already has the
+// project's main branch: apply would otherwise create the machines and
+// stop when it pushes the branch.
+func checkProjectRepo(cmd *cobra.Command, o *project, repoDir, manifestPath string) error {
+	local := projectrepo.Check(cmd.Context(), repoDir, manifestPath)
+	if local == nil || (o.rollout != nil && !o.rollout.NeedsLocalTrunk(cmd.Context(), o.Manifest.Project)) {
+		return nil
+	}
+	return local
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/urbforge/urbex-cli/internal/manifest"
+	"github.com/urbforge/urbex-cli/internal/platform"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 )
 
@@ -150,5 +151,33 @@ func TestApply_DevicesOfAGroupShareTheLXCsKeys(t *testing.T) {
 	fuse := fmt.Sprintf("pct set %d -dev1 /dev/fuse", vmid)
 	if strings.Count(out.String(), tun) != 1 || strings.Count(out.String(), fuse) != 1 {
 		t.Errorf("expected %q once and %q once:\n%s", tun, fuse, out)
+	}
+}
+
+// A group's LXC with a share and a device: the share's mount point and
+// the device are planned apart, mp<n> and dev<n>, each from 0 - one key
+// never takes the other's number.
+func TestApply_AGroupsShareAndDeviceKeysApart(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _, out := devicesOrchestrator(t)
+	o.Config.Storage.Shares = map[string]platform.Share{"downloads": {Path: "/mnt/pve/nas/downloads"}}
+	o.Manifest.Services = []manifest.Service{
+		{Name: "gluetun", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, LXC: "dl", Devices: []string{"/dev/net/tun"}},
+		{Name: "qbittorrent", Image: "linuxserver/qbittorrent", Version: "5", Port: 8080, LXC: "dl", Volumes: []manifest.Volume{
+			{Share: "downloads", Path: "/downloads"},
+		}, Devices: []string{"/dev/fuse"}},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir}); err == nil {
+		t.Fatal("expected apply to wait for the share and the devices")
+	}
+	vmid := vmidOf(t, o, dir, "dl")
+	for _, want := range []string{
+		fmt.Sprintf("pct set %d -dev0 /dev/net/tun", vmid),
+		fmt.Sprintf("pct set %d -mp0 /mnt/pve/nas/downloads,mp=/srv/shares/downloads", vmid),
+		fmt.Sprintf("pct set %d -dev1 /dev/fuse", vmid),
+	} {
+		if strings.Count(out.String(), want) != 1 {
+			t.Errorf("expected %q once:\n%s", want, out)
+		}
 	}
 }

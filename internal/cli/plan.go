@@ -8,7 +8,7 @@ import (
 
 func newPlanCmd() *cobra.Command {
 	var manifestPath string
-	var gitopsRepoPath string
+	var gitopsRepoPath, repoDir string
 
 	cmd := &cobra.Command{
 		Use:   "plan <env>",
@@ -17,6 +17,9 @@ func newPlanCmd() *cobra.Command {
 (one per service per environment), materializes the Terraform module for
 this project+env into the GitOps repo, and runs 'terraform plan'. Does
 not apply anything or run Ansible - see 'urbex apply' for that.
+
+Like apply, it refuses an urbex.yaml that isn't committed in the git
+repository at --repo-dir while the project has no main branch on Forgejo.
 
 Requires urbex.platform.yaml to already exist in --gitops-repo (created
 by 'urbex bootstrap').`,
@@ -27,8 +30,12 @@ by 'urbex bootstrap').`,
 				return err
 			}
 
-			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, "", true)
+			o, err := newProvisionOrchestrator(cmd, manifestPath, repoPath, repoDir, true)
 			if err != nil {
+				return err
+			}
+			// What apply checks first, so that plan says it too.
+			if err := checkProjectRepo(cmd, o, repoDir, manifestPath); err != nil {
 				return err
 			}
 
@@ -41,6 +48,7 @@ by 'urbex bootstrap').`,
 
 	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
+	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, which urbex.yaml must be committed in until the project is on Forgejo")
 
 	return cmd
 }

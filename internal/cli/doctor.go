@@ -17,6 +17,7 @@ import (
 	"github.com/urbforge/urbex-cli/internal/grafana"
 	"github.com/urbforge/urbex-cli/internal/manifest"
 	"github.com/urbforge/urbex-cli/internal/platform"
+	"github.com/urbforge/urbex-cli/internal/projectrepo"
 	"github.com/urbforge/urbex-cli/internal/provision"
 	"github.com/urbforge/urbex-cli/internal/proxmoxapi"
 	"github.com/urbforge/urbex-cli/internal/version"
@@ -27,7 +28,7 @@ import (
 var errDoctorFailed = fmt.Errorf("some checks failed")
 
 func newDoctorCmd() *cobra.Command {
-	var gitopsRepoPath, manifestPath string
+	var gitopsRepoPath, manifestPath, repoDir string
 	var testAlerts bool
 	var output outputFlag
 
@@ -41,8 +42,9 @@ Proxmox token, the node (the API answers, the node, pool, storage, LXC
 template and bridge exist, the token has the privileges urbex needs, and the optional
 read-only token for the node's metrics); and,
 with Cloudflare in the config, the token and the zone; with
-observability.alerts, the channels' credentials; and, run in a project
-whose urbex.yaml declares devices, that each application's LXC has them.
+observability.alerts, the channels' credentials; and, run in a project's
+folder, that its urbex.yaml is committed in a git repository and, when
+it declares devices, that each application's LXC has them.
 
 It starts with urbex's own version. Each check is ok, warn, fail or skip, with what to do when it isn't ok. It
 exits non-zero when a check failed. It changes nothing, and prints no
@@ -103,6 +105,9 @@ docs/reference/cli.md in urbforge/urbex.`,
 				at = grafana.New(ep.Grafana, "admin", creds.GrafanaAdminPassword)
 			}
 			doctor.AlertsChecks(ctx, at, cfg, creds, r)
+			if _, err := os.Stat(manifestPath); err == nil {
+				doctor.ProjectChecks(manifestPath, true, projectrepo.Check(ctx, repoDir, manifestPath), r)
+			}
 			if cfg != nil {
 				machines, err := deviceMachines(manifestPath, ws.GitOpsRepo, cfg)
 				if err != nil {
@@ -128,7 +133,8 @@ docs/reference/cli.md in urbforge/urbex.`,
 		},
 	}
 	cmd.Flags().BoolVar(&testAlerts, "test-alerts", false, "send a test message through each channel of observability.alerts")
-	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest, for its devices (skipped when there is none)")
+	cmd.Flags().StringVar(&manifestPath, "file", "urbex.yaml", "path to the app manifest, when run in a project: that it is committed, and its devices (skipped when there is none)")
+	cmd.Flags().StringVar(&repoDir, "repo-dir", ".", "path to the app's git repo, which urbex.yaml must be committed in")
 	cmd.Flags().StringVar(&gitopsRepoPath, "gitops-repo", "", "local working directory of the GitOps repo (or set URBEX_GITOPS_REPO)")
 	output.Register(cmd)
 	return cmd

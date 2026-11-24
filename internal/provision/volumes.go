@@ -346,8 +346,25 @@ type notReady struct {
 func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]notReady, error) {
 	node := o.Config.Proxmox.Node
 	var missing []notReady
-	// The devices asked for each machine so far: the applications of a
-	// group share their LXC, and its keys.
+	// The applications of a group share their LXC (lxc:): a share is one
+	// mount point of it, read-only only if every application that names
+	// it reads only (each container still binds it as it asks), and the
+	// keys the operator's commands take are planned per machine.
+	readOnly := map[string]map[string]bool{}
+	for _, svc := range o.Manifest.Services {
+		host := MachineHostname(o.Manifest.Project, svc, env)
+		for _, v := range svc.Shares() {
+			if readOnly[host] == nil {
+				readOnly[host] = map[string]bool{}
+			}
+			ro, seen := readOnly[host][v.Share]
+			readOnly[host][v.Share] = v.ReadOnly && (ro || !seen)
+		}
+	}
+	// The shares' mount points and the devices asked for each machine so
+	// far, by path: the applications of a group share their LXC, and its
+	// keys. Two maps: a share's key is mp<n>, a device's dev<n>.
+	plannedShares := map[int]map[string]string{}
 	planned := map[int]map[string]string{}
 	for _, svc := range o.Manifest.Services {
 		if len(svc.Volumes) == 0 && len(svc.Devices) == 0 {
@@ -370,6 +387,12 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		for _, mp := range mps {
 			at[mp.Path] = mp
 			taken[mp.Index()] = true
+		}
+		if plannedShares[vmid] == nil {
+			plannedShares[vmid] = map[string]string{}
+		}
+		for _, key := range plannedShares[vmid] {
+			taken[proxmoxapi.MountPoint{Key: key}.Index()] = true
 		}
 		free := func() (string, error) {
 			for i := 0; i < maxMountPoints; i++ {
@@ -416,19 +439,25 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 		}
 		for _, v := range svc.Shares() {
 			source := o.Config.Storage.Shares[v.Share].Path
+			ro := readOnly[hostname][v.Share]
 			mp, ok := at[svc.LXCPath(v)]
-			if ok && path.Clean(mp.Volume) == path.Clean(source) && mp.ReadOnly == v.ReadOnly {
+			if ok && path.Clean(mp.Volume) == path.Clean(source) && mp.ReadOnly == ro {
 				mounted = append(mounted, mp.Key)
 				continue
 			}
-			key := mp.Key
-			if !ok {
+			key, isPlanned := plannedShares[vmid][svc.LXCPath(v)]
+			switch {
+			case isPlanned:
+			case ok:
+				key = mp.Key
+			default:
 				if key, err = free(); err != nil {
 					return nil, err
 				}
 			}
+			plannedShares[vmid][svc.LXCPath(v)] = key
 			command := fmt.Sprintf("pct set %d -%s %s,mp=%s", vmid, key, source, svc.LXCPath(v))
-			if v.ReadOnly {
+			if ro {
 				command += ",ro=1"
 			}
 			missing = append(missing, notReady{service: svc.Name, command: command})
