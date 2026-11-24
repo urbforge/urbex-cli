@@ -346,6 +346,9 @@ type notReady struct {
 func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations map[string]allocation.Entry) ([]notReady, error) {
 	node := o.Config.Proxmox.Node
 	var missing []notReady
+	// The devices asked for each machine so far: the applications of a
+	// group share their LXC, and its keys.
+	planned := map[int]map[string]string{}
 	for _, svc := range o.Manifest.Services {
 		if len(svc.Volumes) == 0 && len(svc.Devices) == 0 {
 			continue
@@ -430,7 +433,10 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 			}
 			missing = append(missing, notReady{service: svc.Name, command: command})
 		}
-		bound, unbound, err := o.devices(ctx, svc, hostname, vmid)
+		if planned[vmid] == nil {
+			planned[vmid] = map[string]string{}
+		}
+		bound, unbound, err := o.devices(ctx, svc, hostname, vmid, planned[vmid])
 		if err != nil {
 			return nil, err
 		}
@@ -473,7 +479,7 @@ func (o *Orchestrator) mountVolumes(ctx context.Context, env string, allocations
 // devices returns the keys of the device files svc's LXC has of those
 // it declares, and one notReady for each it doesn't have yet, with the
 // operator's pct set.
-func (o *Orchestrator) devices(ctx context.Context, svc manifest.Service, hostname string, vmid int) ([]string, []notReady, error) {
+func (o *Orchestrator) devices(ctx context.Context, svc manifest.Service, hostname string, vmid int, planned map[string]string) ([]string, []notReady, error) {
 	if len(svc.Devices) == 0 {
 		return nil, nil, nil
 	}
@@ -491,6 +497,9 @@ func (o *Orchestrator) devices(ctx context.Context, svc manifest.Service, hostna
 		at[path.Clean(d.Path)] = d.Key
 		taken[d.Index()] = true
 	}
+	for _, key := range planned {
+		taken[proxmoxapi.Device{Key: key}.Index()] = true
+	}
 	var bound []string
 	var missing []notReady
 	for _, dev := range svc.Devices {
@@ -498,16 +507,18 @@ func (o *Orchestrator) devices(ctx context.Context, svc manifest.Service, hostna
 			bound = append(bound, key)
 			continue
 		}
-		key := ""
-		for i := 0; i < maxDevices; i++ {
+		// Another application of the group asked for it already: the
+		// same command, printed once.
+		key, ok := planned[dev]
+		for i := 0; !ok && i < maxDevices; i++ {
 			if !taken[i] {
-				taken[i], key = true, fmt.Sprintf("dev%d", i)
-				break
+				taken[i], key, ok = true, fmt.Sprintf("dev%d", i), true
 			}
 		}
-		if key == "" {
+		if !ok {
 			return nil, nil, fmt.Errorf("%s has no free device key left", hostname)
 		}
+		planned[dev] = key
 		missing = append(missing, notReady{service: svc.Name, command: fmt.Sprintf("pct set %d -%s %s", vmid, key, dev), device: true})
 	}
 	return bound, missing, nil
@@ -577,6 +588,7 @@ func (o *Orchestrator) attachVMDisks(ctx context.Context, svc manifest.Service, 
 func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	services := map[string]bool{}
 	first, devices := true, false
+	printed := map[string]bool{}
 	for _, m := range missing {
 		services[m.service] = true
 		if m.command == "" {
@@ -587,7 +599,10 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 			fmt.Fprintf(o.Out, "Some applications need shares or devices their LXC doesn't have yet. Binding a folder or a device of the Proxmox node to an LXC needs root@pam: on the node, as root, run\n")
 			first = false
 		}
-		fmt.Fprintf(o.Out, "  %s\n", m.command)
+		if !printed[m.command] {
+			fmt.Fprintf(o.Out, "  %s\n", m.command)
+			printed[m.command] = true
+		}
 		devices = devices || m.device
 	}
 	if devices {

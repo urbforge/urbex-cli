@@ -15,11 +15,11 @@ type DevicesReader interface {
 	Devices(ctx context.Context, node string, vmid int) ([]proxmoxapi.Device, error)
 }
 
-// DeviceMachine is an application of the project in urbex.yaml that
-// declares devices, in one environment: its machine's VMID, 0 when it
-// hasn't been created yet.
+// DeviceMachine is a machine of the project in urbex.yaml whose
+// applications declare devices, in one environment: its VMID, 0 when it
+// hasn't been created yet, and the devices of all its applications.
 type DeviceMachine struct {
-	Service string
+	Service string // the application, or its group (lxc:)
 	Env     string
 	VMID    int
 	VM      bool

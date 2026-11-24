@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -156,10 +157,10 @@ func printDoctor(out io.Writer, r *doctor.Report) {
 	fmt.Fprintf(out, "\n%s\n", r.Summary())
 }
 
-// deviceMachines lists the applications of the project in manifestPath
-// that declare devices, in each of its environments, with their
-// machines' VMIDs from the allocation ledger: nothing without a
-// manifest.
+// deviceMachines lists the machines of the project in manifestPath whose
+// applications declare devices, in each of its environments - an
+// application's own, or its group's - with their VMIDs from the
+// allocation ledger: nothing without a manifest.
 func deviceMachines(manifestPath, repoPath string, cfg *platform.Config) ([]doctor.DeviceMachine, error) {
 	if _, err := os.Stat(manifestPath); err != nil {
 		return nil, nil
@@ -172,14 +173,28 @@ func deviceMachines(manifestPath, repoPath string, cfg *platform.Config) ([]doct
 	if err != nil {
 		return nil, fmt.Errorf("loading the allocation ledger: %w", err)
 	}
+	// One check per machine: the applications of a group (lxc:) share
+	// their LXC and its devices.
 	var out []doctor.DeviceMachine
 	for _, env := range m.EnvironmentList() {
+		at := map[string]int{}
 		for _, svc := range m.Services {
 			if len(svc.Devices) == 0 {
 				continue
 			}
-			entry, _ := ledger.Lookup(provision.Hostname(m.Project, svc.Name, env))
-			out = append(out, doctor.DeviceMachine{Service: svc.Name, Env: env, VMID: entry.VMID, VM: svc.IsVM(), Devices: svc.Devices})
+			host := provision.MachineHostname(m.Project, svc, env)
+			i, ok := at[host]
+			if !ok {
+				entry, _ := ledger.Lookup(host)
+				out = append(out, doctor.DeviceMachine{Service: svc.Group(), Env: env, VMID: entry.VMID, VM: svc.IsVM()})
+				i = len(out) - 1
+				at[host] = i
+			}
+			for _, d := range svc.Devices {
+				if !slices.Contains(out[i].Devices, d) {
+					out[i].Devices = append(out[i].Devices, d)
+				}
+			}
 		}
 	}
 	return out, nil

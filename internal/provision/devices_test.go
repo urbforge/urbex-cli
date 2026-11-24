@@ -132,3 +132,23 @@ func TestApply_NoRestartForADevicePassedAtOnce(t *testing.T) {
 		t.Errorf("reboots %v, deployed %v", devs.reboots, ro.deployed)
 	}
 }
+
+// The applications of a group share their LXC: a device two of them
+// need is one command, and different devices get different keys.
+func TestApply_DevicesOfAGroupShareTheLXCsKeys(t *testing.T) {
+	dir := t.TempDir()
+	o, _, _, out := devicesOrchestrator(t)
+	o.Manifest.Services = []manifest.Service{
+		{Name: "gluetun", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, LXC: "dl", Devices: []string{"/dev/net/tun"}},
+		{Name: "qbittorrent", Image: "linuxserver/qbittorrent", Version: "5", Port: 8080, LXC: "dl", Devices: []string{"/dev/net/tun", "/dev/fuse"}},
+	}
+	if err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir}); err == nil {
+		t.Fatal("expected apply to wait for the devices")
+	}
+	vmid := vmidOf(t, o, dir, "dl") // the group's machine, media-dl-prod
+	tun := fmt.Sprintf("pct set %d -dev0 /dev/net/tun", vmid)
+	fuse := fmt.Sprintf("pct set %d -dev1 /dev/fuse", vmid)
+	if strings.Count(out.String(), tun) != 1 || strings.Count(out.String(), fuse) != 1 {
+		t.Errorf("expected %q once and %q once:\n%s", tun, fuse, out)
+	}
+}
