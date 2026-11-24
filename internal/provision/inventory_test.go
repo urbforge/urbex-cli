@@ -101,6 +101,41 @@ func TestWriteInventory_VolumePaths(t *testing.T) {
 	}
 }
 
+// An LXC group is one host, named and labelled after the group, with
+// every application's volume folders (ADR-0037).
+func TestWriteInventory_GroupIsOneHost(t *testing.T) {
+	repoPath, ansibleDir := t.TempDir(), t.TempDir()
+	services := []manifest.Service{
+		{Name: "sonarr", Image: "sonarr", Version: "4", LXC: "arr", Volumes: []manifest.Volume{{Name: "config", Path: "/config"}}},
+		{Name: "radarr", Image: "radarr", Version: "5", LXC: "arr", Volumes: []manifest.Volume{{Name: "config", Path: "/config"}}},
+		{Name: "jellyfin", Image: "jellyfin", Version: "10"},
+	}
+	allocations := map[string]allocation.Entry{
+		"media-arr-prod":      {IP: "10.0.0.10"},
+		"media-jellyfin-prod": {IP: "10.0.0.11"},
+	}
+	if err := writeInventory(repoPath, ansibleDir, "media", "prod", services, allocations, bootstrap.Endpoints{}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(ansibleDir, "inventory.yml"))
+	inv := string(data)
+	for _, want := range []string{"media-arr-prod:", "media-jellyfin-prod:", "urbex_service: arr", "- /srv/volumes/sonarr/config\n", "- /srv/volumes/radarr/config\n"} {
+		if !strings.Contains(inv, want) {
+			t.Errorf("inventory lacks %q:\n%s", want, inv)
+		}
+	}
+	if strings.Contains(inv, "media-sonarr-prod") || strings.Count(inv, "ansible_host:") != 2 {
+		t.Errorf("want two hosts, the group and jellyfin:\n%s", inv)
+	}
+
+	// A Quick Tunnel publishes one application per machine.
+	services[0].Public, services[0].Port = true, 8989
+	services[1].Public, services[1].Port = true, 7878
+	if err := writeInventory(repoPath, ansibleDir, "media", "prod", services, allocations, bootstrap.Endpoints{}, true, true); err == nil || !strings.Contains(err.Error(), "radarr") {
+		t.Errorf("two public applications on one Quick Tunnel machine: %v", err)
+	}
+}
+
 // The platform's Docker Hub mirrors reach the machines' daemon.json
 // through the inventory (urbforge/urbex-cli#150).
 func TestWriteInventory_RegistryMirrors(t *testing.T) {

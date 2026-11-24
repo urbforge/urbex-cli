@@ -215,6 +215,7 @@ if [ -n "$ONLY" ]; then
   # earlier run left it.
   commit_stack site e2e/images/urbex.yaml
   commit_stack shop e2e/linked/urbex.yaml
+  commit_stack box e2e/groups/urbex.yaml
 else
 podman network create --subnet "$NET.0/24" "$NETWORK" >/dev/null
 
@@ -243,6 +244,9 @@ git -C "$WORK/app" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -q
 # third, of applications linked together.
 commit_stack site e2e/images/urbex.yaml
 commit_stack shop e2e/linked/urbex.yaml
+
+# A fourth stack, two applications grouped on one machine and one alone.
+commit_stack box e2e/groups/urbex.yaml
 
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
@@ -570,6 +574,7 @@ step reapply-staging "apply staging again on a new machine: it rejoins Komodo an
 prep_site() {
   # The project steps take the addresses from .212 in their order: what
   # an earlier run of any of them left goes first.
+  forget_project box box-pair-prod box-solo-prod
   forget_project shop shop-db-prod shop-api-prod shop-web-prod
   forget_project site site-web-prod
   machine site-web-prod 212
@@ -657,6 +662,7 @@ YAML
 # it. One machine per application, at the addresses apply allocates in
 # the manifest's order, the lowest free first.
 prep_linked() {
+  forget_project box box-pair-prod box-solo-prod
   forget_project site site-web-prod
   forget_project shop shop-db-prod shop-api-prod shop-web-prod
   machine shop-db-prod 212
@@ -909,6 +915,37 @@ step reconciler-destroy "the reconciler: an environment destroyed is no longer l
   echo "$latest" | grep -q "^ok " || fail "the run after the destroy failed: $latest"
   if echo "$latest" | grep -q "shop-"; then fail "the run after the destroy still names shop: $latest"; fi
   echo "ok: the graph went with the environment, and the reconciler found no other"'
+
+# shop prod went with its destroy, and its addresses (.212-.214) with it:
+# the group first, in the manifest's order, then solo.
+prep_group() {
+  forget_project site site-web-prod
+  forget_project shop shop-db-prod shop-api-prod shop-web-prod
+  forget_project box box-pair-prod box-solo-prod
+  machine box-pair-prod 212
+  machine box-solo-prod 213
+  printf '%s\n' box-pair-prod box-solo-prod >>"$WORK/pve-containers.txt"
+}
+step group "an LXC group: two applications on one machine, each with its own Stack, name and port" '
+  cd /work/box
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the grouped stack failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.212/ "Welcome to nginx" 5
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  expect_http http://$NET.213/ "Caddy" 5
+  [ "$(technitium_record web.box.urbex.urbex.test)" = "$NET.212" ] || fail "web should resolve to the group machine"
+  [ "$(technitium_record who.box.urbex.urbex.test)" = "$NET.212" ] || fail "who should resolve to the group machine"
+  [ "$(technitium_record solo.box.urbex.urbex.test)" = "$NET.213" ] || fail "solo should resolve to its own machine"
+  servers=$(komodo_names Servers)
+  echo "$servers" | grep -qw box-pair-prod || fail "no Komodo server for the group: $servers"
+  if echo "$servers" | grep -qE "box-(web|who)-prod"; then fail "the grouped applications should have no server of their own: $servers"; fi
+  for st in box-web-prod box-who-prod box-solo-prod; do
+    [ "$(komodo_stack_state $st)" = running ] || fail "stack $st: $(komodo_stack_state $st)"
+  done
+  [ "$(komodo_stack_state urbex-telemetry-box-pair-prod)" = running ] || fail "the group machine should have one telemetry agent"
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[\"entries\"]; assert \"box-pair-prod\" in d and \"box-web-prod\" not in d, list(d)" /work/gitops/state/allocations.json || fail "the ledger should hold the group machine, not its applications"
+  urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the grouped stack failed"; }
+  echo "ok: the group is one machine, its applications each a Stack and a name"'
 
 if [ -n "$ONLY" ]; then
   [ "$RAN" -gt 0 ] || { echo "E2E_ONLY=$ONLY names no step: see e2e/README.md for their names" >&2; exit 1; }

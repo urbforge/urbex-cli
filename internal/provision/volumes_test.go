@@ -1,8 +1,10 @@
 package provision
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/urbforge/urbex-cli/internal/allocation"
 	"io"
 	"os"
 	"path/filepath"
@@ -469,5 +471,36 @@ func TestApply_ASharePathWithATrailingSlashIsTheSameFolder(t *testing.T) {
 	out.Reset()
 	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
 		t.Fatalf("Apply: %v\n%s", err, out)
+	}
+}
+
+// An application with named volumes moving off a machine that stays - out
+// of its LXC group here - is refused: it would start empty on its new
+// machine (ADR-0037). --delete-data goes ahead and says so.
+func TestRefuseMovedVolumes(t *testing.T) {
+	fv := newFakeVolumes()
+	fv.mps[9100] = []proxmoxapi.MountPoint{
+		{Key: "mp0", Path: "/srv/volumes/sonarr/config"},
+		{Key: "mp1", Path: "/srv/volumes/radarr/config"},
+		{Key: "mp2", Path: "/srv/shares/media"},
+	}
+	var out bytes.Buffer
+	o := &Orchestrator{Config: &platform.Config{}, Volumes: fv, Out: &out, Manifest: &manifest.Manifest{Project: "media", Services: []manifest.Service{
+		{Name: "sonarr", LXC: "arr"},
+		{Name: "radarr"}, // moved out of the group
+	}}}
+	allocations := map[string]allocation.Entry{"media-arr-prod": {VMID: 9100}, "media-radarr-prod": {VMID: 9101}}
+	existing := map[int]bool{9100: true}
+	err := o.refuseMovedVolumes(context.Background(), "prod", allocations, existing, false)
+	if err == nil || !strings.Contains(err.Error(), "radarr/config (on media-arr-prod, the application now on media-radarr-prod)") || strings.Contains(err.Error(), "sonarr") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := o.refuseMovedVolumes(context.Background(), "prod", allocations, existing, true); err != nil || !strings.Contains(out.String(), "empty volumes") {
+		t.Errorf("with --delete-data: %v, %q", err, out.String())
+	}
+	// Nothing moved: nothing refused.
+	o.Manifest.Services[1].LXC = "arr"
+	if err := o.refuseMovedVolumes(context.Background(), "prod", map[string]allocation.Entry{"media-arr-prod": {VMID: 9100}}, existing, false); err != nil {
+		t.Errorf("unmoved: %v", err)
 	}
 }

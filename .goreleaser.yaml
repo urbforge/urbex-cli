@@ -72,9 +72,7 @@ release:
   replace_existing_draft: true
   prerelease: auto
   name_template: "urbex {{ .Version }}"
-  header: |
-    urbex {{ .Version }}{{ if or (eq .Major 0) .Prerelease }} - a preview release{{ end }}.
-    Install: download the archive for your system below, check it against
-    `checksums.txt`, and put `urbex` on your `PATH`. See
-    [getting started](https://github.com/urbforge/urbex/blob/main/docs/getting-started.md)
-    and the [known limitations](https://github.com/urbforge/urbex/blob/main/docs/known-limitations.md).
+  # No header here: the release workflow passes its own with
+  # --release-header (the CHANGELOG's notes of the version, then how to
+  # install), and GoReleaser would print both (v0.2.0 opened with its
+  # first line twice).

@@ -32,7 +32,7 @@ func (o *Orchestrator) registerDNS(ctx context.Context, env string, allocations 
 		return nil
 	}
 	for _, svc := range o.Manifest.Services {
-		entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
+		entry := allocations[MachineHostname(o.Manifest.Project, svc, env)]
 		if err := o.Technitium.SetRecord(ctx, o.Config.InternalZone(), o.InternalHostname(env, svc), entry.IP); err != nil {
 			return err
 		}
@@ -47,7 +47,7 @@ func (o *Orchestrator) unregisterDNS(ctx context.Context, env string, services [
 		return nil
 	}
 	for _, svc := range services {
-		entry := allocations[Hostname(o.Manifest.Project, svc.Name, env)]
+		entry := allocations[MachineHostname(o.Manifest.Project, svc, env)]
 		if err := o.Technitium.DeleteRecord(ctx, o.Config.InternalZone(), o.InternalHostname(env, svc), entry.IP); err != nil {
 			return err
 		}
