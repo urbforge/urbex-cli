@@ -1,6 +1,9 @@
 package manifest
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestLoadTyped_Valid(t *testing.T) {
 	m, result, err := LoadTyped("testdata/valid.yaml")
@@ -67,5 +70,29 @@ func TestService_EnvFor(t *testing.T) {
 	}
 	if got := s.EnvFor("prod"); got != nil {
 		t.Errorf("EnvFor(prod) = %v, want nil", got)
+	}
+}
+
+// devices are files under /dev, each once; the typed manifest has them.
+func TestLoadTyped_Devices(t *testing.T) {
+	write := func(devices string) string {
+		path := t.TempDir() + "/urbex.yaml"
+		body := "apiVersion: urbex/v1\nproject: media\nservices:\n  - name: gluetun\n    image: qmcgaw/gluetun\n    version: \"3\"\n    port: 8000\n    devices: " + devices + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	m, result, err := LoadTyped(write("[/dev/net/tun]"))
+	if err != nil || m == nil {
+		t.Fatalf("expected a valid manifest, got %v %v", err, result.Errors)
+	}
+	if got := m.Services[0].Devices; len(got) != 1 || got[0] != "/dev/net/tun" {
+		t.Errorf("Devices = %v", got)
+	}
+	for _, bad := range []string{"[net/tun]", "[/dev/net/tun, /dev/net/tun]", "[\"/dev/net/tun,mode=0666\"]"} {
+		if m, _, err := LoadTyped(write(bad)); err != nil || m != nil {
+			t.Errorf("devices %s: expected refused by the schema, got %v %v", bad, m, err)
+		}
 	}
 }
