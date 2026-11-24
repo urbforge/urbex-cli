@@ -835,30 +835,41 @@ step "an LXC group: two applications on one machine, each with its own Stack, na
 for m in box-pair-prod box-solo-prod; do podman rm -f e2e-$m >/dev/null; podman volume rm -f e2e-$m-docker e2e-$m-containerd >/dev/null 2>&1 || true; done
 machine vpn-net-prod 212
 echo vpn-net-prod >>"$WORK/pve-containers.txt"
-step "a shared network: who joins gw's, its port published by gw, and rejoins it after gw restarts" '
+step "a shared network: who and gw on net's network, gw recreated without who losing it, back after net restarts" '
   cd /work/vpn
   on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "$1"; }
+  started() { on "docker inspect -f {{.State.StartedAt}} $1"; }
   urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the shared network failed"; }
   cat /tmp/apply.log
   expect_http http://$NET.212/ "Caddy" 5
   expect_http http://$NET.212:8081/ "Hostname" 5
-  [ "$(on "docker inspect -f {{.HostConfig.NetworkMode}} vpn-who-prod-app-1")" = "container:vpn-gw-prod-app-1" ] || fail "who should join gw'"'"'s network: $(on "docker inspect -f {{.HostConfig.NetworkMode}} vpn-who-prod-app-1")"
+  net=$(on "docker inspect -f {{.Id}} vpn-gw-prod-net-1")
+  for c in vpn-gw-prod-app-1 vpn-who-prod-app-1; do
+    [ "$(on "docker inspect -f {{.HostConfig.NetworkMode}} $c")" = "container:$net" ] || fail "$c should be on net'"'"'s network: $(on "docker inspect -f {{.HostConfig.NetworkMode}} $c")"
+  done
   on "docker inspect -f {{.HostConfig.CapAdd}} vpn-gw-prod-app-1" | grep -q NET_ADMIN || fail "gw should have NET_ADMIN"
-  on "docker port vpn-gw-prod-app-1" | grep -q "^8081/tcp" || fail "gw should publish who'"'"'s port: $(on "docker port vpn-gw-prod-app-1")"
+  on "docker port vpn-gw-prod-net-1" | grep -q "^8081/tcp" || fail "net should publish who'"'"'s port: $(on "docker port vpn-gw-prod-net-1")"
   [ "$(komodo_stack_state vpn-gw-prod)" = running ] && [ "$(komodo_stack_state vpn-who-prod)" = running ] || fail "both stacks should run"
-  # gw restarts: who keeps the old namespace, until rejoin restarts it
-  # once gw is healthy again.
-  before=$(on "docker inspect -f {{.State.StartedAt}} vpn-who-prod-app-1")
-  on "docker restart vpn-gw-prod-app-1" >/dev/null
+
+  # gw recreated, as a new version does: who keeps the network, untouched.
+  who=$(started vpn-who-prod-app-1)
+  on "cd /etc/komodo/stacks/vpn-gw-prod/environments/prod/vpn/gw && docker compose -p vpn-gw-prod --env-file version.env up -d --force-recreate --no-deps app" >/dev/null 2>&1 || fail "recreating gw failed"
+  expect_http http://$NET.212/ "Caddy" 60
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  [ "$(started vpn-who-prod-app-1)" = "$who" ] || fail "who should not need a restart when gw is recreated"
+
+  # net restarts, as after a reboot: rejoin puts gw and who back on it.
+  on "docker restart vpn-gw-prod-net-1" >/dev/null
   _deadline=$(( $(date +%s) + 120 ))
-  until [ "$(on "docker inspect -f {{.State.StartedAt}} vpn-who-prod-app-1")" != "$before" ]; do
-    [ "$(date +%s)" -ge "$_deadline" ] && fail "who was not restarted after gw: $(on "docker logs vpn-gw-prod-rejoin-1 2>&1 | tail -n 5")"
+  until [ "$(started vpn-who-prod-app-1)" != "$who" ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "who was not restarted after net: $(on "docker logs vpn-gw-prod-rejoin-1 2>&1 | tail -n 5")"
     sleep 5
   done
-  expect_http http://$NET.212:8081/ "Hostname" 30
-  on "docker logs vpn-gw-prod-rejoin-1 2>&1" | grep -q "vpn-who-prod-app-1: joining vpn-gw-prod-app-1" || fail "rejoin should say what it restarted"
+  expect_http http://$NET.212/ "Caddy" 60
+  expect_http http://$NET.212:8081/ "Hostname" 60
+  on "docker logs vpn-gw-prod-rejoin-1 2>&1" | grep -q "vpn-who-prod-app-1: joining vpn-gw-prod-net-1" || fail "rejoin should say what it restarted"
   urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the shared network failed"; }
-  echo "ok: who has no network of its own, gw publishes its port, and who rejoins gw after a restart"'
+  echo "ok: who and gw share net'"'"'s network, gw is recreated without who noticing, and both are back after net restarts"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

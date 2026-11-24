@@ -40,9 +40,10 @@ func readCompose(t *testing.T, repo Repo, project, service string) composeFile {
 	return c
 }
 
-// The application that joins has no network of its own; the other's
-// container publishes both ports, has NET_ADMIN, and a rejoin service
-// that watches it (urbforge/urbex-cli#139).
+// The application that joins, and the one it joins, have no network of
+// their own: both join the net service of the second's Stack, which
+// publishes both ports; the second has NET_ADMIN, and a rejoin service
+// (urbforge/urbex-cli#139).
 func TestCompose_NetworkJoined(t *testing.T) {
 	repo := Repo{Path: t.TempDir()}
 	gluetun, qbit := vpnPair()
@@ -52,19 +53,22 @@ func TestCompose_NetworkJoined(t *testing.T) {
 		}
 	}
 	q := readCompose(t, repo, "media", "qbittorrent").Services["app"]
-	if q.NetworkMode != "container:media-gluetun-prod-app-1" || len(q.Ports) != 0 {
+	if q.NetworkMode != "container:media-gluetun-prod-net-1" || len(q.Ports) != 0 {
 		t.Errorf("qbittorrent: network_mode %q, ports %v", q.NetworkMode, q.Ports)
 	}
 	g := readCompose(t, repo, "media", "gluetun")
 	app := g.Services["app"]
-	if !slices.Equal(app.Ports, []string{"8000:8000", "8080:8080"}) || !slices.Equal(app.CapAdd, []string{"NET_ADMIN"}) || app.NetworkMode != "" {
+	if len(app.Ports) != 0 || !slices.Equal(app.CapAdd, []string{"NET_ADMIN"}) || app.NetworkMode != "service:net" {
 		t.Errorf("gluetun: ports %v, cap_add %v, network_mode %q", app.Ports, app.CapAdd, app.NetworkMode)
+	}
+	if net := g.Services["net"]; !slices.Equal(net.Ports, []string{"8000:8000", "8080:8080"}) || net.NetworkMode != "" {
+		t.Errorf("net: ports %v, network_mode %q", net.Ports, net.NetworkMode)
 	}
 	rejoin, ok := g.Services["rejoin"]
 	if !ok {
 		t.Fatal("gluetun's compose has no rejoin service")
 	}
-	if rejoin.Environment["TARGET"] != "media-gluetun-prod-app-1" || rejoin.Environment["JOINERS"] != "media-qbittorrent-prod-app-1" ||
+	if rejoin.Environment["NET"] != "media-gluetun-prod-net-1" || rejoin.Environment["MEMBERS"] != "media-gluetun-prod-app-1 media-qbittorrent-prod-app-1" ||
 		!slices.Contains(rejoin.Volumes, "/var/run/docker.sock:/var/run/docker.sock") {
 		t.Errorf("rejoin: %+v", rejoin)
 	}
@@ -73,16 +77,16 @@ func TestCompose_NetworkJoined(t *testing.T) {
 	}
 }
 
-// The rejoin script, run by sh with a fake docker: a joiner started
-// before the target's last start, or stopped, is restarted; one started
-// after it, or missing, is left alone; nothing happens while the target
-// isn't healthy.
+// The rejoin script, run by sh with a fake docker: a member started
+// before the net container's last start, or stopped, is restarted; one
+// started after it, or missing, is left alone; nothing happens while
+// the net container isn't running.
 func TestRejoinScript(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
 	dir := t.TempDir()
-	// state/<container>/{health,started,running}; docker logs its
+	// state/<container>/{started,running}; docker logs its
 	// restarts to calls.
 	fake := `#!/bin/sh
 s=` + dir + `/state
@@ -90,7 +94,6 @@ case "$1" in
 inspect)
   if [ "$2" = -f ]; then c=$4; [ -d "$s/$c" ] || exit 1
     case "$3" in
-    *Health*) cat "$s/$c/health" ;;
     *StartedAt*) cat "$s/$c/started" ;;
     *Running*) cat "$s/$c/running" ;;
     esac
@@ -106,12 +109,12 @@ esac
 	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	container := func(name, health, started, running string) {
+	container := func(name, started, running string) {
 		d := filepath.Join(dir, "state", name)
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		for f, v := range map[string]string{"health": health, "started": started, "running": running} {
+		for f, v := range map[string]string{"started": started, "running": running} {
 			if err := os.WriteFile(filepath.Join(d, f), []byte(v+"\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -123,21 +126,21 @@ esac
 		t.Helper()
 		os.Remove(filepath.Join(dir, "calls"))
 		cmd := exec.Command("/bin/sh", "-c", script)
-		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "TARGET=vpn", "JOINERS=old fresh stopped missing"}
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "NET=net", "MEMBERS=old fresh stopped missing"}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("rejoin script: %v\n%s", err, out)
 		}
 		calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 		return string(calls)
 	}
-	container("vpn", "starting", "2026-11-24T10:00:05.123456789Z", "true")
-	container("old", "", "2026-11-24T09:00:00.5Z", "true")
-	container("fresh", "", "2026-11-24T10:00:07.1Z", "true")
-	container("stopped", "", "2026-11-24T10:00:09Z", "false")
+	container("net", "2026-11-24T10:00:05.123456789Z", "false")
+	container("old", "2026-11-24T09:00:00.5Z", "true")
+	container("fresh", "2026-11-24T10:00:07.1Z", "true")
+	container("stopped", "2026-11-24T10:00:09Z", "false")
 	if calls := run(); calls != "" {
-		t.Errorf("the target isn't healthy yet: nothing to do, got %q", calls)
+		t.Errorf("net isn't running: nothing to do, got %q", calls)
 	}
-	container("vpn", "healthy", "2026-11-24T10:00:05.123456789Z", "true")
+	container("net", "2026-11-24T10:00:05.123456789Z", "true")
 	if calls := run(); calls != "restart old\nrestart stopped\n" {
 		t.Errorf("expected old and stopped restarted, got %q", calls)
 	}
