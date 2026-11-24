@@ -63,9 +63,20 @@ type Service struct {
 	// LXC is the group the application runs in: the applications of the
 	// stack with the same LXC share one machine per environment
 	// (ADR-0037). "" is a machine of its own.
-	LXC  string                       `yaml:"lxc,omitempty"`
-	Env  map[string]map[string]string `yaml:"env,omitempty"`
-	Auth *Auth                        `yaml:"auth,omitempty"`
+	LXC string `yaml:"lxc,omitempty"`
+	// Network is the application of the same group whose network this
+	// one joins (a VPN client such as Gluetun, urbforge/urbex-cli#139):
+	// it has no network of its own, its port is published by the other,
+	// and it uses it. Capabilities are the Linux capabilities the
+	// container gets beyond Docker's defaults: NET_ADMIN, which a VPN
+	// client needs.
+	Network      string   `yaml:"network,omitempty"`
+	Capabilities []string `yaml:"capabilities,omitempty"`
+	// Joiners are the applications whose Network is this one, set by
+	// rollout for its compose file; never read from urbex.yaml.
+	Joiners []Service                    `yaml:"-"`
+	Env     map[string]map[string]string `yaml:"env,omitempty"`
+	Auth    *Auth                        `yaml:"auth,omitempty"`
 	// Frontend is set on the service Deployables makes of a web
 	// frontend; never read from urbex.yaml.
 	Frontend *Frontend `yaml:"-"`
@@ -407,6 +418,7 @@ func (m *Manifest) Unsupported() []string {
 		}
 	}
 	out = append(out, m.groupErrors()...)
+	out = append(out, m.networkErrors()...)
 	return append(out, m.linkErrors()...)
 }
 
@@ -447,6 +459,34 @@ func (s Service) vmErrors() []string {
 // after an application that isn't in it (their internal names would
 // collide), LXCs and VMs in one group, and two applications of a group
 // publishing the same port.
+// networkErrors is what's wrong with the applications that join
+// another's network: the other must be an application of the same group
+// - one machine - that joins none itself, and one that joins can't be a
+// provider of an interface, which publishes its own port.
+func (m *Manifest) networkErrors() []string {
+	var out []string
+	for _, svc := range m.Services {
+		if svc.Network == "" {
+			continue
+		}
+		other, ok := m.service(svc.Network)
+		switch {
+		case svc.Network == svc.Name:
+			out = append(out, fmt.Sprintf("services %s: network is itself", svc.Name))
+		case !ok:
+			out = append(out, fmt.Sprintf("services %s: network %s, which urbex.yaml does not declare", svc.Name, svc.Network))
+		case svc.LXC == "" || other.LXC != svc.LXC:
+			out = append(out, fmt.Sprintf("services %s: joins the network of %s, which must be in the same group: give both the same lxc", svc.Name, svc.Network))
+		case other.Network != "":
+			out = append(out, fmt.Sprintf("services %s: joins the network of %s, which joins %s's itself: join %s directly", svc.Name, svc.Network, other.Network, other.Network))
+		}
+		if svc.Provides != "" {
+			out = append(out, fmt.Sprintf("services %s: provides %s, which needs a network of its own: it can't join %s's", svc.Name, svc.Provides, svc.Network))
+		}
+	}
+	return out
+}
+
 func (m *Manifest) groupErrors() []string {
 	var out []string
 	names := map[string]bool{}

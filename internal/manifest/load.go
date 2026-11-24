@@ -3,6 +3,7 @@ package manifest
 import (
 	"fmt"
 	"os"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,5 +32,16 @@ func LoadTyped(path string) (*Manifest, *ValidationResult, error) {
 		return nil, nil, fmt.Errorf("parsing %s after it passed schema validation: %w", path, err)
 	}
 
+	m.normalize()
 	return &m, result, nil
+}
+
+// normalize fills in what urbex.yaml implies: an application that joins
+// another's network uses it, so that it starts once the other is ready.
+func (m *Manifest) normalize() {
+	for i, svc := range m.Services {
+		if svc.Network != "" && !slices.Contains(svc.Uses, svc.Network) {
+			m.Services[i].Uses = append(m.Services[i].Uses, svc.Network)
+		}
+	}
 }

@@ -148,6 +148,13 @@ git -C "$WORK/box" init -q -b main
 git -C "$WORK/box" add -A
 git -C "$WORK/box" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "box"
 
+# A fifth: an application joining another's network, on one machine.
+mkdir -p "$WORK/vpn"
+cp e2e/network/urbex.yaml "$WORK/vpn/"
+git -C "$WORK/vpn" init -q -b main
+git -C "$WORK/vpn" add -A
+git -C "$WORK/vpn" -c user.email=e2e@urbex.test -c user.name=urbex-e2e commit -qm "vpn"
+
 # Machines at the addresses urbex allocates: base services from .200,
 # project services from .210 in the order they are first applied.
 octet=200
@@ -823,6 +830,35 @@ step "an LXC group: two applications on one machine, each with its own Stack, na
   python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[\"entries\"]; assert \"box-pair-prod\" in d and \"box-web-prod\" not in d, list(d)" /work/gitops/state/allocations.json || fail "the ledger should hold the group machine, not its applications"
   urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the grouped stack failed"; }
   echo "ok: the group is one machine, its applications each a Stack and a name"'
+
+# box prod went with its destroy, and its addresses with it.
+for m in box-pair-prod box-solo-prod; do podman rm -f e2e-$m >/dev/null; podman volume rm -f e2e-$m-docker e2e-$m-containerd >/dev/null 2>&1 || true; done
+machine vpn-net-prod 212
+echo vpn-net-prod >>"$WORK/pve-containers.txt"
+step "a shared network: who joins gw's, its port published by gw, and rejoins it after gw restarts" '
+  cd /work/vpn
+  on() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.212 "$1"; }
+  urbex apply prod >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply prod of the shared network failed"; }
+  cat /tmp/apply.log
+  expect_http http://$NET.212/ "Caddy" 5
+  expect_http http://$NET.212:8081/ "Hostname" 5
+  [ "$(on "docker inspect -f {{.HostConfig.NetworkMode}} vpn-who-prod-app-1")" = "container:vpn-gw-prod-app-1" ] || fail "who should join gw'"'"'s network: $(on "docker inspect -f {{.HostConfig.NetworkMode}} vpn-who-prod-app-1")"
+  on "docker inspect -f {{.HostConfig.CapAdd}} vpn-gw-prod-app-1" | grep -q NET_ADMIN || fail "gw should have NET_ADMIN"
+  on "docker port vpn-gw-prod-app-1" | grep -q "^8081/tcp" || fail "gw should publish who'"'"'s port: $(on "docker port vpn-gw-prod-app-1")"
+  [ "$(komodo_stack_state vpn-gw-prod)" = running ] && [ "$(komodo_stack_state vpn-who-prod)" = running ] || fail "both stacks should run"
+  # gw restarts: who keeps the old namespace, until rejoin restarts it
+  # once gw is healthy again.
+  before=$(on "docker inspect -f {{.State.StartedAt}} vpn-who-prod-app-1")
+  on "docker restart vpn-gw-prod-app-1" >/dev/null
+  _deadline=$(( $(date +%s) + 120 ))
+  until [ "$(on "docker inspect -f {{.State.StartedAt}} vpn-who-prod-app-1")" != "$before" ]; do
+    [ "$(date +%s)" -ge "$_deadline" ] && fail "who was not restarted after gw: $(on "docker logs vpn-gw-prod-rejoin-1 2>&1 | tail -n 5")"
+    sleep 5
+  done
+  expect_http http://$NET.212:8081/ "Hostname" 30
+  on "docker logs vpn-gw-prod-rejoin-1 2>&1" | grep -q "vpn-who-prod-app-1: joining vpn-gw-prod-app-1" || fail "rejoin should say what it restarted"
+  urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the shared network failed"; }
+  echo "ok: who has no network of its own, gw publishes its port, and who rejoins gw after a restart"'
 
 log "PASSED ($STEP steps)"
 if $KEEP; then

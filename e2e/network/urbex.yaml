@@ -1,0 +1,23 @@
+# An application that joins another's network (urbforge/urbex-cli#139),
+# as qBittorrent joins Gluetun's: gw stands in for the VPN client (no
+# tunnel: the test checks the wiring, not a VPN), who joins it.
+apiVersion: urbex/v1
+project: vpn
+environments: [prod]
+services:
+  - name: gw
+    image: docker.io/library/caddy
+    version: "2.10"
+    port: 80
+    healthcheck: /
+    lxc: net
+    capabilities: [NET_ADMIN]
+  - name: who
+    image: docker.io/traefik/whoami
+    version: "v1.12"
+    port: 8081
+    lxc: net
+    network: gw
+    env:
+      prod:
+        WHOAMI_PORT_NUMBER: "8081"

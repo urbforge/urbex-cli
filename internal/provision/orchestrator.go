@@ -998,6 +998,13 @@ func (o *Orchestrator) target(env string) rollout.Target {
 		if svc.Auth != nil && svc.Auth.Keycloak {
 			services[i].Extra = o.keycloakEnv(env)
 		}
+		// The applications that join its network, from the whole
+		// manifest: a deploy of this one alone keeps their ports.
+		for _, other := range o.Manifest.Services {
+			if other.Network == svc.Name {
+				services[i].Joiners = append(services[i].Joiners, other)
+			}
+		}
 	}
 	return rollout.Target{Project: o.Manifest.Project, Env: env, Services: services, Hostnames: hostnames, Logs: o.Manifest.ShipsLogs()}
 }

@@ -300,9 +300,31 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 	for _, k := range keys {
 		fmt.Fprintf(&b, "      %s: %q\n", k, vars[k])
 	}
-	if svc.Port != 0 {
+	// An application that joins another's network has none of its own:
+	// the other's container publishes its port.
+	if svc.Network != "" {
+		fmt.Fprintf(&b, "    network_mode: \"container:%s\"\n", AppContainer(project, svc.Network, env))
+	}
+	if len(svc.Capabilities) > 0 {
+		b.WriteString("    cap_add:\n")
+		for _, c := range svc.Capabilities {
+			fmt.Fprintf(&b, "      - %s\n", c)
+		}
+	}
+	var ports []int
+	if svc.Port != 0 && svc.Network == "" {
+		ports = append(ports, svc.Port)
+	}
+	for _, j := range svc.Joiners {
+		if j.Port != 0 {
+			ports = append(ports, j.Port)
+		}
+	}
+	if len(ports) > 0 {
 		b.WriteString("    ports:\n")
-		fmt.Fprintf(&b, "      - \"%d:%d\"\n", svc.Port, svc.Port)
+	}
+	for _, p := range ports {
+		fmt.Fprintf(&b, "      - \"%d:%d\"\n", p, p)
 	}
 	if svc.Provides == manifest.InterfacePostgres {
 		b.WriteString("    ports:\n")
@@ -349,6 +371,9 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 	if links != nil && len(links.Waits) > 0 {
 		writeWait(&b, links)
 	}
+	if len(svc.Joiners) > 0 {
+		writeRejoin(&b, project, env, svc)
+	}
 	if named := svc.NamedVolumes(); len(named) > 0 {
 		b.WriteString("volumes:\n")
 		for _, v := range named {
@@ -361,6 +386,69 @@ func renderCompose(env, project string, svc manifest.Service, image string, link
 		}
 	}
 	return b.String()
+}
+
+// AppContainer is the name Docker gives an application's container: its
+// Stack's compose project (the Stack's name), service app.
+func AppContainer(project, service, env string) string {
+	return project + "-" + service + "-" + env + "-app-1"
+}
+
+// RejoinImage runs the rejoin service: the Docker CLI.
+const RejoinImage = "docker.io/library/docker:28.5.1-cli"
+
+// rejoinScript is what the rejoin service runs, with TARGET and JOINERS
+// set: each time the target's container turns healthy, and once when the
+// service starts, a joining container that is stopped, or started before
+// the target's last start, is restarted and joins its network anew. One
+// started after it is left alone.
+const rejoinScript = `started() { docker inspect -f '{{.State.StartedAt}}' "$$1" 2>/dev/null | cut -c1-19; }
+before() { [ "$$1" != "$$2" ] && [ "$$(printf '%s\n%s\n' "$$1" "$$2" | sort | head -n 1)" = "$$1" ]; }
+rejoin() {
+  [ "$$(docker inspect -f '{{.State.Health.Status}}' "$$TARGET" 2>/dev/null)" = healthy ] || return 0
+  since=$$(started "$$TARGET")
+  for j in $$JOINERS; do
+    docker inspect "$$j" >/dev/null 2>&1 || continue
+    if [ "$$(docker inspect -f '{{.State.Running}}' "$$j")" != true ] || before "$$(started "$$j")" "$$since"; then
+      echo "$$j: joining $$TARGET's network again"
+      docker restart "$$j" >/dev/null
+    fi
+  done
+}
+rejoin
+docker events --filter "container=$$TARGET" --filter event=health_status --format '{{.Status}}' |
+  while read -r status; do
+    case "$$status" in *unhealthy*) ;; *healthy*) rejoin ;; esac
+  done
+`
+
+// writeRejoin adds the service that restarts the applications joining
+// svc's network when they have lost it: a container that joined a
+// network keeps the namespace it joined, which goes when the other
+// container restarts or is recreated (urbforge/urbex-cli#139).
+func writeRejoin(b *strings.Builder, project, env string, svc manifest.Service) {
+	var joiners []string
+	for _, j := range svc.Joiners {
+		joiners = append(joiners, AppContainer(project, j.Name, env))
+	}
+	b.WriteString("\n  # Restarts the applications that join app's network once it is back,\n")
+	b.WriteString("  # healthy, after a restart: they lose it with the old container.\n")
+	b.WriteString("  rejoin:\n")
+	b.WriteString("    image: " + RejoinImage + "\n")
+	b.WriteString("    restart: unless-stopped\n")
+	writeKindLabels(b, svc.Name+"-rejoin", project, env)
+	b.WriteString("    environment:\n")
+	fmt.Fprintf(b, "      TARGET: %q\n", AppContainer(project, svc.Name, env))
+	fmt.Fprintf(b, "      JOINERS: %q\n", strings.Join(joiners, " "))
+	b.WriteString("    volumes:\n")
+	b.WriteString("      - /var/run/docker.sock:/var/run/docker.sock\n")
+	b.WriteString("    command:\n")
+	b.WriteString("      - sh\n")
+	b.WriteString("      - -c\n")
+	b.WriteString("      - |\n")
+	for _, line := range strings.Split(strings.TrimSuffix(rejoinScript, "\n"), "\n") {
+		b.WriteString("        " + line + "\n")
+	}
 }
 
 func renderConfig(vars map[string]string) string {
