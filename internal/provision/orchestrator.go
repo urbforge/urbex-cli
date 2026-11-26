@@ -126,7 +126,7 @@ type Orchestrator struct {
 	// plan doesn't.
 	buildVMTemplate bool
 	// skipped are the applications apply leaves out of Komodo because
-	// what they keep isn't mounted yet.
+	// what they keep isn't mounted yet, or they use one that is left out.
 	skipped map[string]bool
 	// linkPlan is what linkedTarget worked out: the applications'
 	// generated variables, their passwords among them.
@@ -196,7 +196,7 @@ func (o *Orchestrator) Plan(ctx context.Context, opts Options) error {
 // folder in the GitOps repo, its Stacks). If the environment already has
 // a version set, it waits for Komodo to run it; a new environment stays
 // empty until `urbex deploy` gives it one.
-func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
+func (o *Orchestrator) Apply(ctx context.Context, opts Options) (err error) {
 	o.Progress.Begin(PhasePrepare)
 	o.buildVMTemplate = true
 	tfDir, err := o.prepare(ctx, opts)
@@ -264,6 +264,13 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	notReady = withDependents(o.Manifest.Deployables(), notReady)
+	// A later step that fails must not hide the operator's commands.
+	defer func() {
+		if err != nil && len(notReady) > 0 {
+			o.printNotReady(opts.Env, notReady)
+		}
+	}()
 	o.skipped = map[string]bool{}
 	for _, m := range notReady {
 		o.skipped[m.service] = true
@@ -422,7 +429,9 @@ func (o *Orchestrator) Apply(ctx context.Context, opts Options) error {
 		fmt.Fprintln(o.Out, "No Cloudflare in urbex.platform.yaml: the services are reachable on their LAN addresses only.")
 	}
 	if len(notReady) > 0 {
-		return o.reportNotReady(opts.Env, notReady)
+		pending := notReady
+		notReady = nil // reported here, not again by the deferred print
+		return o.reportNotReady(opts.Env, pending)
 	}
 	return nil
 }

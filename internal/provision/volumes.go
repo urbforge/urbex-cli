@@ -334,6 +334,34 @@ type notReady struct {
 	command string // the operator's pct set, for a share or a device
 	device  bool   // the command binds a device
 	volumes string // the named volumes still unmounted
+	waitsOn string // the not-ready application it uses or joins
+}
+
+// withDependents adds to missing the applications that use one apply
+// leaves out - directly, or through another left out for that reason -
+// such as one that joins its network (network: implies uses:): started
+// now, they would wait for it in vain and fail the apply.
+func withDependents(services []manifest.Service, missing []notReady) []notReady {
+	skipped := map[string]bool{}
+	for _, m := range missing {
+		skipped[m.service] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, svc := range services {
+			if skipped[svc.Name] {
+				continue
+			}
+			for _, dep := range svc.Uses {
+				if skipped[dep] {
+					skipped[svc.Name], changed = true, true
+					missing = append(missing, notReady{service: svc.Name, waitsOn: dep})
+					break
+				}
+			}
+		}
+	}
+	return missing
 }
 
 // mountVolumes gives each application's LXC the volumes urbex.yaml
@@ -615,11 +643,34 @@ func (o *Orchestrator) attachVMDisks(ctx context.Context, svc manifest.Service, 
 // operator's commands for their shares, and fails: the environment isn't
 // complete. An application never starts without what it keeps.
 func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
+	devices := o.printNotReady(env, missing)
 	services := map[string]bool{}
+	for _, m := range missing {
+		services[m.service] = true
+	}
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if devices {
+		return fmt.Errorf("not deployed until their LXC has what they keep and the devices they need: %s", strings.Join(names, ", "))
+	}
+	return fmt.Errorf("not deployed until what they keep is mounted: %s", strings.Join(names, ", "))
+}
+
+// printNotReady prints why each application apply skipped waits, with
+// the operator's commands, and says whether one of them binds a device.
+// Apply prints it also when a later step fails, so the commands are
+// never hidden by that failure.
+func (o *Orchestrator) printNotReady(env string, missing []notReady) bool {
 	first, devices := true, false
 	printed := map[string]bool{}
 	for _, m := range missing {
-		services[m.service] = true
+		if m.waitsOn != "" {
+			fmt.Fprintf(o.Out, "%s: not deployed until %s is - it uses it, and started now it would wait for it in vain.\n", m.service, m.waitsOn)
+			continue
+		}
 		if m.command == "" {
 			fmt.Fprintf(o.Out, "%s: the volumes %s of its LXC are not mounted yet, and a container started now would write to the LXC's own disk.\n", m.service, m.volumes)
 			continue
@@ -637,16 +688,8 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 	if devices {
 		fmt.Fprintf(o.Out, "An application in a VM (machine: vm) needs no command for /dev/net/tun: the VM has its own.\n")
 	}
-	names := make([]string, 0, len(services))
-	for name := range services {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 	fmt.Fprintf(o.Out, "Then run 'urbex apply %s' again.\n", env)
-	if devices {
-		return fmt.Errorf("not deployed until their LXC has what they keep and the devices they need: %s", strings.Join(names, ", "))
-	}
-	return fmt.Errorf("not deployed until what they keep is mounted: %s", strings.Join(names, ", "))
+	return devices
 }
 
 // checkDeleteData refuses to destroy LXCs with named volumes unless
