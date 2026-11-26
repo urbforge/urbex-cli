@@ -352,6 +352,9 @@ type ProcedureConfig struct {
 	ScheduleFormat  string `json:"schedule_format"`
 	Schedule        string `json:"schedule"`
 	ScheduleEnabled bool   `json:"schedule_enabled"`
+	// ScheduleTimezone is the schedule's IANA time zone; "" is Komodo
+	// Core's (TZ, Etc/UTC on the platform).
+	ScheduleTimezone string `json:"schedule_timezone,omitempty"`
 }
 
 // Stage is a set of executions run in parallel; stages run in order.

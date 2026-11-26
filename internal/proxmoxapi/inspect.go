@@ -73,7 +73,18 @@ func (c *Client) Pools(ctx context.Context) ([]string, error) {
 // Permissions returns the token's privileges, by path ("/pool/urbex",
 // "/storage/local-zfs", "/sdn/zones/localnetwork/vmbr0", ...).
 func (c *Client) Permissions(ctx context.Context) (map[string]map[string]bool, error) {
-	data, err := c.call(ctx, http.MethodGet, "/access/permissions", nil)
+	return c.permissions(ctx, "/access/permissions")
+}
+
+// PermissionsOf returns a user's privileges, by path. A token may ask its
+// own user's: a privilege-separated token has only what both have, so
+// the two tell which half is missing.
+func (c *Client) PermissionsOf(ctx context.Context, userid string) (map[string]map[string]bool, error) {
+	return c.permissions(ctx, "/access/permissions?userid="+url.QueryEscape(userid))
+}
+
+func (c *Client) permissions(ctx context.Context, path string) (map[string]map[string]bool, error) {
+	data, err := c.call(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +153,33 @@ func (c *Client) Storages(ctx context.Context, node string) ([]Storage, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// StorageStatus returns one of the node's storages as the token sees
+// it, with Name, Type, Content and Active.
+func (c *Client) StorageStatus(ctx context.Context, node, storage string) (Storage, error) {
+	data, err := c.call(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/storage/%s/status", node, url.PathEscape(storage)), nil)
+	if err != nil {
+		return Storage{}, err
+	}
+	var raw struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+		Avail   int64  `json:"avail"`
+		Total   int64  `json:"total"`
+		Active  int    `json:"active"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Storage{}, err
+	}
+	var content []string
+	for _, c := range strings.Split(raw.Content, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			content = append(content, c)
+		}
+	}
+	sort.Strings(content)
+	return Storage{Name: storage, Type: raw.Type, Content: content, AvailGB: int(raw.Avail >> 30), TotalGB: int(raw.Total >> 30), Active: raw.Active == 1}, nil
 }
 
 // Volumes returns the volume IDs of a storage's content of a type

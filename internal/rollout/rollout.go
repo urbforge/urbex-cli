@@ -369,7 +369,12 @@ func (r *Rollout) SetupEnv(ctx context.Context, t Target, repo envrepo.Repo) err
 		if err := r.Komodo.EnsureStack(ctx, names[i], r.stackConfig(names[i], t, svc)); err != nil {
 			return err
 		}
-		if err := r.Komodo.TagResource(ctx, "Stack", names[i], tags...); err != nil {
+		stackTags := tags
+		if svc.Provides == manifest.InterfacePostgres {
+			// The backup dumps its databases first (ADR-0036).
+			stackTags = append(append([]string{}, tags...), bootstrap.DumpPostgresTag)
+		}
+		if err := r.Komodo.TagResource(ctx, "Stack", names[i], stackTags...); err != nil {
 			return err
 		}
 	}

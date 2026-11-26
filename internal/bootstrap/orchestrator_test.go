@@ -90,6 +90,7 @@ type fakePlatform struct {
 	actions         map[string]komodo.ActionConfig
 	variables       map[string]string
 	procedures      map[string]komodo.ProcedureConfig
+	deleted         []string // "Kind name" of the resources and variables deleted
 	technitiumZones []string
 	deletedZones    []string
 	forwarders      []string
@@ -208,6 +209,21 @@ func (k *fakeKomodo) EnsureProcedure(ctx context.Context, name string, cfg komod
 		k.f.procedures = map[string]komodo.ProcedureConfig{}
 	}
 	k.f.procedures[name] = cfg
+	return nil
+}
+func (k *fakeKomodo) DeleteVariable(ctx context.Context, name string) error {
+	delete(k.f.variables, name)
+	k.f.deleted = append(k.f.deleted, "Variable "+name)
+	return nil
+}
+func (k *fakeKomodo) DeleteResource(ctx context.Context, kind, name string) error {
+	switch kind {
+	case "Procedure":
+		delete(k.f.procedures, name)
+	case "Action":
+		delete(k.f.actions, name)
+	}
+	k.f.deleted = append(k.f.deleted, kind+" "+name)
 	return nil
 }
 func (k *fakeKomodo) EnsureGitProviderAccount(ctx context.Context, domain string, https bool, user, token string) error {

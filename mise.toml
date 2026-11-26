@@ -17,7 +17,7 @@ age = "1.2.1"
 python = "3.12.15"
 uv = "0.12.23"
 "pipx:ansible-core" = "2.21.5"
-# The runtime of Komodo's Actions: tests the reconciler's logic.
+# The runtime of Komodo's Actions: tests the reconciler's and the backup's logic.
 deno = "2.9.7"
 # Builds the release binaries and archives (.goreleaser.yaml).
 goreleaser = "2.19.0"
@@ -43,7 +43,7 @@ run = [
 description = "go vet, deno check, and check the code is gofmt-formatted"
 run = [
   "go vet ./...",
-  "deno check platform/komodo/reconcile_logic.ts platform/komodo/reconcile_logic_test.ts",
+  "deno check platform/komodo/reconcile_logic.ts platform/komodo/reconcile_logic_test.ts platform/komodo/backup_logic.ts platform/komodo/backup_logic_test.ts",
   'test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "not formatted - run: mise run fmt" >&2; exit 1; }',
 ]
 

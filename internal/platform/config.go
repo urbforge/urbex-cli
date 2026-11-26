@@ -42,6 +42,117 @@ type Config struct {
 	Komodo KomodoConfig `yaml:"komodo,omitempty"`
 	// Observability is about the observability stack (Grafana).
 	Observability ObservabilityConfig `yaml:"observability,omitempty"`
+	// Backups are the platform's and the projects' backups (ADR-0036).
+	Backups BackupsConfig `yaml:"backups,omitempty"`
+}
+
+// BackupsConfig is what is backed up, where and when (ADR-0036). Each
+// layer is off until its target is set: there is no default target.
+type BackupsConfig struct {
+	// Schedule is when the backups run every day, "HH:MM" (default
+	// 03:00), in Timezone.
+	Schedule string `yaml:"schedule,omitempty"`
+	// Timezone is Schedule's, an IANA name such as Europe/Rome (default
+	// Etc/UTC, Komodo's).
+	Timezone string `yaml:"timezone,omitempty"`
+	// Proxmox is the Proxmox layer: whole machines, with vzdump.
+	Proxmox ProxmoxBackups `yaml:"proxmox,omitempty"`
+}
+
+// ProxmoxBackups is the Proxmox layer (ADR-0036, point 3): vzdump of the
+// pool's machines to a storage the operator named.
+type ProxmoxBackups struct {
+	// Storage is the Proxmox storage the backups go to: a Proxmox Backup
+	// Server datastore added to the node, or any storage whose content
+	// includes backup. Empty: the layer is off.
+	Storage string `yaml:"storage,omitempty"`
+	// Machines are which of the pool's machines: platform, projects, or
+	// both (the default).
+	Machines []string `yaml:"machines,omitempty"`
+	// Mode is vzdump's mode: snapshot (the default), suspend or stop.
+	Mode string `yaml:"mode,omitempty"`
+	// Modes override Mode for some machines, by hostname.
+	Modes map[string]string `yaml:"modes,omitempty"`
+	// Keep is how many backups of each machine vzdump keeps.
+	Keep Retention `yaml:"keep,omitempty"`
+}
+
+// Retention is how many daily, weekly and monthly backups are kept; 0
+// is the default.
+type Retention struct {
+	Daily   int `yaml:"daily,omitempty"`
+	Weekly  int `yaml:"weekly,omitempty"`
+	Monthly int `yaml:"monthly,omitempty"`
+}
+
+// The backups' defaults (ADR-0036, point 6).
+const (
+	DefaultBackupSchedule = "03:00"
+	DefaultBackupTimezone = "Etc/UTC"
+	DefaultBackupMode     = "snapshot"
+	DefaultKeepDaily      = 7
+	DefaultKeepWeekly     = 4
+	DefaultKeepMonthly    = 6
+)
+
+// Which machines the Proxmox layer backs up (ProxmoxBackups.Machines).
+const (
+	BackupPlatform = "platform"
+	BackupProjects = "projects"
+)
+
+// vzdump's modes.
+var backupModes = []string{"snapshot", "suspend", "stop"}
+
+// WithDefaults is b with the defaults where it sets nothing.
+func (b BackupsConfig) WithDefaults() BackupsConfig {
+	if b.Schedule == "" {
+		b.Schedule = DefaultBackupSchedule
+	}
+	if b.Timezone == "" {
+		b.Timezone = DefaultBackupTimezone
+	}
+	p := &b.Proxmox
+	if len(p.Machines) == 0 {
+		p.Machines = []string{BackupPlatform, BackupProjects}
+	}
+	if p.Mode == "" {
+		p.Mode = DefaultBackupMode
+	}
+	if p.Keep.Daily == 0 {
+		p.Keep.Daily = DefaultKeepDaily
+	}
+	if p.Keep.Weekly == 0 {
+		p.Keep.Weekly = DefaultKeepWeekly
+	}
+	if p.Keep.Monthly == 0 {
+		p.Keep.Monthly = DefaultKeepMonthly
+	}
+	return b
+}
+
+// Enabled reports whether the Proxmox layer is on: it has a storage.
+func (p ProxmoxBackups) Enabled() bool { return p.Storage != "" }
+
+// Backs reports whether the Proxmox layer backs up the machines of a
+// kind: BackupPlatform or BackupProjects.
+func (p ProxmoxBackups) Backs(kind string) bool {
+	return p.Enabled() && slices.Contains(p.Machines, kind)
+}
+
+// Cron is Schedule as a cron expression with seconds, as Komodo's
+// Procedures take it: "0 0 3 * * *" for 03:00.
+func (b BackupsConfig) Cron() string {
+	h, m, _ := strings.Cut(b.WithDefaults().Schedule, ":")
+	return fmt.Sprintf("0 %d %d * * *", atoi(m), atoi(h))
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, r := range s {
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // ObservabilityConfig is about the observability stack.
@@ -343,6 +454,7 @@ func LoadFile(path string) (*Config, error) {
 
 func applyDefaults(cfg *Config) {
 	cfg.Komodo.BuildCache = cfg.Komodo.BuildCache.WithDefaults()
+	cfg.Backups = cfg.Backups.WithDefaults()
 	if cfg.Git.ForgeURL == "" {
 		cfg.Git.ForgeURL = cfg.Git.LegacyGiteaURL
 	}
@@ -438,9 +550,55 @@ func (c *Config) Validate() []string {
 			errs = append(errs, "komodo.buildCache."+field+": "+v+" is not a duration of an hour or more, such as 24h")
 		}
 	}
+	errs = append(errs, c.validateBackups()...)
 
 	return errs
 }
+
+// validateBackups checks backups.
+func (c *Config) validateBackups() []string {
+	var errs []string
+	b := c.Backups
+	if b.Schedule != "" && !dailyTime.MatchString(b.Schedule) {
+		errs = append(errs, "backups.schedule: "+b.Schedule+" is not a time of day such as 03:00")
+	}
+	if b.Timezone != "" && !timezone.MatchString(b.Timezone) {
+		errs = append(errs, "backups.timezone: "+b.Timezone+" is not a time zone such as Europe/Rome or Etc/UTC")
+	}
+	p := b.Proxmox
+	if p.Enabled() && c.Proxmox.Pool == "" {
+		errs = append(errs, "backups.proxmox.storage needs proxmox.pool: only the pool's machines are backed up, never another guest of the node")
+	}
+	if strings.ContainsAny(p.Storage, " ,/:=\t") {
+		errs = append(errs, "backups.proxmox.storage: "+p.Storage+" is not a Proxmox storage's name")
+	}
+	for _, m := range p.Machines {
+		if m != BackupPlatform && m != BackupProjects {
+			errs = append(errs, "backups.proxmox.machines: "+m+" is not platform or projects")
+		}
+	}
+	if p.Mode != "" && !slices.Contains(backupModes, p.Mode) {
+		errs = append(errs, "backups.proxmox.mode: "+p.Mode+" is not snapshot, suspend or stop")
+	}
+	for _, host := range slices.Sorted(maps.Keys(p.Modes)) {
+		if !slices.Contains(backupModes, p.Modes[host]) {
+			errs = append(errs, "backups.proxmox.modes."+host+": "+p.Modes[host]+" is not snapshot, suspend or stop")
+		}
+	}
+	for field, n := range map[string]int{"daily": p.Keep.Daily, "weekly": p.Keep.Weekly, "monthly": p.Keep.Monthly} {
+		if n < 0 {
+			errs = append(errs, fmt.Sprintf("backups.proxmox.keep.%s: %d is not a number of backups", field, n))
+		}
+	}
+	slices.Sort(errs)
+	return errs
+}
+
+// dailyTime is a time of day, HH:MM.
+var dailyTime = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+
+// timezone is an IANA time zone's name.
+var timezone = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`)
 
 // telegramChat is a Telegram chat id: a number (negative for a group) or
 // a public channel's @name.
