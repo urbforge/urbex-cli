@@ -42,4 +42,5 @@ platform/stacks/             embedded compose files of the platform's services (
 platform/komodo/             the Komodo Actions urbex-release, which builds main, moves staging and publishes release tags, urbex-reconcile, which brings linked applications back, and urbex-backup, which dumps the databases and backs the machines up with vzdump
 e2e/                         end-to-end test of the real binary (podman)
 tools/operator/              urbex-op: urbex and its tools in a container, run against a workspace
+tools/release/               the release: its notes from CHANGELOG.md, and prepare.sh, which opens the release pull requests (docs/release-app.md)
 ```

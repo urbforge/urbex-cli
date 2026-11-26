@@ -1,0 +1,77 @@
+# The release preparation (urbforge/urbex-cli#156): run by hand with the
+# version, it opens the release pull requests of urbex-cli and urbex, as
+# drafts, on docs/release-vX.Y.Z - each CHANGELOG.md with the version's
+# section drafted from the pull requests merged since the previous tag,
+# and urbex's docs moved to the version (tools/release/prepare.sh). A
+# person edits the drafts in the pull requests. Nothing is tagged or
+# published here.
+#
+# It acts as the urbforge release GitHub App: GITHUB_TOKEN can't push to
+# urbex, and pull requests it opens start no workflows, so CI wouldn't
+# check them. The App's client ID and private key are the secrets
+# RELEASE_APP_CLIENT_ID and RELEASE_APP_PRIVATE_KEY (docs/release-app.md).
+name: prepare-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to release, X.Y.Z (no v)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'urbforge/urbex-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: The version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$VERSION is not a release version X.Y.Z"; exit 1; }
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: urbforge
+          repositories: urbex-cli,urbex
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: urbex-cli
+          fetch-depth: 0 # the tags and the commits since the previous one
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: urbforge/urbex
+          path: urbex
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      # The commits are the App's: its bot user's name and noreply address.
+      - name: Commit as the App
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          id=$(gh api "/users/$SLUG%5Bbot%5D" --jq .id)
+          for dir in urbex-cli urbex; do
+            git -C "$dir" config user.name "$SLUG[bot]"
+            git -C "$dir" config user.email "$id+$SLUG[bot]@users.noreply.github.com"
+          done
+      - name: Open the release pull requests
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          DOCS_DIR: ${{ github.workspace }}/urbex
+        run: urbex-cli/tools/release/prepare.sh "$VERSION" --push
