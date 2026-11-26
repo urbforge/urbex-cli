@@ -1,6 +1,8 @@
 package envrepo
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,7 +321,7 @@ func TestCompose_HealthcheckWgetOrCurl(t *testing.T) {
 	if len(test) != 2 || test[0] != "CMD-SHELL" || test[1] != HealthProbe("http://localhost:80/alive") {
 		t.Fatalf("healthcheck test = %q", test)
 	}
-	for _, want := range []string{"wget -q --spider 'http://localhost:80/alive'", "curl -fsS -o /dev/null 'http://localhost:80/alive'", "neither wget nor curl"} {
+	for _, want := range []string{"wget -q -O /dev/null 'http://localhost:80/alive'", "curl -fsS -o /dev/null 'http://localhost:80/alive'", "neither wget nor curl"} {
 		if !strings.Contains(test[1], want) {
 			t.Errorf("expected %q in %s", want, test[1])
 		}
@@ -355,7 +357,7 @@ func TestHealthProbe_RunsInSh(t *testing.T) {
 		t.Errorf("curl only: err %v, %q", err, out)
 	}
 	fake("wget")
-	if out, err := run(); err != nil || out != "wget -q --spider http://localhost:80/it's\n" {
+	if out, err := run(); err != nil || out != "wget -q -O /dev/null http://localhost:80/it's\n" {
 		t.Errorf("wget: err %v, %q", err, out)
 	}
 }
@@ -421,8 +423,8 @@ func TestWriteService_LinkedServiceWaitsInItsOwnStack(t *testing.T) {
 		`restart: "no"`,
 		"end=$$(( $$(date +%s) + 180 ))",
 		`name=db host=db.staging.my-app.lab; probe() { pg_isready -q -t 2 -h "$$1" -p 5432; }; wait_for || exit 1`,
-		`name=ml host=ml.staging.my-app.lab; probe() { wget -q --spider -T 2 --header "Host: ml.staging.my-app.lab:3003" "http://$$1:3003/healthz"; }; wait_for || exit 1`,
-		`name=auth host=auth.staging.my-app.lab; probe() { wget -q --spider -T 2 --header "Host: auth.staging.my-app.lab:9000" "http://$$1:9000/ready"; }; wait_for || exit 1`,
+		`name=ml host=ml.staging.my-app.lab; probe() { wget -q -O /dev/null -T 2 --header "Host: ml.staging.my-app.lab:3003" "http://$$1:3003/healthz"; }; wait_for || exit 1`,
+		`name=auth host=auth.staging.my-app.lab; probe() { wget -q -O /dev/null -T 2 --header "Host: auth.staging.my-app.lab:9000" "http://$$1:9000/ready"; }; wait_for || exit 1`,
 		// How it decides is TestWait_*; a provider that doesn't answer
 		// is probed less and less often, with jitter.
 		"sleep $$((delay + $${RANDOM:-0} % (delay + 1)))",
@@ -508,5 +510,37 @@ func TestWriteService_AnUnlinkedServiceIsUnchanged(t *testing.T) {
 	}
 	if strings.Contains(read(t, filepath.Join(dir, ComposeFile)), "      - urbex.env") {
 		t.Error("an unlinked service does not load the generated file")
+	}
+}
+
+// The probe GETs, with the wget or curl of the machine: a health endpoint
+// that refuses HEAD, as Gluetun's control server does (405), passes
+// (urbforge/urbex-cli#173). GNU wget's --spider sent HEAD.
+func TestHealthProbe_PassesAnEndpointThatRefusesHEAD(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Write([]byte(`{"public_ip":"192.0.2.1"}`))
+	}))
+	defer srv.Close()
+	for _, tool := range []string{"wget", "curl"} {
+		t.Run(tool, func(t *testing.T) {
+			path, err := exec.LookPath(tool)
+			if err != nil {
+				t.Skipf("no %s on this machine", tool)
+			}
+			// Only that tool on the PATH, so the probe takes its branch.
+			bin := t.TempDir()
+			if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", "-c", HealthProbe(srv.URL+"/v1/publicip/ip"))
+			cmd.Env = []string{"PATH=" + bin}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("%s: %v\n%s", tool, err, out)
+			}
+		})
 	}
 }
