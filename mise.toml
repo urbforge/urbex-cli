@@ -37,6 +37,7 @@ run = [
   "deno test --no-prompt platform/komodo",
   "bash tools/operator/test-urbex-op.sh",
   "bash tools/release/test-notes.sh",
+  "python3 tools/release/test-changelog-draft.py",
 ]
 
 [tasks.lint]
