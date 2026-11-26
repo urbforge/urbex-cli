@@ -38,6 +38,7 @@ See https://github.com/urbforge/urbex for architecture and design decisions.`,
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newDestroyCmd())
 	root.AddCommand(newTeardownCmd())
+	root.AddCommand(newRestoreCmd())
 	root.AddCommand(newUsersCmd())
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newDiscoverCmd())
