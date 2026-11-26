@@ -666,9 +666,10 @@ func (o *Orchestrator) reportNotReady(env string, missing []notReady) error {
 func (o *Orchestrator) printNotReady(env string, missing []notReady) bool {
 	first, devices := true, false
 	printed := map[string]bool{}
+	var waiting []notReady
 	for _, m := range missing {
 		if m.waitsOn != "" {
-			fmt.Fprintf(o.Out, "%s: not deployed until %s is - it uses it, and started now it would wait for it in vain.\n", m.service, m.waitsOn)
+			waiting = append(waiting, m)
 			continue
 		}
 		if m.command == "" {
@@ -687,6 +688,9 @@ func (o *Orchestrator) printNotReady(env string, missing []notReady) bool {
 	}
 	if devices {
 		fmt.Fprintf(o.Out, "An application in a VM (machine: vm) needs no command for /dev/net/tun: the VM has its own.\n")
+	}
+	for _, m := range waiting {
+		fmt.Fprintf(o.Out, "%s: not deployed until %s is - it uses it, and started now it would wait for it in vain.\n", m.service, m.waitsOn)
 	}
 	fmt.Fprintf(o.Out, "Then run 'urbex apply %s' again.\n", env)
 	return devices
