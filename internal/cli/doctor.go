@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -96,6 +97,19 @@ docs/reference/cli.md in urbforge/urbex.`,
 				bk = proxmoxapi.New(cfg.Proxmox.APIURL, creds.ProxmoxBackupToken, cfg.Proxmox.Insecure)
 			}
 			doctor.BackupChecks(ctx, bk, creds.ProxmoxBackupToken, cfg, r)
+			if cfg != nil {
+				var shareCommands []string
+				var shareErr error
+				if f := cfg.Backups.Files; f.Enabled() && !f.S3() {
+					if mp, ok := p.(bootstrap.MountPointReader); ok && mp != nil {
+						shareCommands, shareErr = bootstrap.BackupShareCommands(ctx, bootstrap.BackupShareConfig(cfg), mp)
+					} else {
+						shareErr = errors.New("no Proxmox API to read them with: is proxmoxToken set?")
+					}
+				}
+				doctor.FilesBackupChecks(cfg, doctor.FilesCredentials{Password: creds.BackupPassword, S3KeyID: creds.BackupS3AccessKeyID,
+					S3Secret: creds.BackupS3SecretAccessKey, SecretsStored: creds.BackupSecretsStored}, shareCommands, shareErr, r)
+			}
 			var cf doctor.CloudflareReader
 			if cfg != nil && creds.CloudflareToken != "" {
 				cf = cloudflare.New(cloudflare.DefaultBaseURL, creds.CloudflareToken, cfg.Cloudflare.AccountID, cfg.Cloudflare.ZoneID)

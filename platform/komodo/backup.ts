@@ -9,10 +9,15 @@
 //     own (BackupCoreDatabase, into /etc/komodo/backups on its LXC),
 //     Forgejo's SQLite and Keycloak's PostgreSQL, the projects'
 //     PostgreSQL servers;
-//  2. backs up the pool's machines with vzdump, through the Proxmox API,
-//     with the backup token (VM.Backup on the pool, Datastore.* on the
-//     storage: nothing else), to backups.proxmox.storage, and waits for
-//     each task.
+//  2. with the Proxmox layer, backs up the pool's machines with vzdump,
+//     through the Proxmox API, with the backup token (VM.Backup on the
+//     pool, Datastore.* on the storage: nothing else), to
+//     backups.proxmox.storage, and waits for each task;
+//  3. with the file layer (urbforge/urbex-cli#122), copies the forge's,
+//     Komodo's and Keycloak's data with restic, from the backup Stack next
+//     to each, into the platform's repository; then forgets the snapshots
+//     beyond backups.files.keep, prunes on Sundays and checks a sample on
+//     the 1st of the month.
 // A failed dump doesn't stop the backups: the machine is still saved,
 // with its last good dump. The run fails at the end, so Komodo shows it,
 // and sends a line per failure to Loki, where Grafana alerts on them.
@@ -111,7 +116,7 @@ async function taskLog(upid: string): Promise<string> {
 }
 
 /** Runs a command in a Stack's service, through a Komodo terminal: its output and exit code. */
-async function runIn(d: Dump, command: string): Promise<{ output: string; code: string }> {
+async function runIn(d: { stack: string; service: string }, command: string): Promise<{ output: string; code: string }> {
   const lines: string[] = [];
   let code = "";
   const terminal = `urbex-backup-${d.service}`;
@@ -132,7 +137,7 @@ async function runIn(d: Dump, command: string): Promise<{ output: string; code: 
 /** Dumps the databases; returns the failures. */
 async function dumpDatabases(log: (line: string) => void): Promise<string[]> {
   const failures: string[] = [];
-  if (CONFIG.machines.includes("platform")) {
+  if (dumpsPlatform(CONFIG)) {
     try {
       const update: any = await deadline(komodo.execute_and_poll("BackupCoreDatabase", {}), DUMP_TIMEOUT_MS, "Komodo's database");
       if (update?.success === false) throw new Error("BackupCoreDatabase failed: see its update in Komodo");
@@ -204,6 +209,39 @@ async function backUpMachines(log: (line: string) => void): Promise<string[]> {
   return failures;
 }
 
+/** The file layer: restic in each backup Stack, then the retention; returns the failures. */
+async function backUpFiles(files: FilesConfig, log: (line: string) => void): Promise<string[]> {
+  const failures: string[] = [];
+  let first: FileStack | undefined; // the first Stack that backed up
+  for (const s of files.stacks) {
+    try {
+      const { output, code } = await runIn({ stack: s.stack, service: "restic" }, resticBackupCommand(s));
+      if (code !== "0") throw new Error(`exit ${code || "unknown"}: ${output.split("\n").slice(-3).join(" | ")}`);
+      // restic's last lines: "Added to the repository: ...", "snapshot ... saved".
+      log(`restic ${s.host}: ${output.split("\n").filter((l) => /Added to the repository|snapshot .* saved/.test(l)).join("; ")}`);
+      first ??= s;
+    } catch (err) {
+      failures.push(`restic ${s.host}: not backed up (${message(err)})`);
+    }
+  }
+  // The retention, once for the repository, from the first Stack that
+  // backed up: no snapshot is forgotten on a day nothing was saved.
+  if (!first) return failures;
+  const m = maintenance(new Date());
+  const steps: [string, string][] = [[`forget${m.prune ? " and prune" : ""}`, resticForgetCommand(files.keep, m.prune)]];
+  if (m.check) steps.push(["check", RESTIC_CHECK]);
+  for (const [what, command] of steps) {
+    try {
+      const { output, code } = await runIn({ stack: first.stack, service: "restic" }, command);
+      if (code !== "0") throw new Error(`exit ${code || "unknown"}: ${output.split("\n").slice(-3).join(" | ")}`);
+      log(`restic ${what}: done`);
+    } catch (err) {
+      failures.push(`restic ${what} failed (${message(err)})`);
+    }
+  }
+  return failures;
+}
+
 async function main(): Promise<void> {
   const lines: string[] = [];
   const log = (line: string) => {
@@ -218,12 +256,21 @@ async function main(): Promise<void> {
     failures.push(`dumps: ${message(err)}`);
   }
   if (ARGS?.DUMPS_ONLY) {
-    log("dumps only: no vzdump this run");
+    log("dumps only: no backups this run");
   } else {
-    try {
-      failures.push(...await backUpMachines(log));
-    } catch (err) {
-      failures.push(`proxmox: ${message(err)}`);
+    if (CONFIG.proxmox) {
+      try {
+        failures.push(...await backUpMachines(log));
+      } catch (err) {
+        failures.push(`proxmox: ${message(err)}`);
+      }
+    }
+    if (CONFIG.files) {
+      try {
+        failures.push(...await backUpFiles(CONFIG.files, log));
+      } catch (err) {
+        failures.push(`files: ${message(err)}`);
+      }
     }
   }
   for (const f of failures) console.log(`FAILED ${f}`);

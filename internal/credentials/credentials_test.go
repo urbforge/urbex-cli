@@ -170,6 +170,7 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 	if err := c.Update(func(c *Credentials) {
 		c.ProxmoxToken, c.AgeKey, c.CloudflareToken = "pve", "age", "cf"
 		c.ForgeToken, c.KomodoAPIKey, c.GrafanaAdminPassword = "g", "k", "p"
+		c.BackupPassword, c.BackupS3SecretAccessKey = "restic", "s3"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +185,11 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 	for _, got := range []*Credentials{c, onDisk} {
 		if got.ProxmoxToken != "pve" || got.AgeKey != "age" || got.CloudflareToken != "cf" {
 			t.Errorf("provided credentials lost: %+v", got)
+		}
+		// Without the backup password the backups can't be read: it
+		// outlives the platform (urbforge/urbex-cli#122).
+		if got.BackupPassword != "restic" || got.BackupS3SecretAccessKey != "s3" {
+			t.Errorf("the backups' credentials lost: %+v", got)
 		}
 		if got.ForgeToken != "" || got.KomodoAPIKey != "" || got.GrafanaAdminPassword != "" {
 			t.Errorf("generated credentials kept: %+v", got)

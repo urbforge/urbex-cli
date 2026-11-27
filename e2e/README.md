@@ -50,6 +50,7 @@ file's order, whatever order you name them in.
 | `reconciler`, `reboot`, `reconciler-destroy` | `linked`, then each the one before it |
 | `group` | the platform; it destroys a `site`, `shop` or `box` an earlier run left |
 | `network` | the platform; it destroys a `site`, `shop`, `box` or `vpn` an earlier run left |
+| `backups` | the platform, built by a run that has this step (its machines bind the node's share); it switches the file layer on, then off again |
 
 ## What is real and what isn't
 
@@ -153,6 +154,14 @@ runner and fails the test on the first assertion that doesn't hold:
     next run of the reconciler finds no environment with links and
     succeeds: it reads the graphs by name, from the Stacks Komodo lists,
     and a missing one, as for `hello`, which has no links, is skipped.
+20. The file layer of the backups (`backups`): with a share target,
+    bootstrap prints the operator's `pct set` for the forge's, Komodo's
+    and Keycloak's LXCs and waits; once they are bound (the fake node's
+    configuration; the machines bind one folder of the work dir), it
+    deploys restic next to each, and two runs of the backup Action leave
+    one snapshot per machine, with the dumps, in one repository in the
+    share. Switched off, its Stacks and variables go and the services
+    stay up.
 
 ## When a step fails
 

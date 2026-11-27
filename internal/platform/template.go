@@ -62,6 +62,10 @@ keycloak:
 #     # machines: [platform, projects] # default both
 #     # mode: snapshot # or suspend, stop; per machine in modes: {urbex-gitea: stop}
 #     # keep: {daily: 7, weekly: 4, monthly: 6}
+#   files: # the forge's, Komodo's and Keycloak's data with restic, off the node
+#     target: s3:https://s3.eu-central-003.backblazeb2.com/my-bucket/urbex # needs backupS3AccessKeyId and backupS3SecretAccessKey
+#     # target: share:media/urbex-backups # or a folder of one of storage.shares
+#     # keep: {daily: 7, weekly: 4, monthly: 6}
 `
 
 // WriteTemplate writes a starter urbex.platform.yaml to path, to be edited

@@ -3,6 +3,12 @@ import {
   type BackupConfig,
   dumpCommand,
   dumps,
+  dumpsPlatform,
+  type FilesConfig,
+  maintenance,
+  RESTIC_CHECK,
+  resticBackupCommand,
+  resticForgetCommand,
   FORGEJO_DUMP,
   POSTGRES_DUMP,
   projectDumps,
@@ -34,8 +40,18 @@ const cfg = (o: Partial<BackupConfig> = {}): BackupConfig => ({
   modes: {},
   keep: { daily: 7, weekly: 4, monthly: 6 },
   platform_hosts: ["urbex-gitea", "urbex-komodo", "urbex-keycloak"],
+  proxmox: true,
+  files: null,
   ...o,
 });
+
+const files: FilesConfig = {
+  stacks: [
+    { stack: "urbex-backup-gitea", host: "urbex-gitea", paths: ["/data/gitea"] },
+    { stack: "urbex-backup-komodo", host: "urbex-komodo", paths: ["/data/komodo"] },
+  ],
+  keep: { daily: 7, weekly: 4, monthly: 6 },
+};
 
 const resources: Resource[] = [
   { vmid: 9003, name: "urbex-keycloak", node: "pve", pool: "urbex", type: "lxc" },
@@ -115,4 +131,33 @@ Deno.test("the retention, one machine at a time, with what the token has", () =>
     { volid: "pbs:backup/ct/9001/2026-11-24T01:00:00Z", mark: "keep" },
     { volid: "pbs:backup/ct/9001/2026-11-01T01:00:00Z", mark: "protected" },
   ]), ["pbs:backup/ct/9001/2026-11-20T01:00:00Z"], "only what is marked remove");
+});
+
+// The file layer (urbforge/urbex-cli#122): the platform's dumps run for it
+// even when the Proxmox layer is off or skips the platform; the projects'
+// only for the Proxmox layer, until the file layer copies their data (#123).
+Deno.test("dumps for the file layer", () => {
+  const projects = [{ stack: "shop-db-prod", service: "app", kind: "postgres" as const }];
+  eq(dumps(cfg({ proxmox: false, files }), projects).map((d) => d.stack), ["urbex-gitea", "urbex-keycloak"], "files only");
+  eq(dumps(cfg({ machines: ["projects"], files }), projects).map((d) => d.stack), ["urbex-gitea", "urbex-keycloak", "shop-db-prod"], "proxmox projects + files");
+  assert(!dumpsPlatform(cfg({ proxmox: false })), "neither layer: no platform dump");
+  assert(dumpsPlatform(cfg({ proxmox: false, files })), "files: the platform's dumps");
+});
+
+Deno.test("restic commands", () => {
+  const backup = resticBackupCommand(files.stacks[0]);
+  eq(backup, "(set -e; restic cat config >/dev/null 2>&1 || restic init; restic backup --host urbex-gitea --tag platform /data/gitea)", "backup");
+  eq(resticForgetCommand(files.keep, false),
+    "(set -e; restic forget --tag platform --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 6)", "forget");
+  assert(resticForgetCommand(files.keep, true).endsWith(" --prune)"), "forget with prune");
+  for (const c of [backup, resticForgetCommand(files.keep, true), RESTIC_CHECK]) {
+    assert(!/PASSWORD|AWS_|s3:/.test(c), `no secret or repository on the command line: ${c}`);
+    assert(c.length < 1024, `fits a terminal line: ${c}`);
+  }
+});
+
+Deno.test("maintenance days", () => {
+  eq(maintenance(new Date("2026-11-29T03:00:00Z")), { prune: true, check: false }, "a Sunday");
+  eq(maintenance(new Date("2026-12-01T03:00:00Z")), { prune: false, check: true }, "the 1st, a Tuesday");
+  eq(maintenance(new Date("2026-11-26T03:00:00Z")), { prune: false, check: false }, "a Thursday");
 });

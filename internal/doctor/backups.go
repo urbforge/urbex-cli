@@ -120,3 +120,63 @@ func BackupChecks(ctx context.Context, b BackupReader, token string, cfg *platfo
 			p.Storage, s.Type, s.AvailGB, s.TotalGB, bc.Schedule, bc.Timezone, p.Mode, p.Keep.Daily, p.Keep.Weekly, p.Keep.Monthly), "")
 	}
 }
+
+const filesBackupDoc = "docs/reference/platform-config.md#backups"
+
+// FilesBackupChecks checks the file layer of the backups
+// (urbforge/urbex-cli#122): configured or not, its password, the bucket's
+// key, the share bound into the platform's LXCs - shareCommands are the
+// operator's pct set commands still to run, shareErr why they couldn't be
+// read - and whether the operator has stored the two secrets a rebuild
+// needs off the platform.
+func FilesBackupChecks(cfg *platform.Config, creds FilesCredentials, shareCommands []string, shareErr error, r *Report) {
+	add := func(name, status, detail, fix string) {
+		r.add(Check{Group: "backups", Name: name, Status: status, Detail: detail, Fix: fix})
+	}
+	if cfg == nil {
+		return
+	}
+	b := cfg.Backups.WithDefaults()
+	f := b.Files
+	if !f.Enabled() {
+		detail := "off: no backups.files.target, so nothing is copied off the node"
+		if !b.Proxmox.Enabled() {
+			detail = "off, and the Proxmox layer too: nothing is backed up"
+		}
+		add("file layer", Warn, detail,
+			"set backups.files.target - a bucket (s3:https://<endpoint>/<bucket>) or a share (share:<name>/<folder>) - then 'urbex bootstrap' ("+filesBackupDoc+")")
+		return
+	}
+	if creds.Password == "" {
+		add("file layer", Fail, "backups.files.target is "+f.Target+" but there is no backupPassword yet",
+			"run 'urbex bootstrap': it generates the password and starts the backups")
+		return
+	}
+	if f.S3() && (creds.S3KeyID == "" || creds.S3Secret == "") {
+		add("file layer", Fail, "backups.files.target is a bucket, but backupS3AccessKeyId or backupS3SecretAccessKey is missing",
+			"create a key for the bucket, store both with 'urbex-op set', then 'urbex bootstrap'")
+		return
+	}
+	switch {
+	case shareErr != nil:
+		add("file layer", Fail, "the share's mount points can't be read: "+firstLine(shareErr.Error()), "check proxmoxToken and that the platform's LXCs exist")
+		return
+	case len(shareCommands) > 0:
+		add("file layer", Fail, f.Target+" isn't bound into the platform's LXCs yet, so the file layer doesn't run",
+			"on the node, as root: "+strings.Join(shareCommands, "; ")+", then 'urbex bootstrap'")
+		return
+	}
+	add("file layer", OK, fmt.Sprintf("the forge's, Komodo's and Keycloak's data to %s every day at %s %s, keep %d daily, %d weekly, %d monthly",
+		f.Target, b.Schedule, b.Timezone, f.Keep.Daily, f.Keep.Weekly, f.Keep.Monthly), "")
+	if creds.SecretsStored != "yes" {
+		add("backup secrets", Warn, "not confirmed stored off the platform: without the age key and backupPassword the backups can't be read",
+			"store both in a password manager, then 'urbex-op set backupSecretsStored' with yes")
+		return
+	}
+	add("backup secrets", OK, "the age key and backupPassword are stored off the platform (backupSecretsStored)", "")
+}
+
+// FilesCredentials are the file layer's credentials, from credentials.yaml.
+type FilesCredentials struct {
+	Password, S3KeyID, S3Secret, SecretsStored string
+}

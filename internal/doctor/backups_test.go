@@ -102,3 +102,44 @@ func TestBackupChecks(t *testing.T) {
 		t.Error("checked without a config")
 	}
 }
+
+// The file layer (urbforge/urbex-cli#122): off, with what's missing, or
+// running - and the secrets a rebuild needs, until they are stored.
+func TestFilesBackupChecks(t *testing.T) {
+	check := func(target string, creds FilesCredentials, commands []string, shareErr error) []Check {
+		cfg := &platform.Config{Storage: platform.StorageConfig{Shares: map[string]platform.Share{"nas": {Path: "/mnt/pve/nas"}}}}
+		cfg.Backups.Files.Target = target
+		r := &Report{}
+		FilesBackupChecks(cfg, creds, commands, shareErr, r)
+		return r.Checks
+	}
+	full := FilesCredentials{Password: "pw", S3KeyID: "id", S3Secret: "sk", SecretsStored: "yes"}
+	for _, tc := range []struct {
+		name, target string
+		creds        FilesCredentials
+		commands     []string
+		shareErr     error
+		want         []string // status and a piece of the detail or fix, per check
+	}{
+		{"off", "", full, nil, nil, []string{"warn nothing is backed up"}},
+		{"no password", "share:nas", FilesCredentials{}, nil, nil, []string{"fail urbex bootstrap"}},
+		{"bucket without key", "s3:https://s3.example.com/b", FilesCredentials{Password: "pw"}, nil, nil, []string{"fail backupS3AccessKeyId"}},
+		{"share not bound", "share:nas", full, []string{"pct set 9000 -mp0 /mnt/pve/nas,mp=/mnt/urbex-backup"}, nil, []string{"fail pct set 9000"}},
+		{"share unreadable", "share:nas", full, nil, errors.New("401"), []string{"fail 401"}},
+		{"running, secrets not stored", "share:nas/urbex", FilesCredentials{Password: "pw"}, nil, nil, []string{"ok share:nas/urbex", "warn backupSecretsStored"}},
+		{"running", "s3:https://s3.example.com/b", full, nil, nil, []string{"ok keep 7 daily", "ok stored off the platform"}},
+	} {
+		got := check(tc.target, tc.creds, tc.commands, tc.shareErr)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: %d checks, want %d: %+v", tc.name, len(got), len(tc.want), got)
+			continue
+		}
+		for i, w := range tc.want {
+			status, piece, _ := strings.Cut(w, " ")
+			c := got[i]
+			if c.Status != status || !strings.Contains(c.Detail+" "+c.Fix, piece) {
+				t.Errorf("%s: check %d = %+v, want %s with %q", tc.name, i, c, status, piece)
+			}
+		}
+	}
+}

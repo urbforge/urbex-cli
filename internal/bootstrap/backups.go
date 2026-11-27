@@ -66,6 +66,24 @@ type backupConfig struct {
 	Modes         map[string]string `json:"modes"`
 	Keep          backupKeep        `json:"keep"`
 	PlatformHosts []string          `json:"platform_hosts"`
+	// ProxmoxOn says the Proxmox layer runs; Files is the file layer's
+	// configuration, nil when it doesn't run.
+	ProxmoxOn bool         `json:"proxmox"`
+	Files     *filesConfig `json:"files"`
+}
+
+// filesConfig is BackupConfig.files in backup_logic.ts.
+type filesConfig struct {
+	Stacks []fileStack `json:"stacks"`
+	Keep   backupKeep  `json:"keep"`
+}
+
+// fileStack is a backup Stack: where restic runs, the host it names its
+// snapshots after, and what it copies.
+type fileStack struct {
+	Stack string   `json:"stack"`
+	Host  string   `json:"host"`
+	Paths []string `json:"paths"`
 }
 
 type backupKeep struct {
@@ -100,6 +118,8 @@ func (o *Orchestrator) BackupConfigJSON() (string, error) {
 		Modes:         modes,
 		Keep:          backupKeep{Daily: p.Keep.Daily, Weekly: p.Keep.Weekly, Monthly: p.Keep.Monthly},
 		PlatformHosts: hosts,
+		ProxmoxOn:     p.Enabled(),
+		Files:         o.filesConfig(),
 	})
 	if err != nil {
 		return "", err
@@ -122,32 +142,78 @@ type BackupKomodo interface {
 	TagResource(ctx context.Context, kind, name string, tags ...string) error
 }
 
-// setupBackups sets up the backups in Komodo when the Proxmox layer is
-// configured - the variables, the Action, the Procedure on
-// backups.schedule - and removes them when it isn't, the token first:
-// the platform never keeps a Proxmox token it doesn't use.
+// setupBackups sets up the backups in Komodo when a layer is configured
+// - the variables, the Action, the Procedure on backups.schedule - and
+// removes what a layer that is off left: its variables (the Proxmox
+// token first: the platform never keeps a token it doesn't use) and the
+// file layer's Stacks; with both layers off, the Action and the
+// Procedure too.
 func (o *Orchestrator) setupBackups(ctx context.Context, k BackupKomodo) error {
 	b := o.Config.Backups.WithDefaults()
-	if !b.Proxmox.Enabled() {
+	proxmoxOn, filesOn := b.Proxmox.Enabled(), o.filesReady
+	if !proxmoxOn {
+		if err := k.DeleteVariable(ctx, BackupTokenVariable); err != nil {
+			return err
+		}
+	}
+	if !filesOn {
+		// Their own compose project: removing them never touches the
+		// service next to them.
+		for _, svc := range FileBackupServices {
+			if err := k.DeleteResource(ctx, "Stack", FileBackupStackName(svc)); err != nil {
+				return err
+			}
+		}
+	}
+	if !filesOn || !b.Files.S3() {
+		for _, v := range []string{BackupS3KeyIDVariable, BackupS3SecretKeyVariable} {
+			if err := k.DeleteVariable(ctx, v); err != nil {
+				return err
+			}
+		}
+	}
+	if !filesOn {
+		for _, v := range []string{BackupRepositoryVariable, BackupPasswordVariable} {
+			if err := k.DeleteVariable(ctx, v); err != nil {
+				return err
+			}
+		}
+	}
+	if !proxmoxOn && !filesOn {
 		if err := k.DeleteResource(ctx, "Procedure", BackupProcedure); err != nil {
 			return err
 		}
 		if err := k.DeleteResource(ctx, "Action", BackupAction); err != nil {
 			return err
 		}
-		if err := k.DeleteVariable(ctx, BackupTokenVariable); err != nil {
-			return err
-		}
 		return k.DeleteVariable(ctx, BackupConfigVariable)
 	}
-	if o.Credentials.ProxmoxBackupToken == "" {
-		return ErrNoBackupToken
+	if proxmoxOn {
+		if o.Credentials.ProxmoxBackupToken == "" {
+			return ErrNoBackupToken
+		}
+		if err := k.EnsureVariable(ctx, BackupTokenVariable, o.Credentials.ProxmoxBackupToken, true); err != nil {
+			return err
+		}
+	}
+	if filesOn {
+		vars := []komodoVariable{
+			{BackupRepositoryVariable, o.backupRepository(), false},
+			{BackupPasswordVariable, o.Credentials.BackupPassword, true},
+		}
+		if b.Files.S3() {
+			vars = append(vars,
+				komodoVariable{BackupS3KeyIDVariable, o.Credentials.BackupS3AccessKeyID, true},
+				komodoVariable{BackupS3SecretKeyVariable, o.Credentials.BackupS3SecretAccessKey, true})
+		}
+		for _, v := range vars {
+			if err := k.EnsureVariable(ctx, v.name, v.value, v.secret); err != nil {
+				return err
+			}
+		}
 	}
 	cfg, err := o.BackupConfigJSON()
 	if err != nil {
-		return err
-	}
-	if err := k.EnsureVariable(ctx, BackupTokenVariable, o.Credentials.ProxmoxBackupToken, true); err != nil {
 		return err
 	}
 	if err := k.EnsureVariable(ctx, BackupConfigVariable, cfg, false); err != nil {
@@ -166,7 +232,7 @@ func (o *Orchestrator) setupBackups(ctx context.Context, k BackupKomodo) error {
 		ScheduleTimezone: b.Timezone,
 		ScheduleEnabled:  true,
 		Stages: []komodo.Stage{
-			komodo.NewStage("Dumps, then vzdump", "RunAction", "action", []string{BackupAction}),
+			komodo.NewStage("Dumps, then the backups", "RunAction", "action", []string{BackupAction}),
 		},
 	}); err != nil {
 		return err
@@ -177,7 +243,34 @@ func (o *Orchestrator) setupBackups(ctx context.Context, k BackupKomodo) error {
 	if err := k.TagResource(ctx, "Procedure", BackupProcedure, PlatformTag); err != nil {
 		return err
 	}
-	fmt.Fprintf(o.Out, "Backups: every day at %s (%s), the pool's %s machines to %s.\n",
-		b.Schedule, b.Timezone, strings.Join(b.Proxmox.Machines, " and "), b.Proxmox.Storage)
+	if proxmoxOn {
+		fmt.Fprintf(o.Out, "Backups: every day at %s (%s), the pool's %s machines to %s.\n",
+			b.Schedule, b.Timezone, strings.Join(b.Proxmox.Machines, " and "), b.Proxmox.Storage)
+	}
+	if filesOn {
+		fmt.Fprintf(o.Out, "Backups: every day at %s (%s), the forge's, Komodo's and Keycloak's data with restic to %s.\n",
+			b.Schedule, b.Timezone, b.Files.Target)
+	}
 	return nil
+}
+
+// komodoVariable is a Komodo variable setupBackups keeps.
+type komodoVariable struct {
+	name, value string
+	secret      bool
+}
+
+// filesConfig is the file layer's part of the Action's configuration, or
+// nil when it doesn't run. Each backup Stack mounts its data under /data
+// (platform/stacks/backup-*).
+func (o *Orchestrator) filesConfig() *filesConfig {
+	if !o.filesReady {
+		return nil
+	}
+	k := o.Config.Backups.WithDefaults().Files.Keep
+	fc := &filesConfig{Keep: backupKeep{Daily: k.Daily, Weekly: k.Weekly, Monthly: k.Monthly}}
+	for _, svc := range FileBackupServices {
+		fc.Stacks = append(fc.Stacks, fileStack{Stack: FileBackupStackName(svc), Host: Hostname(svc), Paths: []string{"/data/" + svc}})
+	}
+	return fc
 }

@@ -80,3 +80,20 @@ func TestPrintProjects_ContainerNamedWeb(t *testing.T) {
 		})
 	}
 }
+
+// urbex status says what is backed up, or that nothing is
+// (urbforge/urbex-cli#122).
+func TestBackupsSummary(t *testing.T) {
+	cfg := &platform.Config{}
+	if got := backupsSummary(cfg); !strings.Contains(got, "nothing is backed up") {
+		t.Errorf("no layer: %q", got)
+	}
+	cfg.Backups.Proxmox.Storage = "pbs"
+	cfg.Backups.Files.Target = "s3:https://s3.example.com/b"
+	got := backupsSummary(cfg)
+	for _, want := range []string{"vzdump to pbs", "restic to s3:https://s3.example.com/b", "every day at 03:00 Etc/UTC"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("both layers: %q lacks %q", got, want)
+		}
+	}
+}

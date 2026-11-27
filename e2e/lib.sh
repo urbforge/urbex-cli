@@ -238,3 +238,26 @@ keycloak_realm() {
     python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
   curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$NET.203:8080/admin/realms/$1"
 }
+
+# run_action <name>: runs a Komodo Action and waits for it (up to 20
+# minutes): "ok" or "FAILED", then what it logged.
+run_action() {
+  python3 - "$1" "$KOMODO" "$(cred komodoApiKey)" "$(cred komodoApiSecret)" <<'PY'
+import json, sys, time, urllib.request
+name, url, key, secret = sys.argv[1:]
+def call(path, body):
+    req = urllib.request.Request(f"{url}/{path}", json.dumps(body).encode(),
+        {"x-api-key": key, "x-api-secret": secret, "content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req))
+update = call("execute/RunAction", {"action": name})
+deadline = time.time() + 1200
+while True:
+    full = call("read/GetUpdate", {"id": update["_id"]["$oid"]})
+    if full.get("status") == "Complete" or time.time() > deadline:
+        break
+    time.sleep(5)
+text = " ".join(l.get("stdout", "") + " " + l.get("stderr", "") for l in full.get("logs", []))
+ok = full.get("success") and full.get("status") == "Complete"
+print(("ok " if ok else "FAILED ") + " ".join(text.split()))
+PY
+}

@@ -57,7 +57,45 @@ type BackupsConfig struct {
 	Timezone string `yaml:"timezone,omitempty"`
 	// Proxmox is the Proxmox layer: whole machines, with vzdump.
 	Proxmox ProxmoxBackups `yaml:"proxmox,omitempty"`
+	// Files is the file layer: the dumps and the data, with restic.
+	Files FilesBackups `yaml:"files,omitempty"`
 }
+
+// FilesBackups is the file layer (ADR-0036, point 4): restic copies of
+// the platform's data - the forge, Komodo's and Keycloak's dumps - into
+// one repository per platform, encrypted with backupPassword.
+type FilesBackups struct {
+	// Target is the restic repository: an S3-compatible bucket in
+	// restic's syntax, "s3:https://<endpoint>/<bucket>[/<prefix>]", or
+	// "share:<name>[/<folder>]", a folder of one of storage.shares.
+	// Empty: the layer is off.
+	Target string `yaml:"target,omitempty"`
+	// Keep is how many snapshots restic forget keeps.
+	Keep Retention `yaml:"keep,omitempty"`
+}
+
+// Enabled reports whether the file layer is on: it has a target.
+func (f FilesBackups) Enabled() bool { return f.Target != "" }
+
+// S3 reports whether the target is an S3-compatible bucket.
+func (f FilesBackups) S3() bool { return strings.HasPrefix(f.Target, FilesS3Prefix) }
+
+// Share is the share the target is on and the folder inside it ("" for
+// its root), or "" when the target isn't a share.
+func (f FilesBackups) Share() (name, folder string) {
+	rest, ok := strings.CutPrefix(f.Target, FilesSharePrefix)
+	if !ok {
+		return "", ""
+	}
+	name, folder, _ = strings.Cut(rest, "/")
+	return name, strings.Trim(folder, "/")
+}
+
+// The file layer's targets (FilesBackups.Target).
+const (
+	FilesS3Prefix    = "s3:"
+	FilesSharePrefix = "share:"
+)
 
 // ProxmoxBackups is the Proxmox layer (ADR-0036, point 3): vzdump of the
 // pool's machines to a storage the operator named.
@@ -128,7 +166,22 @@ func (b BackupsConfig) WithDefaults() BackupsConfig {
 	if p.Keep.Monthly == 0 {
 		p.Keep.Monthly = DefaultKeepMonthly
 	}
+	b.Files.Keep = b.Files.Keep.withDefaults()
 	return b
+}
+
+// withDefaults is r with ADR-0036's counts where it sets none.
+func (r Retention) withDefaults() Retention {
+	if r.Daily == 0 {
+		r.Daily = DefaultKeepDaily
+	}
+	if r.Weekly == 0 {
+		r.Weekly = DefaultKeepWeekly
+	}
+	if r.Monthly == 0 {
+		r.Monthly = DefaultKeepMonthly
+	}
+	return r
 }
 
 // Enabled reports whether the Proxmox layer is on: it has a storage.
@@ -590,7 +643,40 @@ func (c *Config) validateBackups() []string {
 			errs = append(errs, fmt.Sprintf("backups.proxmox.keep.%s: %d is not a number of backups", field, n))
 		}
 	}
+	errs = append(errs, c.validateFilesBackups()...)
 	slices.Sort(errs)
+	return errs
+}
+
+// validateFilesBackups checks backups.files.
+func (c *Config) validateFilesBackups() []string {
+	var errs []string
+	f := c.Backups.Files
+	switch {
+	case !f.Enabled():
+	case f.S3():
+		u, err := url.Parse(strings.TrimPrefix(f.Target, FilesS3Prefix))
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+			errs = append(errs, "backups.files.target: "+f.Target+" is not a bucket such as s3:https://s3.eu-central-003.backblazeb2.com/my-bucket/urbex")
+		}
+	default:
+		name, folder := f.Share()
+		if !strings.HasPrefix(f.Target, FilesSharePrefix) {
+			errs = append(errs, "backups.files.target: "+f.Target+" is neither s3:https://<endpoint>/<bucket> nor share:<name>[/<folder>]")
+			break
+		}
+		if _, ok := c.Storage.Shares[name]; !ok {
+			errs = append(errs, "backups.files.target: "+f.Target+" names no share of storage.shares")
+		}
+		if slices.Contains(strings.Split(folder, "/"), "..") || strings.ContainsAny(folder, ", \t") {
+			errs = append(errs, "backups.files.target: "+folder+" is not a folder inside the share")
+		}
+	}
+	for field, n := range map[string]int{"daily": f.Keep.Daily, "weekly": f.Keep.Weekly, "monthly": f.Keep.Monthly} {
+		if n < 0 {
+			errs = append(errs, fmt.Sprintf("backups.files.keep.%s: %d is not a number of snapshots", field, n))
+		}
+	}
 	return errs
 }
 
