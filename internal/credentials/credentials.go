@@ -254,6 +254,22 @@ func (c *Credentials) Update(change func(*Credentials)) error {
 	return os.Chmod(path, 0o600)
 }
 
+// BackupCopy is credentials.yaml as the file layer of the backups keeps
+// it (urbforge/urbex-cli#122, decided in #decisions on 2026-11-27): every
+// credential but the main Proxmox and Cloudflare tokens, which never go
+// onto the platform (ADR-0036, point 3) - after a full loss the operator
+// creates those two again.
+func (c *Credentials) BackupCopy() ([]byte, error) {
+	cp := *c
+	cp.ProxmoxToken, cp.CloudflareToken = "", ""
+	data, err := yaml.Marshal(&cp)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte("# urbex credentials.yaml, from the platform's backups: without proxmoxToken\n"+
+		"# and cloudflareToken - create them again (docs/credentials.md).\n"), data...), nil
+}
+
 // Get returns the credential whose environment variable is name, or ""
 // if name isn't a known credential.
 func (c *Credentials) Get(name string) string {

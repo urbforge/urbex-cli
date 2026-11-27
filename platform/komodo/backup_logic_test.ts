@@ -151,7 +151,11 @@ Deno.test("restic commands", () => {
   eq(resticForgetCommand(files.keep, false),
     "(set -e; restic forget --tag platform --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 6)", "forget");
   assert(resticForgetCommand(files.keep, true).endsWith(" --prune)"), "forget with prune");
-  for (const c of [backup, resticForgetCommand(files.keep, true), RESTIC_CHECK]) {
+  const withCredentials = resticBackupCommand({ stack: "urbex-backup-komodo", host: "urbex-komodo", paths: ["/data/komodo", "/data/credentials"], credentials: true });
+  assert(withCredentials.includes(`printf '%s' "$URBEX_CREDENTIALS" | base64 -d > /data/credentials/credentials.yaml; restic cat config`),
+    `credentials.yaml written before restic: ${withCredentials}`);
+  assert(withCredentials.includes("[ -n \"$URBEX_CREDENTIALS\" ] ||"), "fails without the copy");
+  for (const c of [backup, withCredentials, resticForgetCommand(files.keep, true), RESTIC_CHECK]) {
     assert(!/PASSWORD|AWS_|s3:/.test(c), `no secret or repository on the command line: ${c}`);
     assert(c.length < 1024, `fits a terminal line: ${c}`);
   }

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func clearEnv(t *testing.T) {
@@ -238,5 +240,29 @@ func TestLoad_LegacyForgeNames(t *testing.T) {
 	t.Setenv("URBEX_FORGE_TOKEN", "env-new")
 	if c, _ := Load(); c.ForgeToken != "env-new" {
 		t.Errorf("the new env name should win: %q", c.ForgeToken)
+	}
+}
+
+// The backups' copy keeps every credential but the main Proxmox and
+// Cloudflare tokens (urbforge/urbex-cli#122).
+func TestBackupCopy_LeavesOutTheMainTokens(t *testing.T) {
+	c := &Credentials{ProxmoxToken: "pve-main", CloudflareToken: "cf-main", ProxmoxBackupToken: "pve-backup",
+		AgeKey: "AGE-SECRET-KEY-1X", BackupPassword: "pw", ForgeAdminPassword: "forge-pw"}
+	data, err := c.BackupCopy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Credentials
+	if err := yaml.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.ProxmoxToken != "" || back.CloudflareToken != "" {
+		t.Errorf("main tokens in the copy: %q", data)
+	}
+	if back.ProxmoxBackupToken != "pve-backup" || back.BackupPassword != "pw" || back.ForgeAdminPassword != "forge-pw" {
+		t.Errorf("copy lost credentials: %q", data)
+	}
+	if c.ProxmoxToken != "pve-main" {
+		t.Error("BackupCopy changed the credentials")
 	}
 }

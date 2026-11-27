@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -84,6 +85,9 @@ type fileStack struct {
 	Stack string   `json:"stack"`
 	Host  string   `json:"host"`
 	Paths []string `json:"paths"`
+	// Credentials: the Stack writes credentials.yaml's backup copy to
+	// BackupCredentialsDir, one of Paths, before restic runs.
+	Credentials bool `json:"credentials"`
 }
 
 type backupKeep struct {
@@ -173,7 +177,7 @@ func (o *Orchestrator) setupBackups(ctx context.Context, k BackupKomodo) error {
 		}
 	}
 	if !filesOn {
-		for _, v := range []string{BackupRepositoryVariable, BackupPasswordVariable} {
+		for _, v := range []string{BackupRepositoryVariable, BackupPasswordVariable, BackupCredentialsVariable} {
 			if err := k.DeleteVariable(ctx, v); err != nil {
 				return err
 			}
@@ -197,9 +201,14 @@ func (o *Orchestrator) setupBackups(ctx context.Context, k BackupKomodo) error {
 		}
 	}
 	if filesOn {
+		creds, err := o.Credentials.BackupCopy()
+		if err != nil {
+			return err
+		}
 		vars := []komodoVariable{
 			{BackupRepositoryVariable, o.backupRepository(), false},
 			{BackupPasswordVariable, o.Credentials.BackupPassword, true},
+			{BackupCredentialsVariable, base64.StdEncoding.EncodeToString(creds), true},
 		}
 		if b.Files.S3() {
 			vars = append(vars,
@@ -270,7 +279,11 @@ func (o *Orchestrator) filesConfig() *filesConfig {
 	k := o.Config.Backups.WithDefaults().Files.Keep
 	fc := &filesConfig{Keep: backupKeep{Daily: k.Daily, Weekly: k.Weekly, Monthly: k.Monthly}}
 	for _, svc := range FileBackupServices {
-		fc.Stacks = append(fc.Stacks, fileStack{Stack: FileBackupStackName(svc), Host: Hostname(svc), Paths: []string{"/data/" + svc}})
+		st := fileStack{Stack: FileBackupStackName(svc), Host: Hostname(svc), Paths: []string{"/data/" + svc}}
+		if svc == BackupCredentialsService {
+			st.Paths, st.Credentials = append(st.Paths, BackupCredentialsDir), true
+		}
+		fc.Stacks = append(fc.Stacks, st)
 	}
 	return fc
 }

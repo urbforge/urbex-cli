@@ -12,6 +12,11 @@
 # variables, through the Stack's environment (.env): RESTIC_REPOSITORY is
 # the bucket (s3:...) or /repo, where URBEX_BACKUP_REPO - the share bound
 # into this LXC - is mounted; with a bucket, /repo is an unused volume.
+#
+# URBEX_CREDENTIALS is credentials.yaml without the main Proxmox and
+# Cloudflare tokens (base64, the Komodo secret URBEX_BACKUP_CREDENTIALS):
+# the backup Action writes it to /data/credentials, in memory only, and
+# restic copies it with Komodo's database.
 services:
   restic:
     image: docker.io/restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
@@ -25,10 +30,13 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       RESTIC_CACHE_DIR: /cache
+      URBEX_CREDENTIALS: ${URBEX_CREDENTIALS:-}
     volumes:
       - /etc/komodo/backups:/data/komodo:ro
       - ${URBEX_BACKUP_REPO:-restic-unused}:/repo
       - restic-cache:/cache
+    tmpfs:
+      - /data/credentials:mode=0700
     entrypoint: ["/bin/sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
 
 volumes:

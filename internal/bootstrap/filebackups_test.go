@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -75,6 +76,9 @@ func TestFileBackupStacks(t *testing.T) {
 			}
 			if !strings.Contains(st.Environment, "RESTIC_PASSWORD=[[URBEX_BACKUP_PASSWORD]]") || !strings.Contains(st.Environment, tc.extra) {
 				t.Errorf("%s: environment %q", tc.target, st.Environment)
+			}
+			if got := strings.Contains(st.Environment, "URBEX_CREDENTIALS=[[URBEX_BACKUP_CREDENTIALS]]"); got != (svc == "komodo") {
+				t.Errorf("%s: credentials copy in %s's environment = %v, want only Komodo's", tc.target, svc, got)
 			}
 			if len(st.Secrets) != 0 {
 				t.Errorf("secrets in the GitOps repo: %v", st.Secrets)
@@ -156,6 +160,7 @@ func TestFileBackupsReady_Bucket(t *testing.T) {
 func TestSetupBackups_FileLayer(t *testing.T) {
 	o, _ := filesOrchestrator(t, "s3:https://s3.example.com/bucket")
 	o.Credentials.BackupPassword, o.Credentials.BackupS3AccessKeyID, o.Credentials.BackupS3SecretAccessKey = "pw", "id", "sk"
+	o.Credentials.ProxmoxToken, o.Credentials.CloudflareToken, o.Credentials.ForgeAdminPassword = "pve-main", "cf-main", "forge-pw"
 	o.filesReady = true
 	fp := &fakePlatform{}
 	k := &fakeKomodo{fp}
@@ -175,13 +180,20 @@ func TestSetupBackups_FileLayer(t *testing.T) {
 	if _, ok := fp.variables[BackupTokenVariable]; ok {
 		t.Error("a Proxmox token without the Proxmox layer")
 	}
+	encoded, ok := strings.CutPrefix(fp.variables[BackupCredentialsVariable], "secret:")
+	copied, err := base64.StdEncoding.DecodeString(encoded)
+	if !ok || err != nil || !strings.Contains(string(copied), "forgeAdminPassword: forge-pw") ||
+		strings.Contains(string(copied), "pve-main") || strings.Contains(string(copied), "cf-main") {
+		t.Errorf("credentials copy = %q (%v): want a secret, the generated passwords, not the main tokens", copied, err)
+	}
 	var cfg backupConfig
 	if err := json.Unmarshal([]byte(fp.variables[BackupConfigVariable]), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ProxmoxOn || cfg.Files == nil || len(cfg.Files.Stacks) != 3 || cfg.Files.Keep != (backupKeep{7, 4, 6}) ||
 		cfg.Files.Stacks[0].Stack != "urbex-backup-gitea" || cfg.Files.Stacks[0].Host != "urbex-gitea" ||
-		strings.Join(cfg.Files.Stacks[0].Paths, ",") != "/data/gitea" {
+		strings.Join(cfg.Files.Stacks[0].Paths, ",") != "/data/gitea" || cfg.Files.Stacks[0].Credentials ||
+		strings.Join(cfg.Files.Stacks[1].Paths, ",") != "/data/komodo,/data/credentials" || !cfg.Files.Stacks[1].Credentials {
 		t.Errorf("config = %+v", cfg)
 	}
 	if _, ok := fp.procedures[BackupProcedure]; !ok {
@@ -195,7 +207,8 @@ func TestSetupBackups_FileLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Stack urbex-backup-gitea", "Stack urbex-backup-komodo", "Stack urbex-backup-keycloak",
-		"Variable " + BackupPasswordVariable, "Variable " + BackupS3SecretKeyVariable, "Procedure " + BackupProcedure} {
+		"Variable " + BackupPasswordVariable, "Variable " + BackupS3SecretKeyVariable, "Variable " + BackupCredentialsVariable,
+		"Procedure " + BackupProcedure} {
 		if !slices.Contains(fp.deleted, want) {
 			t.Errorf("deleted %v lacks %s", fp.deleted, want)
 		}

@@ -31,6 +31,14 @@ const (
 	BackupPasswordVariable    = "URBEX_BACKUP_PASSWORD"
 	BackupS3KeyIDVariable     = "URBEX_BACKUP_S3_ACCESS_KEY_ID"
 	BackupS3SecretKeyVariable = "URBEX_BACKUP_S3_SECRET_ACCESS_KEY"
+	// BackupCredentialsVariable is credentials.yaml's backup copy
+	// (credentials.BackupCopy), base64: the Komodo backup Stack writes it
+	// to BackupCredentialsDir before restic runs.
+	BackupCredentialsVariable = "URBEX_BACKUP_CREDENTIALS"
+	BackupCredentialsDir      = "/data/credentials"
+	// BackupCredentialsService is the base service whose backup Stack
+	// keeps the copy: Komodo, which holds it already.
+	BackupCredentialsService = "komodo"
 
 	// BackupShareMount is where a share target (share:<name>) is bound
 	// into each of those LXCs, and the backup Stacks mount it at /repo.
@@ -74,9 +82,13 @@ func (o *Orchestrator) fileBackupStacks() []PlatformStack {
 	}
 	var stacks []PlatformStack
 	for _, svc := range FileBackupServices {
+		stackEnv := env
+		if svc == BackupCredentialsService {
+			stackEnv += "URBEX_CREDENTIALS=[[" + BackupCredentialsVariable + "]]\n"
+		}
 		stacks = append(stacks, PlatformStack{
 			Name: FileBackupStackName(svc), Dir: "backup-" + svc, Server: Hostname(svc),
-			ProjectName: FileBackupProject, Config: map[string]string{}, Environment: env,
+			ProjectName: FileBackupProject, Config: map[string]string{}, Environment: stackEnv,
 		})
 	}
 	return stacks

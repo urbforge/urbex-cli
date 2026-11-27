@@ -1063,6 +1063,10 @@ step backups "backups, the file layer: once its share is bound, restic copies th
   printf "%s\n" "$files" | grep -qx "/data/gitea/urbex-dumps/gitea.db" || fail "the forge'"'"'s SQLite copy is not in the backup"
   printf "%s\n" "$files" | grep -qx "/data/keycloak/keycloak.dump" || fail "Keycloak'"'"'s dump is not in the backup"
   printf "%s\n" "$files" | grep -q "^/data/komodo/." || fail "Komodo'"'"'s database backup is not in the backup"
+  # credentials.yaml, without the main Proxmox and Cloudflare tokens.
+  creds=$(gitea "docker exec urbex-backup-restic-1 restic dump latest /data/credentials/credentials.yaml --host urbex-komodo")
+  printf "%s\n" "$creds" | grep -q "^forgeAdminPassword: " || fail "credentials.yaml is not in the backup"
+  printf "%s\n" "$creds" | grep -qE "^(proxmoxToken|cloudflareToken):" && fail "the main tokens should stay out of the backup"
   urbex doctor >/tmp/doctor.log 2>&1 || true
   grep -q "ok .*file layer" /tmp/doctor.log || fail "doctor should say the file layer runs: $(grep -A1 "file layer" /tmp/doctor.log)"
   grep -q "warn .*backup secrets" /tmp/doctor.log || fail "doctor should warn until the secrets are stored"
@@ -1080,7 +1084,7 @@ step backups "backups, the file layer: once its share is bound, restic copies th
   expect_status http://$NET.203:8080/ 302
   [ "$(komodo_stack_state urbex-gitea)" = running ] || fail "the forge should still run"
   rm -f /work/pve-lxc-9000.json /work/pve-lxc-9001.json /work/pve-lxc-9003.json
-  echo "ok: the file layer waits for its share, copies the forge, Komodo and Keycloak with their dumps into one repository, its retention covers every machine, and it goes without touching them"'
+  echo "ok: the file layer waits for its share, copies the forge, Komodo and Keycloak with their dumps and credentials.yaml (without the main tokens) into one repository, its retention covers every machine, and it goes without touching them"'
 
 
 if [ -n "$ONLY" ]; then
