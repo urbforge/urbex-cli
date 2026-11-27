@@ -267,7 +267,8 @@ func (c *Credentials) BackupCopy() ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte("# urbex credentials.yaml, from the platform's backups: without proxmoxToken\n"+
-		"# and cloudflareToken - create them again (docs/credentials.md).\n"), data...), nil
+		"# and cloudflareToken - create them again (docs/reference/credentials.md in\n"+
+		"# urbforge/urbex, \"In the backups\").\n"), data...), nil
 }
 
 // Get returns the credential whose environment variable is name, or ""
