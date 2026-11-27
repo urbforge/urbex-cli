@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func clearEnv(t *testing.T) {
@@ -170,6 +172,7 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 	if err := c.Update(func(c *Credentials) {
 		c.ProxmoxToken, c.AgeKey, c.CloudflareToken = "pve", "age", "cf"
 		c.ForgeToken, c.KomodoAPIKey, c.GrafanaAdminPassword = "g", "k", "p"
+		c.BackupPassword, c.BackupS3SecretAccessKey = "restic", "s3"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +187,11 @@ func TestClearGenerated_KeepsWhatTheUserProvides(t *testing.T) {
 	for _, got := range []*Credentials{c, onDisk} {
 		if got.ProxmoxToken != "pve" || got.AgeKey != "age" || got.CloudflareToken != "cf" {
 			t.Errorf("provided credentials lost: %+v", got)
+		}
+		// Without the backup password the backups can't be read: it
+		// outlives the platform (urbforge/urbex-cli#122).
+		if got.BackupPassword != "restic" || got.BackupS3SecretAccessKey != "s3" {
+			t.Errorf("the backups' credentials lost: %+v", got)
 		}
 		if got.ForgeToken != "" || got.KomodoAPIKey != "" || got.GrafanaAdminPassword != "" {
 			t.Errorf("generated credentials kept: %+v", got)
@@ -232,5 +240,29 @@ func TestLoad_LegacyForgeNames(t *testing.T) {
 	t.Setenv("URBEX_FORGE_TOKEN", "env-new")
 	if c, _ := Load(); c.ForgeToken != "env-new" {
 		t.Errorf("the new env name should win: %q", c.ForgeToken)
+	}
+}
+
+// The backups' copy keeps every credential but the main Proxmox and
+// Cloudflare tokens (urbforge/urbex-cli#122).
+func TestBackupCopy_LeavesOutTheMainTokens(t *testing.T) {
+	c := &Credentials{ProxmoxToken: "pve-main", CloudflareToken: "cf-main", ProxmoxBackupToken: "pve-backup",
+		AgeKey: "AGE-SECRET-KEY-1X", BackupPassword: "pw", ForgeAdminPassword: "forge-pw"}
+	data, err := c.BackupCopy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Credentials
+	if err := yaml.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.ProxmoxToken != "" || back.CloudflareToken != "" {
+		t.Errorf("main tokens in the copy: %q", data)
+	}
+	if back.ProxmoxBackupToken != "pve-backup" || back.BackupPassword != "pw" || back.ForgeAdminPassword != "forge-pw" {
+		t.Errorf("copy lost credentials: %q", data)
+	}
+	if c.ProxmoxToken != "pve-main" {
+		t.Error("BackupCopy changed the credentials")
 	}
 }

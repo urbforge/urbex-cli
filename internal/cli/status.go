@@ -153,8 +153,11 @@ type platformView struct {
 	BaseServices []baseServiceView `json:"baseServices"`
 	Endpoints    []endpointView    `json:"endpoints"`
 	Logins       loginsView        `json:"logins"`
-	Projects     []projectView     `json:"projects"`
-	Warnings     []string          `json:"warnings,omitempty"`
+	// Backups is what is backed up, from the platform config (ADR-0036);
+	// each layer's last backup is urbforge/urbex-cli#124's.
+	Backups  string        `json:"backups"`
+	Projects []projectView `json:"projects"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 type baseServiceView struct {
@@ -233,6 +236,7 @@ func platformStatus(ctx context.Context, client status.ProxmoxLister, cfg *platf
 	}
 	path, _ := credentials.DefaultPath()
 	st.Logins = logins(credentials.HostPath(path))
+	st.Backups = backupsSummary(cfg)
 	if st.Projects, err = projectsStatus(ctx, func(w string) { st.Warnings = append(st.Warnings, w) }, cfg, creds, repoPath); err != nil {
 		return nil, err
 	}
@@ -261,9 +265,30 @@ func runBaseStatus(cmd *cobra.Command, out io.Writer, client status.ProxmoxListe
 		}
 		fmt.Fprintln(out)
 	}
+	fmt.Fprintf(out, "\nBackups: %s\n", backupsSummary(cfg))
 	path, _ := credentials.DefaultPath()
 	printLogins(out, credentials.HostPath(path))
 	return nil
+}
+
+// backupsSummary says which layers of the backups are configured, and
+// where they go - or that nothing is backed up.
+func backupsSummary(cfg *platform.Config) string {
+	if cfg == nil {
+		return "unknown, no platform config"
+	}
+	b := cfg.Backups.WithDefaults()
+	var layers []string
+	if b.Proxmox.Enabled() {
+		layers = append(layers, "the "+strings.Join(b.Proxmox.Machines, " and ")+" machines with vzdump to "+b.Proxmox.Storage)
+	}
+	if b.Files.Enabled() {
+		layers = append(layers, "the forge's, Komodo's and Keycloak's data with restic to "+b.Files.Target)
+	}
+	if len(layers) == 0 {
+		return "none - nothing is backed up (backups in urbex.platform.yaml; urbex doctor says what's missing)"
+	}
+	return strings.Join(layers, "; ") + fmt.Sprintf(", every day at %s %s", b.Schedule, b.Timezone)
 }
 
 // printLogins lists the platform's admin users and the names of their

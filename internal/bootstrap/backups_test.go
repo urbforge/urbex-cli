@@ -75,12 +75,18 @@ func TestSetupBackups_OffRemovesEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Config.Backups.Proxmox.Storage = ""
+	fp.deleted = nil
 	if err := o.setupBackups(context.Background(), k); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"Procedure " + BackupProcedure, "Action " + BackupAction, "Variable " + BackupTokenVariable, "Variable " + BackupConfigVariable}
-	if !slices.Equal(fp.deleted, want) {
-		t.Errorf("deleted = %v, want %v", fp.deleted, want)
+	if len(fp.deleted) == 0 || fp.deleted[0] != "Variable "+BackupTokenVariable {
+		t.Errorf("deleted = %v, want the token first", fp.deleted)
+	}
+	for _, want := range []string{"Procedure " + BackupProcedure, "Action " + BackupAction, "Variable " + BackupConfigVariable,
+		"Variable " + BackupPasswordVariable, "Stack " + FileBackupStackName("gitea")} {
+		if !slices.Contains(fp.deleted, want) {
+			t.Errorf("deleted = %v, lacks %s", fp.deleted, want)
+		}
 	}
 	if _, ok := fp.variables[BackupTokenVariable]; ok {
 		t.Error("the token is still in Komodo")

@@ -136,6 +136,13 @@ var Catalog = []Service{
 	// Prunes the build cache on Komodo's LXC, the builder
 	// (urbforge/urbex-cli#92); it listens on nothing.
 	{Name: "build-cache", Kind: KindPlatform, LXC: "komodo", Deploy: DeployGitOps, Provides: []string{"build-cache-pruning"}, OutboundOnly: true},
+	// The file layer of the backups (ADR-0036, urbforge/urbex-cli#122):
+	// restic next to the data of each machine that has some, run by the
+	// backup Action; it listens on nothing, and writes to the bucket or the
+	// share.
+	{Name: "backup-gitea", Kind: KindPlatform, LXC: "gitea", Deploy: DeployGitOps, Provides: []string{"file-backups"}, OutboundOnly: true},
+	{Name: "backup-komodo", Kind: KindPlatform, LXC: "komodo", Deploy: DeployGitOps, Provides: []string{"file-backups"}, OutboundOnly: true},
+	{Name: "backup-keycloak", Kind: KindPlatform, LXC: "keycloak", Deploy: DeployGitOps, Provides: []string{"file-backups"}, OutboundOnly: true},
 	{Name: "periphery", Kind: KindAgent, Deploy: DeployAnsible, Provides: []string{"deploy-agent"}, OutboundOnly: true},
 	{Name: "alloy", Kind: KindAgent, Deploy: DeployGitOps, Provides: []string{"telemetry-agent"}, OutboundOnly: true},
 	{Name: "quicktunnel", Kind: KindAgent, Deploy: DeployAnsible, Provides: []string{"ingress"}, OutboundOnly: true},

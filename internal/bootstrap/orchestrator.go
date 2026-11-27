@@ -64,6 +64,10 @@ type Orchestrator struct {
 	// Progress records the run's phases for 'urbex status --progress';
 	// nil records nothing.
 	Progress *progress.Tracker
+
+	// filesReady says the file layer of the backups runs: on, with its
+	// credentials, its share bound (fileBackupsReady).
+	filesReady bool
 }
 
 // Options controls a single Run.
@@ -151,6 +155,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	if err := ensureSecrets(o.Credentials); err != nil {
 		return fmt.Errorf("generating platform secrets: %w", err)
 	}
+	if err := o.ensureBackupPassword(); err != nil {
+		return fmt.Errorf("generating the backups' password: %w", err)
+	}
 	tfEnv := []string{"TF_VAR_proxmox_api_token=" + o.Credentials.ProxmoxToken}
 
 	o.Progress.Begin(PhaseLXCs)
@@ -203,11 +210,17 @@ func (o *Orchestrator) Run(ctx context.Context, opts Options) error {
 	// The platform services Komodo deploys from the GitOps repo: their
 	// folders go in before setupPlatform pushes it.
 	o.Progress.Begin(PhaseGitOps)
+	if o.filesReady, err = o.fileBackupsReady(ctx); err != nil {
+		return err
+	}
 	stacks, err := o.platformStacks(tunnelToken)
 	if err != nil {
 		return err
 	}
 	if err := o.writePlatformStacks(ctx, opts.GitOpsRepoPath, stacks); err != nil {
+		return err
+	}
+	if err := o.removeFileBackupFolders(opts.GitOpsRepoPath); err != nil {
 		return err
 	}
 	if err := o.writeTelemetryAgents(opts.GitOpsRepoPath); err != nil {

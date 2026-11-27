@@ -373,3 +373,63 @@ func TestValidate_Backups(t *testing.T) {
 		t.Errorf("storage name not refused: %v", got)
 	}
 }
+
+// The file layer (urbforge/urbex-cli#122): off without a target, a
+// bucket in restic's syntax or a folder of a share, ADR-0036's counts.
+func TestFilesBackups(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if f := cfg.Backups.Files; f.Enabled() || f.Keep != (Retention{Daily: 7, Weekly: 4, Monthly: 6}) {
+		t.Errorf("defaults = %+v", f)
+	}
+	s3 := FilesBackups{Target: "s3:https://s3.example.com/bucket/urbex"}
+	if !s3.Enabled() || !s3.S3() {
+		t.Errorf("%+v is an S3 target", s3)
+	}
+	if name, _ := s3.Share(); name != "" {
+		t.Errorf("an S3 target has no share, got %q", name)
+	}
+	for target, want := range map[string][2]string{
+		"share:nas":                {"nas", ""},
+		"share:nas/urbex":          {"nas", "urbex"},
+		"share:nas/backups/urbex/": {"nas", "backups/urbex"},
+	} {
+		name, folder := FilesBackups{Target: target}.Share()
+		if name != want[0] || folder != want[1] {
+			t.Errorf("Share(%s) = %q, %q, want %q", target, name, folder, want)
+		}
+	}
+}
+
+func TestValidate_FilesBackups(t *testing.T) {
+	errsFor := func(target string, keep Retention) string {
+		c := Config{Storage: StorageConfig{Shares: map[string]Share{"nas": {Path: "/mnt/pve/nas"}}},
+			Backups: BackupsConfig{Files: FilesBackups{Target: target, Keep: keep}}}
+		var got []string
+		for _, e := range c.Validate() {
+			if strings.HasPrefix(e, "backups.files") {
+				got = append(got, e)
+			}
+		}
+		return strings.Join(got, "\n")
+	}
+	for _, ok := range []string{"", "s3:https://s3.eu-central-003.backblazeb2.com/my-bucket", "s3:http://minio.lan:9000/urbex/platform", "share:nas", "share:nas/urbex"} {
+		if got := errsFor(ok, Retention{}); got != "" {
+			t.Errorf("%q refused: %s", ok, got)
+		}
+	}
+	for target, want := range map[string]string{
+		"s3:bucket":             "is not a bucket",
+		"s3:https://s3.example": "is not a bucket",
+		"/mnt/backups":          "neither s3:",
+		"share:usb":             "names no share",
+		"share:nas/../etc":      "not a folder inside the share",
+	} {
+		if got := errsFor(target, Retention{}); !strings.Contains(got, want) {
+			t.Errorf("%q: want %q, got %q", target, want, got)
+		}
+	}
+	if got := errsFor("share:nas", Retention{Weekly: -2}); !strings.Contains(got, "backups.files.keep.weekly") {
+		t.Errorf("a negative count accepted: %q", got)
+	}
+}

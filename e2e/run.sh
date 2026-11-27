@@ -53,10 +53,18 @@ machine() { # machine <hostname> <last-octet>: (re)create a fake LXC
   podman volume rm -f "$name-docker" "$name-containerd" >/dev/null 2>&1 || true
   # Docker's data lives on volumes: overlayfs can't nest on the
   # container's own overlay root.
+  # The machines with the platform's data have the node's share bound,
+  # as the operator's pct set does (step backups): one folder of the
+  # work dir, the same in each, as a NAS is.
+  local share=()
+  case "$1" in urbex-gitea | urbex-komodo | urbex-keycloak)
+    mkdir -p "$WORK/node-share"
+    share=(-v "$WORK/node-share:/mnt/urbex-backup:z") ;;
+  esac
   podman run -d --name "$name" --hostname "$1" --privileged --systemd=always \
     --network "$NETWORK" --ip "$NET.$2" \
     -v "$name-docker:/var/lib/docker" -v "$name-containerd:/var/lib/containerd" \
-    urbex-e2e-machine >/dev/null
+    ${share[@]+"${share[@]}"} urbex-e2e-machine >/dev/null
   # Technitium first, then the network's resolver - as Terraform sets up
   # a real LXC. Not with --dns: podman's resolver would forward to
   # Technitium, which forwards back to it.
@@ -1009,6 +1017,74 @@ step network "a shared network: who and gw on net's network, gw recreated withou
   on "docker logs vpn-gw-prod-rejoin-1 2>&1" | grep -q "vpn-who-prod-app-1: joining vpn-gw-prod-net-1" || fail "rejoin should say what it restarted"
   urbex destroy prod >/tmp/destroy.log 2>&1 || { cat /tmp/destroy.log; fail "destroy of the shared network failed"; }
   echo "ok: who and gw share net'"'"'s network, gw is recreated without who noticing, and both are back after net restarts"'
+
+step backups "backups, the file layer: once its share is bound, restic copies the forge, Komodo and Keycloak; switched off, it goes without touching them" '
+  gitea() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q root@$NET.200 "$1"; }
+  # The share on the node and the target in it, kept only for this step.
+  grep -q "^backups:" /work/gitops/urbex.platform.yaml ||
+    printf "storage:\n  shares:\n    nas:\n      path: /mnt/pve/e2e-nas\nbackups:\n  files:\n    target: share:nas/urbex\n" >>/work/gitops/urbex.platform.yaml
+  # From scratch, also when run again: no binding, no repository, no
+  # password yet.
+  rm -rf /work/pve-lxc-9000.json /work/pve-lxc-9001.json /work/pve-lxc-9003.json /work/node-share/urbex
+  sed -i "/^backupPassword:/d" /work/home/.urbex/credentials.yaml
+  urbex bootstrap >/tmp/bootstrap.log 2>&1 || { cat /tmp/bootstrap.log; fail "bootstrap with the file layer failed"; }
+  for vmid in 9000 9001 9003; do
+    grep -q "pct set $vmid -mp0 /mnt/pve/e2e-nas,mp=/mnt/urbex-backup" /tmp/bootstrap.log || fail "no pct set for $vmid: $(grep -A4 "share isn" /tmp/bootstrap.log)"
+  done
+  grep -q "pct set 9002" /tmp/bootstrap.log && fail "Technitium has no data to back up"
+  [ -n "$(cred backupPassword)" ] || fail "no backup password was generated"
+  grep -qF "$(cred backupPassword)" /tmp/bootstrap.log || fail "the backup password should be shown once"
+  [ -z "$(komodo_stack_state urbex-backup-gitea)" ] || fail "the file layer should wait for its share"
+
+  # The operator binds the share into the three LXCs.
+  for vmid in 9000 9001 9003; do
+    echo "{\"mp0\": \"/mnt/pve/e2e-nas,mp=/mnt/urbex-backup\"}" >/work/pve-lxc-$vmid.json
+  done
+  urbex bootstrap >/tmp/bootstrap.log 2>&1 || { cat /tmp/bootstrap.log; fail "bootstrap with the share bound failed"; }
+  grep -qF "$(cred backupPassword)" /tmp/bootstrap.log && fail "the backup password should be shown only the first time"
+  grep -q "restic to share:nas/urbex" /tmp/bootstrap.log || fail "bootstrap should say the file layer runs: $(grep Backups /tmp/bootstrap.log)"
+  for svc in gitea komodo keycloak; do
+    [ "$(komodo_stack_state urbex-backup-$svc)" = running ] || fail "urbex-backup-$svc should run: $(komodo_stack_state urbex-backup-$svc)"
+  done
+  [ "$(komodo_variable URBEX_BACKUP_REPOSITORY)" = /repo/urbex ] || fail "repository variable: $(komodo_variable URBEX_BACKUP_REPOSITORY)"
+
+  # Two runs: a snapshot per machine each, in the one repository.
+  for run in 1 2; do
+    out=$(run_action urbex-backup)
+    case "$out" in ok*) ;; *) fail "backup run $run: $out" ;; esac
+  done
+  [ -f /work/node-share/urbex/config ] || fail "no restic repository in the share"
+  hosts=$(gitea "docker exec urbex-backup-restic-1 restic snapshots --json" | python3 -c "import json, sys; print(*sorted(set(s[\"hostname\"] for s in json.load(sys.stdin))))")
+  [ "$hosts" = "urbex-gitea urbex-keycloak urbex-komodo" ] || fail "the three machines should share one repository, the forge sees: $hosts"
+  # The retention, run from one Stack, covers every machine.
+  forgets=$(gitea "docker exec urbex-backup-restic-1 restic forget --dry-run --json --tag platform --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 6" | python3 -c "import json, sys; print(*sorted(g[\"host\"] for g in json.load(sys.stdin)))")
+  [ "$forgets" = "urbex-gitea urbex-keycloak urbex-komodo" ] || fail "the retention should cover the three machines, covers: $forgets"
+  files=$(for h in urbex-gitea urbex-keycloak urbex-komodo; do gitea "docker exec urbex-backup-restic-1 restic ls latest --host $h"; done)
+  printf "%s\n" "$files" | grep -qx "/data/gitea/urbex-dumps/gitea.db" || fail "the forge'"'"'s SQLite copy is not in the backup"
+  printf "%s\n" "$files" | grep -qx "/data/keycloak/keycloak.dump" || fail "Keycloak'"'"'s dump is not in the backup"
+  printf "%s\n" "$files" | grep -q "^/data/komodo/." || fail "Komodo'"'"'s database backup is not in the backup"
+  # credentials.yaml, without the main Proxmox and Cloudflare tokens.
+  creds=$(gitea "docker exec urbex-backup-restic-1 restic dump latest /data/credentials/credentials.yaml --host urbex-komodo")
+  printf "%s\n" "$creds" | grep -q "^forgeAdminPassword: " || fail "credentials.yaml is not in the backup"
+  printf "%s\n" "$creds" | grep -qE "^(proxmoxToken|cloudflareToken):" && fail "the main tokens should stay out of the backup"
+  urbex doctor >/tmp/doctor.log 2>&1 || true
+  grep -q "ok .*file layer" /tmp/doctor.log || fail "doctor should say the file layer runs: $(grep -A1 "file layer" /tmp/doctor.log)"
+  grep -q "warn .*backup secrets" /tmp/doctor.log || fail "doctor should warn until the secrets are stored"
+
+  # Switched off: its Stacks and variables go; the forge, Komodo and
+  # Keycloak stay up - the Stacks are a compose project of their own.
+  sed -i "/^storage:/,\$d" /work/gitops/urbex.platform.yaml
+  urbex bootstrap >/tmp/bootstrap.log 2>&1 || { cat /tmp/bootstrap.log; fail "bootstrap with the file layer off failed"; }
+  for svc in gitea komodo keycloak; do
+    [ -z "$(komodo_stack_state urbex-backup-$svc)" ] || fail "urbex-backup-$svc should be gone"
+  done
+  [ -z "$(komodo_variable URBEX_BACKUP_PASSWORD)" ] || fail "the password should be gone from Komodo"
+  [ -n "$(cred backupPassword)" ] || fail "the workspace keeps the backup password"
+  expect_status $GITEA/api/v1/version 200
+  expect_status http://$NET.203:8080/ 302
+  [ "$(komodo_stack_state urbex-gitea)" = running ] || fail "the forge should still run"
+  rm -f /work/pve-lxc-9000.json /work/pve-lxc-9001.json /work/pve-lxc-9003.json
+  echo "ok: the file layer waits for its share, copies the forge, Komodo and Keycloak with their dumps and credentials.yaml (without the main tokens) into one repository, its retention covers every machine, and it goes without touching them"'
 
 
 if [ -n "$ONLY" ]; then

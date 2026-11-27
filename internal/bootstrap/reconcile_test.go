@@ -28,3 +28,21 @@ func TestGraphVariable(t *testing.T) {
 		t.Errorf("GraphVariable = %q", got)
 	}
 }
+
+// Komodo interpolates [[NAME]] into an Action's code before it runs, and
+// fails the run on a "[[" it can't match: every "[[" in the scripts closes
+// on its own line, as their variables and literals ([[a, b]]) do.
+func TestActionScripts_InterpolateCleanly(t *testing.T) {
+	for name, build := range map[string]func() (string, error){"reconcile": ReconcileScript, "backup": BackupScript} {
+		script, err := build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(script, "\n") {
+			open := strings.Index(line, "[[")
+			if open >= 0 && !strings.Contains(line[open:], "]]") {
+				t.Errorf("%s script, line %d: an unbalanced \"[[\" for Komodo's interpolation: %s", name, i+1, line)
+			}
+		}
+	}
+}

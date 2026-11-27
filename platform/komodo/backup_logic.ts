@@ -1,6 +1,7 @@
 // What the backup Action (backup.ts) decides, without Komodo or Proxmox:
 // which machines it backs up, how, and the commands that dump the
-// databases first. ADR-0036 (urbforge/urbex), urbforge/urbex-cli#121.
+// databases first, and the file layer's restic commands. ADR-0036
+// (urbforge/urbex), urbforge/urbex-cli#121 and #122.
 // urbex bootstrap puts this file, without its exports, in front of
 // backup.ts; deno test platform/komodo tests it.
 
@@ -23,6 +24,26 @@ export interface BackupConfig {
   keep: { daily: number; weekly: number; monthly: number };
   /** The platform's machines' hostnames: every other machine of the pool is a project's. */
   platform_hosts: string[];
+  /** Whether the Proxmox layer runs (backups.proxmox.storage). */
+  proxmox: boolean;
+  /** The file layer (backups.files), null when it doesn't run. */
+  files: FilesConfig | null;
+}
+
+/** The file layer: restic in a Stack next to each machine's data, one repository. */
+export interface FilesConfig {
+  stacks: FileStack[];
+  /** backups.files.keep: what restic forget keeps. */
+  keep: { daily: number; weekly: number; monthly: number };
+}
+
+/** A backup Stack: restic, the host its snapshots are named after, what it copies. */
+export interface FileStack {
+  stack: string;
+  host: string;
+  paths: string[];
+  /** Writes credentials.yaml's backup copy ($URBEX_CREDENTIALS, base64) first. */
+  credentials?: boolean;
 }
 
 /** A machine as /cluster/resources?type=vm lists it. */
@@ -140,13 +161,22 @@ export function projectDumps(stacks: { name: string; tags: string[] }[], tagName
 }
 
 /**
- * The dumps of a configuration: the platform's when it backs up the
- * platform's machines, the projects' when the projects'.
+ * Whether the platform's databases are dumped: when the Proxmox layer
+ * backs up the platform's machines, or the file layer runs - it copies
+ * those dumps.
+ */
+export function dumpsPlatform(cfg: BackupConfig): boolean {
+  return (cfg.proxmox && cfg.machines.includes("platform")) || cfg.files !== null;
+}
+
+/**
+ * The dumps of a configuration: the platform's (dumpsPlatform), the
+ * projects' when the Proxmox layer backs up their machines.
  */
 export function dumps(cfg: BackupConfig, projects: Dump[]): Dump[] {
   return [
-    ...(cfg.machines.includes("platform") ? PLATFORM_DUMPS : []),
-    ...(cfg.machines.includes("projects") ? projects : []),
+    ...(dumpsPlatform(cfg) ? PLATFORM_DUMPS : []),
+    ...(cfg.proxmox && cfg.machines.includes("projects") ? projects : []),
   ];
 }
 
@@ -180,3 +210,73 @@ export const POSTGRES_DUMP =
 export function dumpCommand(d: Dump): string {
   return d.kind === "forgejo" ? FORGEJO_DUMP : POSTGRES_DUMP;
 }
+
+// The file layer's commands, run in a backup Stack's restic container
+// through a Komodo terminal: one line each, in a subshell, as the dumps.
+// The repository, its password and the bucket's key are in the
+// container's environment (RESTIC_*, AWS_*), never on a command line.
+
+/** The tag of the platform's snapshots: the projects' get their own (#123). */
+export const PLATFORM_SNAPSHOT_TAG = "platform";
+
+/** Where the Komodo backup Stack writes credentials.yaml's copy (a tmpfs). */
+export const CREDENTIALS_FILE = "/data/credentials/credentials.yaml";
+
+/**
+ * Backs up a Stack's paths, creating the repository the first time: one
+ * per platform, shared by every machine - restic locks it, and the Action
+ * runs one machine at a time.
+ */
+export function resticBackupCommand(s: FileStack): string {
+  const credentials = s.credentials
+    ? `[ -n "$URBEX_CREDENTIALS" ] || { echo "no URBEX_CREDENTIALS: run urbex bootstrap" >&2; exit 1; }; ` +
+      `printf '%s' "$URBEX_CREDENTIALS" | base64 -d > ${CREDENTIALS_FILE}; `
+    : "";
+  return `(set -e; ${credentials}restic cat config >/dev/null 2>&1 || restic init; ` +
+    `restic backup --host ${s.host} --tag ${PLATFORM_SNAPSHOT_TAG} ${s.paths.join(" ")})`;
+}
+
+/**
+ * restic backup's summary, from its output: the "Added to the repository"
+ * and "snapshot ... saved" lines, without the terminal codes restic puts
+ * before them.
+ */
+export function resticSummary(output: string): string {
+  return output
+    // \x5b is "[": two in a row would be a Komodo variable to interpolate.
+    .replace(/\x1b\x5b[0-9;]*[A-Za-z]/g, "")
+    .split(/[\r\n]+/)
+    .map((l) => l.trim())
+    .filter((l) => /^Added to the repository|^snapshot .* saved/.test(l))
+    .join("; ");
+}
+
+/** What one run does besides the backups: forget always, prune and check on some days. */
+export interface Maintenance {
+  prune: boolean;
+  check: boolean;
+}
+
+/**
+ * The maintenance of a run on date: restic forget every day; the prune,
+ * which frees the forgotten snapshots' data and is the slow part, on
+ * Sundays; restic check of a sample of the data on the 1st of the month
+ * (ADR-0036, point 6). Days in UTC.
+ */
+export function maintenance(date: Date): Maintenance {
+  return { prune: date.getUTCDay() === 0, check: date.getUTCDate() === 1 };
+}
+
+/**
+ * restic forget with the retention, of the platform's snapshots, each
+ * machine's apart (--group-by host); --prune on prune days. Run from one
+ * Stack, it covers every machine: no RESTIC_HOST in the backup Stacks,
+ * which would limit it to that Stack's host.
+ */
+export function resticForgetCommand(keep: FilesConfig["keep"], prune: boolean): string {
+  return `(set -e; restic forget --tag ${PLATFORM_SNAPSHOT_TAG} --group-by host,tags ` +
+    `--keep-daily ${keep.daily} --keep-weekly ${keep.weekly} --keep-monthly ${keep.monthly}${prune ? " --prune" : ""})`;
+}
+
+/** restic check, reading a tenth of the data: the whole over months, without a day's download. */
+export const RESTIC_CHECK = "(set -e; restic check --read-data-subset=10%)";

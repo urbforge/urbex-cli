@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -48,6 +49,9 @@ type PlatformStack struct {
 	// Environment is the Stack's .env, for compose itself (profiles,
 	// interpolation), set in Komodo; "" leaves it empty.
 	Environment string
+	// ProjectName is the compose project; "" is "urbex", the base
+	// services' own.
+	ProjectName string
 }
 
 // ComposeWrapper is the command every Stack deployed from the GitOps repo
@@ -127,6 +131,9 @@ func (o *Orchestrator) platformStacks(tunnelToken string) ([]PlatformStack, erro
 			"KEEP_FOR":     bc.KeepFor,
 			"KEEP_EVERY":   fmt.Sprint(int(every.Seconds())),
 		}})
+	if o.filesReady {
+		stacks = append(stacks, o.fileBackupStacks()...)
+	}
 	return stacks, nil
 }
 
@@ -350,7 +357,7 @@ func (o *Orchestrator) platformStackDeploys(stacks []PlatformStack) ([]stackDepl
 			Repo:         o.Config.Git.Org + "/" + GitOpsRepoName,
 			Branch:       TrunkBranch,
 			RunDirectory: PlatformStacksDir + "/" + st.Dir,
-			ProjectName:  "urbex",
+			ProjectName:  cmp.Or(st.ProjectName, "urbex"),
 			ConfigFiles: []komodo.ConfigFile{
 				{Path: "config.env", Requires: "Redeploy"},
 			},
