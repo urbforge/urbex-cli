@@ -8,6 +8,7 @@ import {
   maintenance,
   RESTIC_CHECK,
   resticBackupCommand,
+  resticSummary,
   resticForgetCommand,
   FORGEJO_DUMP,
   POSTGRES_DUMP,
@@ -160,4 +161,11 @@ Deno.test("maintenance days", () => {
   eq(maintenance(new Date("2026-11-29T03:00:00Z")), { prune: true, check: false }, "a Sunday");
   eq(maintenance(new Date("2026-12-01T03:00:00Z")), { prune: false, check: true }, "the 1st, a Tuesday");
   eq(maintenance(new Date("2026-11-26T03:00:00Z")), { prune: false, check: false }, "a Thursday");
+});
+
+Deno.test("resticSummary keeps restic's summary lines, without terminal codes", () => {
+  const output = "repository 1234 opened\nno parent snapshot found\n" +
+    "Files: 12 new, 0 changed\n\x1b[2KAdded to the repository: 24.935 MiB (15.848 MiB stored)\n" +
+    "processed 12 files\r\x1b[2Ksnapshot d03ffc18 saved\n";
+  eq(resticSummary(output), "Added to the repository: 24.935 MiB (15.848 MiB stored); snapshot d03ffc18 saved", "summary");
 });

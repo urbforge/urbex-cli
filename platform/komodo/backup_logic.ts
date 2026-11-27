@@ -227,6 +227,20 @@ export function resticBackupCommand(s: FileStack): string {
     `restic backup --host ${s.host} --tag ${PLATFORM_SNAPSHOT_TAG} ${s.paths.join(" ")})`;
 }
 
+/**
+ * restic backup's summary, from its output: the "Added to the repository"
+ * and "snapshot ... saved" lines, without the terminal codes restic puts
+ * before them.
+ */
+export function resticSummary(output: string): string {
+  return output
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .split(/[\r\n]+/)
+    .map((l) => l.trim())
+    .filter((l) => /^Added to the repository|^snapshot .* saved/.test(l))
+    .join("; ");
+}
+
 /** What one run does besides the backups: forget always, prune and check on some days. */
 export interface Maintenance {
   prune: boolean;

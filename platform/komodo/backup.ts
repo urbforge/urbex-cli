@@ -217,8 +217,7 @@ async function backUpFiles(files: FilesConfig, log: (line: string) => void): Pro
     try {
       const { output, code } = await runIn({ stack: s.stack, service: "restic" }, resticBackupCommand(s));
       if (code !== "0") throw new Error(`exit ${code || "unknown"}: ${output.split("\n").slice(-3).join(" | ")}`);
-      // restic's last lines: "Added to the repository: ...", "snapshot ... saved".
-      log(`restic ${s.host}: ${output.split("\n").filter((l) => /Added to the repository|snapshot .* saved/.test(l)).join("; ")}`);
+      log(`restic ${s.host}: ${resticSummary(output)}`);
       first ??= s;
     } catch (err) {
       failures.push(`restic ${s.host}: not backed up (${message(err)})`);
