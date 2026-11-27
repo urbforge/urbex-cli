@@ -42,6 +42,8 @@ export interface FileStack {
   stack: string;
   host: string;
   paths: string[];
+  /** Writes credentials.yaml's backup copy ($URBEX_CREDENTIALS, base64) first. */
+  credentials?: boolean;
 }
 
 /** A machine as /cluster/resources?type=vm lists it. */
@@ -217,13 +219,20 @@ export function dumpCommand(d: Dump): string {
 /** The tag of the platform's snapshots: the projects' get their own (#123). */
 export const PLATFORM_SNAPSHOT_TAG = "platform";
 
+/** Where the Komodo backup Stack writes credentials.yaml's copy (a tmpfs). */
+export const CREDENTIALS_FILE = "/data/credentials/credentials.yaml";
+
 /**
  * Backs up a Stack's paths, creating the repository the first time: one
  * per platform, shared by every machine - restic locks it, and the Action
  * runs one machine at a time.
  */
 export function resticBackupCommand(s: FileStack): string {
-  return `(set -e; restic cat config >/dev/null 2>&1 || restic init; ` +
+  const credentials = s.credentials
+    ? `[ -n "$URBEX_CREDENTIALS" ] || { echo "no URBEX_CREDENTIALS: run urbex bootstrap" >&2; exit 1; }; ` +
+      `printf '%s' "$URBEX_CREDENTIALS" | base64 -d > ${CREDENTIALS_FILE}; `
+    : "";
+  return `(set -e; ${credentials}restic cat config >/dev/null 2>&1 || restic init; ` +
     `restic backup --host ${s.host} --tag ${PLATFORM_SNAPSHOT_TAG} ${s.paths.join(" ")})`;
 }
 
@@ -234,7 +243,8 @@ export function resticBackupCommand(s: FileStack): string {
  */
 export function resticSummary(output: string): string {
   return output
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    // \x5b is "[": two in a row would be a Komodo variable to interpolate.
+    .replace(/\x1b\x5b[0-9;]*[A-Za-z]/g, "")
     .split(/[\r\n]+/)
     .map((l) => l.trim())
     .filter((l) => /^Added to the repository|^snapshot .* saved/.test(l))
