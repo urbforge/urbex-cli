@@ -13,7 +13,7 @@ internal/credentials/        loads secrets from env vars / ~/.urbex/credentials.
 internal/netalloc/           static IP block allocation (base-service LXCs)
 internal/allocation/         persistent per-hostname VMID/IP ledger (project-service LXCs)
 internal/sizeparse/          parses "512Mi"/"2Gi" manifest resource quantities
-internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs; the LXC template; mount points: the applications' volumes)
+internal/proxmoxapi/         minimal Proxmox API client (container listing: pre-flight check, vanished LXCs; the LXC template; mount points: the applications' volumes; backups and restore)
 internal/cloudflare/         minimal Cloudflare API client (tunnel, DNS, Access, Workers) and a fake for tests
 internal/knownhosts/         the LXCs' SSH host keys in the GitOps repo (state/known_hosts)
 internal/tfstate/            reconciles Terraform state with the LXCs that exist on Proxmox
@@ -29,6 +29,7 @@ internal/runner/             CommandRunner abstraction (terraform/ansible-playbo
 internal/bootstrap/          urbex bootstrap orchestration (base services + Gitea/Komodo setup)
 internal/provision/          urbex plan/apply/deploy/destroy orchestration (project services)
 internal/status/             urbex status: Proxmox presence + allocation-ledger lookups
+internal/restore/            urbex restore: a whole machine from its Proxmox backup (vzdump), onto the same VMID
 internal/imageref/           resolves a public image's tag to its digest (anonymous registry calls)
 internal/keycloak/           minimal Keycloak admin API client (realms, clients, roles of each project)
 internal/technitium/         minimal Technitium API client (the internal zone and its A records)
