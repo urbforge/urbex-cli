@@ -726,7 +726,7 @@ step linked "linked applications: each starts once what it uses is ready, with w
   # The probes: the PostgreSQL takes connections, the api answers its
   # healthcheck (a port that answers is not enough); a budget per level.
   grep -q "host=db.shop.urbex.urbex.test; probe() { PGPASSWORD=\"\$\$URBEX_PASSWORD_DB\" PGCONNECT_TIMEOUT=2 psql -X -w -q -A -t -h \"\$\$1\" -p 5432 -U api -d shop -c .select 1. >/dev/null 2>&1; }" $dir/api/compose.yaml || fail "api should wait for db by logging in with its role: $(grep wait_for $dir/api/compose.yaml)"
-  grep -q "host=api.shop.urbex.urbex.test; probe() { wget -q --spider -T 2 --header \"Host: api.shop.urbex.urbex.test:80\" \"http://\$\$1:80/\"; }" $dir/web/compose.yaml || fail "web should probe the healthcheck of api: $(grep wait_for $dir/web/compose.yaml)"
+  grep -q "host=api.shop.urbex.urbex.test; probe() { wget -q -O /dev/null -T 2 --header \"Host: api.shop.urbex.urbex.test:80\" \"http://\$\$1:80/\"; }" $dir/web/compose.yaml || fail "web should probe the healthcheck of api: $(grep wait_for $dir/web/compose.yaml)"
   grep -q "+ 110 ))" $dir/api/compose.yaml && grep -q "+ 190 ))" $dir/web/compose.yaml || fail "the wait should be the ready_within along the chain (db 90 s, api 60 s) plus the stable window per level"
   if grep -q wait_for $dir/db/compose.yaml; then fail "db uses nothing and should not wait"; fi
 

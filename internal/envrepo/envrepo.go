@@ -488,9 +488,13 @@ func writeNet(b *strings.Builder, project, env string, svc manifest.Service) {
 // Vaultwarden's, Jellyfin's and nginx's don't), and a failure that says
 // so when it has neither. An image without a shell (distroless) can't
 // run it: Docker reports that /bin/sh is missing.
+//
+// A GET, not wget --spider: GNU wget's spider sends HEAD, which some
+// health endpoints refuse (Gluetun's control server answers 405), while
+// busybox's sends GET - the same image would pass or fail by its wget.
 func HealthProbe(url string) string {
 	u := shellQuote(url)
-	return "if command -v wget >/dev/null 2>&1; then wget -q --spider " + u +
+	return "if command -v wget >/dev/null 2>&1; then wget -q -O /dev/null " + u +
 		"; elif command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null " + u +
 		"; else echo 'urbex healthcheck: the image has neither wget nor curl' >&2; exit 1; fi"
 }
@@ -741,8 +745,8 @@ func writeWait(b *strings.Builder, l *Links) {
 			fmt.Fprintf(b, "        name=%s host=%s; probe() { pg_isready -q -t 2 -h \"$$1\" -p %d; }; wait_for || exit 1\n", w.Name, w.Host, w.Port)
 			continue
 		}
-		// To the address, as the provider's name.
-		fmt.Fprintf(b, "        name=%s host=%s; probe() { wget -q --spider -T 2 --header \"Host: %s:%d\" \"http://$$1:%d%s\"; }; wait_for || exit 1\n",
+		// To the address, as the provider's name; a GET, as HealthProbe's.
+		fmt.Fprintf(b, "        name=%s host=%s; probe() { wget -q -O /dev/null -T 2 --header \"Host: %s:%d\" \"http://$$1:%d%s\"; }; wait_for || exit 1\n",
 			w.Name, w.Host, w.Host, w.Port, w.Port, w.Healthcheck)
 	}
 }
