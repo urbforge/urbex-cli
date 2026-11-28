@@ -181,3 +181,69 @@ func TestApply_AGroupsShareAndDeviceKeysApart(t *testing.T) {
 		}
 	}
 }
+
+// joinerManifest is the VPN sidecar of #166: qBittorrent joins
+// gluetun's network in their group's LXC, and gluetun needs
+// /dev/net/tun. vault needs nothing of either.
+func joinerManifest() []manifest.Service {
+	return []manifest.Service{
+		{Name: "vault", Image: "vaultwarden/server", Version: "1.34.3", Port: 80},
+		{Name: "gluetun", Image: "qmcgaw/gluetun", Version: "3", Port: 8000, Healthcheck: "/v1/publicip/ip", LXC: "dl", Devices: []string{"/dev/net/tun"}},
+		// network: implies uses:, as loading urbex.yaml fills it in.
+		{Name: "qbittorrent", Image: "linuxserver/qbittorrent", Version: "5", Port: 8080, LXC: "dl", Network: "gluetun", Uses: []string{"gluetun"}},
+	}
+}
+
+// An application that joins one waiting for its device waits too: started
+// now, it would wait for it in vain and fail the apply before the
+// operator's command is printed (urbforge/urbex-cli#170).
+func TestApply_SkipsTheApplicationsThatJoinANotReadyOne(t *testing.T) {
+	dir := t.TempDir()
+	o, devs, ro, out := devicesOrchestrator(t)
+	o.Manifest.Services = joinerManifest()
+	ctx := context.Background()
+
+	err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "the devices they need: gluetun, qbittorrent") {
+		t.Fatalf("expected apply to name gluetun and qbittorrent, got %v\n%s", err, out)
+	}
+	vmid := vmidOf(t, o, dir, "dl")
+	command := fmt.Sprintf("pct set %d -dev0 /dev/net/tun", vmid)
+	for _, want := range []string{command, "qbittorrent: not deployed until gluetun is"} {
+		if strings.Count(out.String(), want) != 1 {
+			t.Errorf("expected %q once in the output:\n%s", want, out)
+		}
+	}
+	if !slices.Equal(ro.deployed, []string{"vault"}) || o.repoHas(dir, "qbittorrent") {
+		t.Errorf("only vault should be deployed, got %v", ro.deployed)
+	}
+
+	devs.devs[vmid] = []proxmoxapi.Device{{Key: "dev0", Path: "/dev/net/tun"}}
+	out.Reset()
+	if err := o.Apply(ctx, Options{Env: "prod", GitOpsRepoPath: dir}); err != nil {
+		t.Fatalf("Apply after the device: %v\n%s", err, out)
+	}
+	for _, svc := range []string{"gluetun", "qbittorrent"} {
+		if !slices.Contains(ro.deployed, svc) {
+			t.Errorf("%s should be deployed now, got %v", svc, ro.deployed)
+		}
+	}
+}
+
+// A later step that fails still prints the operator's commands: the
+// failure must not hide them.
+func TestApply_PrintsTheCommandsWhenALaterStepFails(t *testing.T) {
+	dir := t.TempDir()
+	o, _, ro, out := devicesOrchestrator(t)
+	o.Manifest.Services = joinerManifest()
+	ro.waitErr = fmt.Errorf("vault: not healthy")
+
+	err := o.Apply(context.Background(), Options{Env: "prod", GitOpsRepoPath: dir})
+	if err == nil || !strings.Contains(err.Error(), "vault: not healthy") {
+		t.Fatalf("expected the wait's error, got %v\n%s", err, out)
+	}
+	command := fmt.Sprintf("pct set %d -dev0 /dev/net/tun", vmidOf(t, o, dir, "dl"))
+	if strings.Count(out.String(), command) != 1 {
+		t.Errorf("expected %q once in the output:\n%s", command, out)
+	}
+}
